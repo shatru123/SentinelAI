@@ -87,7 +87,7 @@ public sealed class ScopeService(IAppDbContext db, ITargetScopeValidator validat
         if (string.IsNullOrWhiteSpace(request.AuthorizationEvidence)) throw new ScopeValidationException(["Authorization evidence is required."]);
         var scope = new TargetScope(principal.TenantId, request.Name.Trim(), principal.UserId, request.ExpiresAt);
         scope.Configure(request.Targets, request.Exclusions ?? [], request.ApprovedOperationProfiles, request.RequestsPerMinute,
-            request.MaxExecutionSeconds, request.AuthorizationEvidence.Trim(), false);
+            request.MaxExecutionSeconds, request.AuthorizationEvidence.Trim(), false, request.AllowSubdomains);
         var authorizationIds = request.PublicTargetAuthorizationIds ?? [];
         if (authorizationIds.Count > 0)
         {

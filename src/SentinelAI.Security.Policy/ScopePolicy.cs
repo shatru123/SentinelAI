@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
 using SentinelAI.Domain;
 
 namespace SentinelAI.Security.Policy;
@@ -91,12 +92,15 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     {
         if (TryParseCidr(target.Trim(), out var networkAddress, out var targetPrefix))
         {
-            return scope.Targets.Where(x => x.Kind == TargetKind.Network).Any(x => TryParseCidr(x.Value, out _, out var authorizedPrefix) && authorizedPrefix <= targetPrefix && IsWithinNetwork(networkAddress, x.Value))
+            if (CidrIntersectsDisallowed(target)) return ScopeValidationResult.Invalid("Target range intersects a reserved or special-purpose address range.");
+            if (IsExcluded(scope.Exclusions, target)) return ScopeValidationResult.Invalid("Target is explicitly excluded.");
+            return scope.Targets.Where(x => x.Kind == TargetKind.Network).Any(x => CidrContains(x.Value, target))
                 ? ScopeValidationResult.Valid(new ValidatedExecutionTarget(target, [networkAddress], DateTimeOffset.UtcNow, scope.Id, scope.TenantId, scope.ExpiresAt, operationProfile)) : ScopeValidationResult.Invalid("Target is outside the authorized scope.");
         }
         if (IPAddress.TryParse(target.Trim(), out var address))
         {
             if (IsDisallowedAddress(address)) return ScopeValidationResult.Invalid("Target resolves to a reserved or special-purpose address.");
+            if (IsExcluded(scope.Exclusions, target, [address])) return ScopeValidationResult.Invalid("Target is explicitly excluded.");
             return scope.Targets.Any(x => x.Kind == TargetKind.Network && IsWithinNetwork(address, x.Value))
                 ? ScopeValidationResult.Valid(new ValidatedExecutionTarget(target, [NormalizeAddress(address)], DateTimeOffset.UtcNow, scope.Id, scope.TenantId, scope.ExpiresAt, operationProfile)) : ScopeValidationResult.Invalid("Target is outside the authorized scope.");
         }
@@ -106,13 +110,14 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         try { resolved = await resolver.ResolveAsync(hostname, cancellationToken); }
         catch (SocketException) { return ScopeValidationResult.Invalid("Target could not be resolved safely."); }
         if (resolved.Count == 0 || resolved.Any(IsDisallowedAddress)) return ScopeValidationResult.Invalid("DNS resolution returned a reserved address or no usable address.");
+        if (IsExcluded(scope.Exclusions, hostname, resolved)) return ScopeValidationResult.Invalid("A resolved target address is explicitly excluded.");
         foreach (var authorized in scope.Targets.Where(x => x.Kind == TargetKind.Network))
         {
             if (IPAddress.TryParse(authorized.Value.Split('/')[0], out _))
             {
                 if (resolved.All(ip => IsWithinNetwork(ip, authorized.Value))) return ScopeValidationResult.Valid(CreateValidatedTarget(hostname, resolved, scope, operationProfile));
             }
-            else if (DomainMatches(hostname, authorized.Value) && resolved.All(ip => !IsPrivateAddress(ip))) return ScopeValidationResult.Valid(CreateValidatedTarget(hostname, resolved, scope, operationProfile));
+            else if (DomainMatches(hostname, authorized.Value, false) && resolved.All(ip => !IsPrivateAddress(ip))) return ScopeValidationResult.Valid(CreateValidatedTarget(hostname, resolved, scope, operationProfile));
         }
         return ScopeValidationResult.Invalid("Target is outside the authorized scope.");
     }
@@ -125,10 +130,12 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         try { resolved = await resolver.ResolveAsync(uri.Host, cancellationToken); }
         catch (SocketException) { return ScopeValidationResult.Invalid("Web target could not be resolved safely."); }
         if (resolved.Count == 0 || resolved.Any(IsDisallowedAddress) || resolved.Any(IsPrivateAddress)) return ScopeValidationResult.Invalid("Web target DNS resolution is unsafe.");
+        if (IsExcluded(scope.Exclusions, uri.Host, resolved) || IsExcluded(scope.Exclusions, uri.ToString(), resolved)) return ScopeValidationResult.Invalid("Web target or a resolved redirect destination is explicitly excluded.");
         foreach (var authorized in scope.Targets.Where(x => x.Kind == TargetKind.Web))
         {
             if (!Uri.TryCreate(authorized.Value, UriKind.Absolute, out var baseUri)) continue;
-            if (baseUri.Scheme.Equals(uri.Scheme, StringComparison.OrdinalIgnoreCase) && DomainMatches(uri.Host, baseUri.Host) && IsPathWithin(baseUri.AbsolutePath, uri.AbsolutePath))
+            var hostMatches = uri.Host.Equals(baseUri.Host, StringComparison.OrdinalIgnoreCase) || (scope.AllowSubdomains && DomainMatches(uri.Host, baseUri.Host, true));
+            if (baseUri.Scheme.Equals(uri.Scheme, StringComparison.OrdinalIgnoreCase) && baseUri.Port == uri.Port && hostMatches && IsPathWithin(baseUri.AbsolutePath, uri.AbsolutePath))
                 return ScopeValidationResult.Valid(CreateValidatedTarget(uri.Host, resolved, scope, operationProfile));
         }
         return ScopeValidationResult.Invalid("Web target or redirect is outside the authorized scope.");
@@ -150,10 +157,10 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         switch (target.Kind)
         {
             case TargetKind.Network:
-                if (TryParseCidr(value, out var address, out _))
+                if (TryParseCidr(value, out _, out _))
                 {
-                    if (IsDisallowedAddress(address)) { error = $"Network target '{value}' is reserved or special-purpose."; return false; }
-                    requiresPublicAuthorization = !IsPrivateAddress(address); return true;
+                    if (CidrIntersectsDisallowed(value)) { error = $"Network target '{value}' intersects a reserved or special-purpose range."; return false; }
+                    requiresPublicAuthorization = !IsCidrEntirelyPrivate(value); return true;
                 }
                 if (!IsValidHostname(value)) { error = $"Network target '{value}' is not a strict IP, CIDR or hostname."; return false; }
                 requiresPublicAuthorization = true; return true;
@@ -184,7 +191,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         error = $"Exclusion '{value}' is not a valid IP, CIDR, hostname or URL."; return false;
     }
 
-    private static bool IsExcluded(IEnumerable<string> exclusions, string target)
+    private static bool IsExcluded(IEnumerable<string> exclusions, string target, IReadOnlyCollection<IPAddress>? resolved = null)
     {
         var value = target.Trim().TrimEnd('.');
         var address = IPAddress.TryParse(value, out var parsed) ? parsed : null;
@@ -192,9 +199,14 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         foreach (var exclusion in exclusions)
         {
             var candidate = exclusion.Trim().TrimEnd('.');
-            if (address is not null && TryParseCidr(candidate, out _, out _) && IsWithinNetwork(address, candidate)) return true;
-            if (uri is not null && Uri.TryCreate(candidate, UriKind.Absolute, out var exclusionUri) && DomainMatches(uri.Host, exclusionUri.Host) && IsPathWithin(exclusionUri.AbsolutePath, uri.AbsolutePath)) return true;
-            if (DomainMatches(uri?.Host ?? value, candidate) || string.Equals(value, candidate, StringComparison.OrdinalIgnoreCase)) return true;
+            if (TryParseCidr(candidate, out _, out _))
+            {
+                if (address is not null && IsWithinNetwork(address, candidate)) return true;
+                if (TryParseCidr(value, out _, out _) && CidrRangesIntersect(value, candidate)) return true;
+                if (resolved is not null && resolved.Any(ip => IsWithinNetwork(ip, candidate))) return true;
+            }
+            if (uri is not null && Uri.TryCreate(candidate, UriKind.Absolute, out var exclusionUri) && uri.Scheme.Equals(exclusionUri.Scheme, StringComparison.OrdinalIgnoreCase) && exclusionUri.Port == uri.Port && DomainMatches(uri.Host, exclusionUri.Host, true) && IsPathWithin(exclusionUri.AbsolutePath, uri.AbsolutePath)) return true;
+            if (DomainMatches(uri?.Host ?? value, candidate, true) || string.Equals(value, candidate, StringComparison.OrdinalIgnoreCase)) return true;
         }
         return false;
     }
@@ -205,7 +217,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     private static bool VerificationMatches(string verified, string target)
     {
         if (TryParseCidr(verified.Trim(), out var verifiedAddress, out var verifiedPrefix) && TryParseCidr(target.Trim(), out var targetAddress, out var targetPrefix))
-            return verifiedAddress.AddressFamily == targetAddress.AddressFamily && verifiedPrefix == targetPrefix && IsWithinNetwork(targetAddress, $"{verifiedAddress}/{verifiedPrefix}");
+            return verifiedAddress.AddressFamily == targetAddress.AddressFamily && CidrContains($"{verifiedAddress}/{verifiedPrefix}", $"{targetAddress}/{targetPrefix}");
         if (Uri.TryCreate(verified, UriKind.Absolute, out var verifiedUri) && Uri.TryCreate(target, UriKind.Absolute, out var targetUri))
             return verifiedUri.Scheme.Equals(targetUri.Scheme, StringComparison.OrdinalIgnoreCase) && verifiedUri.Host.Equals(targetUri.Host, StringComparison.OrdinalIgnoreCase) && IsPathWithin(verifiedUri.AbsolutePath, targetUri.AbsolutePath);
         return string.Equals(verified.Trim().TrimEnd('.'), target.Trim().TrimEnd('.'), StringComparison.OrdinalIgnoreCase);
@@ -224,6 +236,51 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         return true;
     }
 
+    private static bool TryGetCidrRange(string value, out IPAddress start, out IPAddress end, out int prefix)
+    {
+        start = IPAddress.None; end = IPAddress.None; prefix = -1;
+        if (!TryParseCidr(value.Trim(), out var address, out prefix)) return false;
+        var bytes = address.GetAddressBytes();
+        var fullBytes = prefix / 8;
+        var remainingBits = prefix % 8;
+        if (remainingBits != 0)
+        {
+            bytes[fullBytes] &= (byte)(0xFF << (8 - remainingBits));
+            for (var index = fullBytes + 1; index < bytes.Length; index++) bytes[index] = 0;
+        }
+        else for (var index = fullBytes; index < bytes.Length; index++) bytes[index] = 0;
+        start = new IPAddress(bytes);
+        var endBytes = start.GetAddressBytes();
+        if (remainingBits != 0) endBytes[fullBytes] |= (byte)(0xFF >> remainingBits);
+        for (var index = fullBytes + (remainingBits == 0 ? 0 : 1); index < endBytes.Length; index++) endBytes[index] = 0xFF;
+        end = new IPAddress(endBytes);
+        return true;
+    }
+
+    private static bool CidrRangesIntersect(string left, string right)
+    {
+        if (!TryGetCidrRange(left, out var leftStart, out var leftEnd, out _) || !TryGetCidrRange(right, out var rightStart, out var rightEnd, out _) || leftStart.AddressFamily != rightStart.AddressFamily) return false;
+        return ToNumber(leftStart) <= ToNumber(rightEnd) && ToNumber(rightStart) <= ToNumber(leftEnd);
+    }
+
+    private static bool CidrContains(string authorized, string candidate)
+    {
+        if (!TryGetCidrRange(authorized, out var authorizedStart, out var authorizedEnd, out _) || !TryGetCidrRange(candidate, out var candidateStart, out var candidateEnd, out _) || authorizedStart.AddressFamily != candidateStart.AddressFamily) return false;
+        return ToNumber(authorizedStart) <= ToNumber(candidateStart) && ToNumber(candidateEnd) <= ToNumber(authorizedEnd);
+    }
+
+    private static bool IsCidrEntirelyPrivate(string definition)
+        => CidrContainedByAny(definition, ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]);
+
+    private static bool CidrContainedByAny(string definition, IReadOnlyCollection<string> networks)
+        => networks.Any(network => CidrContains(network, definition));
+
+    private static bool CidrIntersectsDisallowed(string definition)
+        => new[] { "0.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4", "::/128", "::1/128", "fe80::/10", "ff00::/8", "2001:db8::/32" }
+            .Any(disallowed => CidrRangesIntersect(definition, disallowed));
+
+    private static BigInteger ToNumber(IPAddress address) => new(address.GetAddressBytes(), isUnsigned: true, isBigEndian: true);
+
     private static bool IsValidHostname(string value)
     {
         value = value.Trim().TrimEnd('.');
@@ -232,10 +289,10 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         return labels.Length >= 2 && labels.All(label => label.Length is > 0 and <= 63 && label[0] != '-' && label[^1] != '-' && label.All(c => char.IsLetterOrDigit(c) || c == '-'));
     }
 
-    private static bool DomainMatches(string candidate, string authorized)
+    private static bool DomainMatches(string candidate, string authorized, bool allowSubdomains)
     {
         var left = candidate.Trim().TrimEnd('.'); var right = authorized.Trim().TrimEnd('.');
-        return left.Equals(right, StringComparison.OrdinalIgnoreCase) || left.EndsWith('.' + right, StringComparison.OrdinalIgnoreCase);
+        return left.Equals(right, StringComparison.OrdinalIgnoreCase) || (allowSubdomains && left.EndsWith('.' + right, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool IsPathWithin(string basePath, string candidatePath)

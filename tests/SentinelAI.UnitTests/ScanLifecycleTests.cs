@@ -80,7 +80,29 @@ public sealed class ScanLifecycleTests
     }
 
     [Fact]
-    public async Task Running_jobs_are_requeued_after_worker_restart()
+    public async Task A_healthy_worker_lease_is_not_recovered_by_another_worker_starting()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var db = new AppDbContext(options);
+        var tenant = new Tenant("Lease tenant"); var user = new User(tenant.Id, "analyst", "Analyst", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "private-lab", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], [], ["mock-passive"], 10, 120, "approval-1", false);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, "mock-passive");
+        var execution = new AgentExecution(job.Id, "MockNetworkDiscoveryAgent");
+        db.Tenants.Add(tenant); db.Users.Add(user); db.TargetScopes.Add(scope); db.AgentJobs.Add(job); db.AgentExecutions.Add(execution);
+        Assert.True(job.TryAcquireLease("worker-a", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5)));
+        execution.Start(); await db.SaveChangesAsync();
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new EmptyResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance);
+
+        await service.RecoverExpiredLeasesAsync(CancellationToken.None, tenant.Id);
+
+        await db.Entry(job).ReloadAsync();
+        Assert.Equal(ScanJobStatus.Running, job.Status);
+        Assert.Equal("worker-a", job.LeaseOwnerWorkerId);
+    }
+
+    [Fact]
+    public async Task Expired_leases_are_requeued_after_worker_restart()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
         await using var db = new AppDbContext(options);
@@ -90,15 +112,41 @@ public sealed class ScanLifecycleTests
         var job = new AgentJob(tenant.Id, scope.Id, user.Id, "mock-passive");
         var execution = new AgentExecution(job.Id, "MockNetworkDiscoveryAgent");
         db.Tenants.Add(tenant); db.Users.Add(user); db.TargetScopes.Add(scope); db.AgentJobs.Add(job); db.AgentExecutions.Add(execution);
-        job.Start(); execution.Start(); await db.SaveChangesAsync();
+        var expiredLease = DateTimeOffset.UtcNow.AddMinutes(-2);
+        Assert.True(job.TryAcquireLease("worker-a", expiredLease, TimeSpan.FromSeconds(1)));
+        execution.Start(); await db.SaveChangesAsync();
         var service = new ScanExecutionService(db, new TargetScopeValidator(new StubResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance);
-        await service.RecoverInterruptedJobsAsync(CancellationToken.None, tenant.Id);
+        await service.RecoverExpiredLeasesAsync(CancellationToken.None, tenant.Id);
         await db.Entry(job).ReloadAsync();
         Assert.Equal(ScanJobStatus.Queued, job.Status);
         Assert.Equal(AgentExecutionStatus.Pending, (await db.AgentExecutions.SingleAsync()).Status);
     }
 
+    [Fact]
+    public async Task Duplicate_completed_delivery_is_idempotent()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var db = new AppDbContext(options);
+        var tenant = new Tenant("Duplicate tenant"); var user = new User(tenant.Id, "analyst", "Analyst", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "private", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], [], ["mock-passive"], 10, 120, "ticket", false);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, "mock-passive"); var execution = new AgentExecution(job.Id, "test");
+        db.AddRange(tenant, user, scope, job, execution);
+        Assert.True(job.TryAcquireLease("worker-a", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+        execution.Start(); job.Complete(); execution.Complete(); await db.SaveChangesAsync();
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new StubResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance);
+
+        var outcome = await service.ExecuteAsync(job.Id, CancellationToken.None, tenant.Id, "worker-b");
+
+        Assert.Equal(ScanExecutionOutcome.AlreadyCompleted, outcome);
+    }
+
     private sealed class StubResolver : IHostAddressResolver
+    {
+        public Task<IReadOnlyCollection<System.Net.IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<System.Net.IPAddress>>([]);
+    }
+
+    private sealed class EmptyResolver : IHostAddressResolver
     {
         public Task<IReadOnlyCollection<System.Net.IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<System.Net.IPAddress>>([]);
     }

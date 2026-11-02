@@ -88,29 +88,45 @@ public sealed class WorkerActivityTracker
 {
     private int activeJobs;
     public int ActiveJobs => Volatile.Read(ref activeJobs);
-    public void Increment() => Interlocked.Increment(ref activeJobs);
-    public void Decrement() => Interlocked.Decrement(ref activeJobs);
+    public DateTimeOffset? LastJobStartedAt { get; private set; }
+    public DateTimeOffset? LastJobCompletedAt { get; private set; }
+    public void Increment() { LastJobStartedAt = DateTimeOffset.UtcNow; Interlocked.Increment(ref activeJobs); }
+    public void Decrement() { LastJobCompletedAt = DateTimeOffset.UtcNow; Interlocked.Decrement(ref activeJobs); }
 }
 
-public enum ScanExecutionOutcome { Completed, Cancelled, Expired, AlreadyHandled, Missing, Unauthorized }
+public enum ScanExecutionOutcome { Completed, Cancelled, Expired, AlreadyCompleted, AlreadyRunning, ClaimedByAnotherWorker, Unauthorized, Missing }
 
 public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator validator, IConfiguration configuration, ILogger<ScanExecutionService> logger)
 {
     private static readonly ActivitySource ActivitySource = new("SentinelAI.Worker");
     private readonly int executionDelayMs = Math.Clamp(configuration.GetValue("Worker:ExecutionDelayMs", 50), 0, 60_000);
+    private TimeSpan LeaseDuration => TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Worker:LeaseDurationSeconds", 60), 10, 3600));
+    private TimeSpan WorkerStaleAfter => TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Worker:HeartbeatStaleSeconds", 45), 15, 3600));
 
-    public async Task RecoverInterruptedJobsAsync(CancellationToken cancellationToken, Guid? authorizedTenantId = null)
+    public async Task RecoverExpiredLeasesAsync(CancellationToken cancellationToken, Guid? authorizedTenantId = null)
     {
-        var query = db.AgentJobs.Where(x => x.Status == ScanJobStatus.Running);
+        var now = DateTimeOffset.UtcNow;
+        var query = db.AgentJobs.Where(x => x.Status == ScanJobStatus.Running && x.LeaseExpiresAt != null && x.LeaseExpiresAt <= now);
         if (authorizedTenantId is not null) query = query.Where(x => x.TenantId == authorizedTenantId.Value);
         var jobs = await query.ToListAsync(cancellationToken);
         foreach (var job in jobs)
         {
-            job.RecoverInterrupted();
+            job.RecoverExpiredLease(now);
             var execution = await db.AgentExecutions.SingleOrDefaultAsync(x => x.AgentJobId == job.Id, cancellationToken);
             execution?.ResetForRetry();
         }
         if (jobs.Count > 0) await db.SaveChangesAsync(cancellationToken);
+    }
+
+    public Task RecoverInterruptedJobsAsync(CancellationToken cancellationToken, Guid? authorizedTenantId = null)
+        => RecoverExpiredLeasesAsync(cancellationToken, authorizedTenantId);
+
+    public async Task<bool> RenewLeaseAsync(Guid jobId, string workerIdentity, CancellationToken cancellationToken)
+    {
+        var job = await db.AgentJobs.SingleOrDefaultAsync(x => x.Id == jobId, cancellationToken);
+        if (job is null || !job.RenewLease(workerIdentity, DateTimeOffset.UtcNow, LeaseDuration)) return false;
+        await db.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     public async Task<ScanExecutionOutcome> ExecuteAsync(Guid jobId, CancellationToken cancellationToken, Guid? authorizedTenantId = null, string? workerIdentity = null)
@@ -120,22 +136,45 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         var job = await db.AgentJobs.SingleOrDefaultAsync(x => x.Id == jobId, cancellationToken);
         if (job is null) return ScanExecutionOutcome.Missing;
         if (authorizedTenantId is not null && job.TenantId != authorizedTenantId.Value) return ScanExecutionOutcome.Unauthorized;
-        if (job.Status is ScanJobStatus.Completed or ScanJobStatus.Failed) return ScanExecutionOutcome.AlreadyHandled;
+        if (job.Status is ScanJobStatus.Completed or ScanJobStatus.Failed) return ScanExecutionOutcome.AlreadyCompleted;
         if (job.Status == ScanJobStatus.Cancelled) return ScanExecutionOutcome.Cancelled;
         if (job.Status == ScanJobStatus.Expired) return ScanExecutionOutcome.Expired;
         if (job.ExpiresAt <= DateTimeOffset.UtcNow) { job.Expire(); await db.SaveChangesAsync(cancellationToken); return ScanExecutionOutcome.Expired; }
+        var now = DateTimeOffset.UtcNow;
+        if (job.Status == ScanJobStatus.Running)
+        {
+            if (job.HasActiveLease(now))
+                return string.Equals(job.LeaseOwnerWorkerId, workerIdentity, StringComparison.Ordinal) ? ScanExecutionOutcome.AlreadyRunning : ScanExecutionOutcome.ClaimedByAnotherWorker;
+            job.RecoverExpiredLease(now);
+        }
+        var effectiveWorkerIdentity = string.IsNullOrWhiteSpace(workerIdentity) ? "in-process" : workerIdentity.Trim();
         if (workerIdentity is not null)
         {
             var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Identity == workerIdentity, cancellationToken);
-            if (worker is null || worker.Status == WorkerStatus.Disabled || !worker.Capabilities.Contains("passive-mock", StringComparer.OrdinalIgnoreCase)) return ScanExecutionOutcome.Unauthorized;
+            if (worker is null || !worker.IsAvailable(now, WorkerStaleAfter) || !worker.Capabilities.Contains("passive-mock", StringComparer.OrdinalIgnoreCase)) return ScanExecutionOutcome.Unauthorized;
         }
-        if (workerIdentity is not null && !job.TryClaim(workerIdentity)) return ScanExecutionOutcome.Unauthorized;
-        if (!job.TryStart()) return job.Status == ScanJobStatus.Cancelled ? ScanExecutionOutcome.Cancelled : ScanExecutionOutcome.AlreadyHandled;
+        if (!job.TryAcquireLease(effectiveWorkerIdentity, now, LeaseDuration))
+        {
+            if (job.Status == ScanJobStatus.Cancelled) return ScanExecutionOutcome.Cancelled;
+            if (job.Status is ScanJobStatus.Completed or ScanJobStatus.Failed) return ScanExecutionOutcome.AlreadyCompleted;
+            if (job.Status == ScanJobStatus.Running) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+            return ScanExecutionOutcome.AlreadyRunning;
+        }
 
         var execution = await db.AgentExecutions.SingleAsync(x => x.AgentJobId == job.Id, cancellationToken);
+        if (execution.Status != AgentExecutionStatus.Pending)
+        {
+            if (execution.Status is AgentExecutionStatus.Completed or AgentExecutionStatus.Cancelled) return ScanExecutionOutcome.AlreadyCompleted;
+            execution.ResetForRetry();
+        }
         execution.Start();
         var scopeDefinition = await db.TargetScopes.SingleAsync(x => x.Id == job.ScopeId && x.TenantId == job.TenantId, cancellationToken);
-        await db.SaveChangesAsync(cancellationToken);
+        try { await db.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateConcurrencyException)
+        {
+            db.ChangeTracker.Clear();
+            return ScanExecutionOutcome.ClaimedByAnotherWorker;
+        }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(scopeDefinition.MaxExecutionSeconds));
@@ -162,6 +201,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             }
 
             await db.Entry(job).ReloadAsync(timeout.Token);
+            if (workerIdentity is not null && !job.IsLeaseOwnedBy(workerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
             if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled) { execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Cancelled; }
             if (job.ExpiresAt <= DateTimeOffset.UtcNow) { job.Expire(); execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Expired; }
             execution.Complete(); job.Complete();
@@ -178,7 +218,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             }
             if (cancellationToken.IsCancellationRequested && DateTimeOffset.UtcNow < job.ExpiresAt)
             {
-                job.RecoverInterrupted(); execution.ResetForRetry(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.AlreadyHandled;
+                job.ReleaseLeaseForRetry("Worker interruption; queued for retry."); execution.ResetForRetry(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.AlreadyRunning;
             }
             if (job.Status is ScanJobStatus.Queued or ScanJobStatus.Running)
             {
@@ -186,7 +226,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.expired", nameof(AgentJob), job.Id, "Execution duration limit was reached."));
                 await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Expired;
             }
-            return ScanExecutionOutcome.AlreadyHandled;
+            return ScanExecutionOutcome.AlreadyRunning;
         }
         catch (Exception exception)
         {
@@ -206,7 +246,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         }
         else
         {
-            job.RecoverInterrupted();
+            job.ReleaseLeaseForRetry(reason);
             execution?.ResetForRetry();
         }
         await db.SaveChangesAsync(cancellationToken);
@@ -436,8 +476,13 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
     }
 }
 
-public sealed class OutboxDispatcher(IServiceScopeFactory scopeFactory, RabbitMqScanJobQueue queue, ILogger<OutboxDispatcher> logger) : BackgroundService
+public sealed class OutboxDispatcher(IServiceScopeFactory scopeFactory, RabbitMqScanJobQueue queue, IConfiguration configuration, ILogger<OutboxDispatcher> logger) : BackgroundService
 {
+    private readonly string owner = $"dispatcher-{Guid.NewGuid():N}";
+    private TimeSpan LeaseDuration => TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Messaging:OutboxLeaseSeconds", 60), 10, 3600));
+    private TimeSpan RetryBaseDelay => TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Messaging:OutboxRetryBaseSeconds", 2), 1, 300));
+    private TimeSpan RetryMaxDelay => TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Messaging:OutboxRetryMaxSeconds", 300), 10, 86_400));
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -446,7 +491,7 @@ public sealed class OutboxDispatcher(IServiceScopeFactory scopeFactory, RabbitMq
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var pending = await db.OutboxMessages.Where(x => x.DispatchedAt == null).OrderBy(x => x.CreatedAt).Take(50).ToListAsync(stoppingToken);
+                var pending = await ClaimPendingAsync(db, stoppingToken);
                 foreach (var message in pending)
                 {
                     try
@@ -456,7 +501,7 @@ public sealed class OutboxDispatcher(IServiceScopeFactory scopeFactory, RabbitMq
                     }
                     catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
                     {
-                        message.RecordFailure(exception.Message);
+                        message.RecordFailure(exception.Message, DateTimeOffset.UtcNow, RetryBaseDelay, RetryMaxDelay);
                         logger.LogWarning(exception, "Outbox message {MessageId} failed on attempt {Attempt}.", message.Id, message.AttemptCount);
                     }
                     await db.SaveChangesAsync(stoppingToken);
@@ -466,5 +511,26 @@ public sealed class OutboxDispatcher(IServiceScopeFactory scopeFactory, RabbitMq
             catch (Exception exception) { logger.LogError(exception, "Outbox dispatcher cycle failed."); }
             await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken);
         }
+    }
+
+    private async Task<List<OutboxMessage>> ClaimPendingAsync(AppDbContext db, CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        List<OutboxMessage> pending;
+        if (db.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            pending = await db.OutboxMessages.FromSqlInterpolated($"SELECT * FROM \"OutboxMessages\" WHERE \"DispatchedAt\" IS NULL AND (\"NextAttemptAt\" IS NULL OR \"NextAttemptAt\" <= {now}) AND (\"LeaseExpiresAt\" IS NULL OR \"LeaseExpiresAt\" <= {now}) ORDER BY \"CreatedAt\" LIMIT 50 FOR UPDATE SKIP LOCKED").ToListAsync(cancellationToken);
+            foreach (var message in pending) message.TryAcquireLease(owner, now, LeaseDuration);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        else
+        {
+            pending = await db.OutboxMessages.Where(x => x.DispatchedAt == null && (x.NextAttemptAt == null || x.NextAttemptAt <= now) && (x.LeaseExpiresAt == null || x.LeaseExpiresAt <= now)).OrderBy(x => x.CreatedAt).Take(50).ToListAsync(cancellationToken);
+            pending = pending.Where(message => message.TryAcquireLease(owner, now, LeaseDuration)).ToList();
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        return pending;
     }
 }

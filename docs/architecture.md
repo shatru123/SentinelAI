@@ -68,6 +68,8 @@ sequenceDiagram
 - Route cancellation messages to the worker identity persisted on the running job; workers also poll persisted cancellation state between target operations.
 - Use a transactional outbox so a committed job is eventually published after broker recovery. Duplicate deliveries are safe because execution claims and terminal state are persisted.
 - Public target authorization is a separate request/administrator approval workflow and is never created from caller-supplied evidence fields.
+- Running jobs carry worker-specific leases with expiry and renewal timestamps. Startup recovery only requeues expired leases; optimistic concurrency prevents two workers from claiming the same queued job.
+- Outbox rows carry dispatcher leases, retry timestamps and bounded exponential backoff. PostgreSQL dispatchers claim pending rows with `FOR UPDATE SKIP LOCKED`, while duplicate broker deliveries remain idempotent at the job state machine.
 - DNS validation produces a `ValidatedExecutionTarget` containing the approved addresses and expiry; future network adapters must connect only to those addresses while preserving the original hostname for protocol headers/SNI.
 - A local worker enables private-network visibility without requiring inbound access.
 - Keep AI providers behind a common interface; support model selection and fallback through configuration.

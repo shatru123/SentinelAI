@@ -14,6 +14,10 @@ Every scope must record tenant, authorizing principal, approved CIDRs/domains/re
 
 Public targets use a two-step workflow: an operator requests authorization, then a different authenticated administrator approves or revokes it. Approval records include evidence reference, verification method, authenticated approver, approval time and expiry. A requester's Boolean, verifier name or arbitrary string cannot authorize execution.
 
+CIDR validation classifies the complete IPv4/IPv6 range, including IPv4-mapped IPv6, ULA, link-local, multicast, reserved and documentation ranges. DNS exclusions are evaluated against the hostname and every resolved address. Web scopes require exact hostname matching by default; subdomains require the explicit `AllowSubdomains` scope option, and redirects are revalidated with scheme, port, path and resolved-address checks.
+
+Worker jobs are protected by database-backed leases owned by the authenticated worker identity. Leases are renewed during execution and only expired leases are recoverable. Worker heartbeats persist active count, capacity, health and last execution timestamps; stale workers are marked unhealthy and are not eligible for new claims.
+
 Validate IPv4 and IPv6, private/link-local/multicast/reserved ranges, mapped addresses, DNS rebinding, redirects and alternate address encodings. Resolve and validate destinations at execution time, not only when a scope is created. Re-check after every redirect and immediately before connecting.
 
 ## AI safety

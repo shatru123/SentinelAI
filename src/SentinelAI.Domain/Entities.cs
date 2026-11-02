@@ -55,6 +55,7 @@ public sealed class TargetScope
     public int MaxExecutionSeconds { get; private set; } = 300;
     public string AuthorizationEvidence { get; private set; } = string.Empty;
     public bool PublicTargetOwnershipVerified { get; private set; }
+    public bool AllowSubdomains { get; private set; }
     public List<PublicTargetVerification> PublicTargetVerifications { get; private set; } = [];
     public DateTimeOffset ExpiresAt { get; private set; }
     public Guid CreatedBy { get; private set; }
@@ -64,11 +65,11 @@ public sealed class TargetScope
 
     public void Configure(IReadOnlyCollection<TargetDefinition> targets, IReadOnlyCollection<string> exclusions,
         IReadOnlyCollection<string> profiles, int requestsPerMinute, int maxExecutionSeconds,
-        string authorizationEvidence, bool publicTargetOwnershipVerified)
+        string authorizationEvidence, bool publicTargetOwnershipVerified, bool allowSubdomains = false)
     {
         Targets = targets.ToList(); Exclusions = exclusions.ToList(); ApprovedOperationProfiles = profiles.ToList();
         RequestsPerMinute = requestsPerMinute; MaxExecutionSeconds = maxExecutionSeconds;
-        AuthorizationEvidence = authorizationEvidence; PublicTargetOwnershipVerified = publicTargetOwnershipVerified;
+        AuthorizationEvidence = authorizationEvidence; PublicTargetOwnershipVerified = publicTargetOwnershipVerified; AllowSubdomains = allowSubdomains;
     }
 
     public void ConfigureVerifications(IReadOnlyCollection<PublicTargetVerification> verifications)
@@ -113,6 +114,10 @@ public sealed class AgentJob
     public DateTimeOffset? CompletedAt { get; private set; }
     public DateTimeOffset ExpiresAt { get; private set; }
     public string? AssignedWorkerIdentity { get; private set; }
+    public string? LeaseOwnerWorkerId { get; private set; }
+    public DateTimeOffset? LeaseAcquiredAt { get; private set; }
+    public DateTimeOffset? LeaseExpiresAt { get; private set; }
+    public DateTimeOffset? LastLeaseHeartbeatAt { get; private set; }
     public DateTimeOffset? CancellationRequestedAt { get; private set; }
     public string? FailureReason { get; private set; }
     public byte[] RowVersion { get; private set; } = Guid.NewGuid().ToByteArray();
@@ -126,11 +131,66 @@ public sealed class AgentJob
         AssignedWorkerIdentity ??= workerIdentity.Trim(); RowVersion = Guid.NewGuid().ToByteArray();
         return true;
     }
+    public bool TryAcquireLease(string workerIdentity, DateTimeOffset now, TimeSpan duration)
+    {
+        if (string.IsNullOrWhiteSpace(workerIdentity) || duration <= TimeSpan.Zero || Status is ScanJobStatus.Completed or ScanJobStatus.Failed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return false;
+        if (Status == ScanJobStatus.Running && LeaseExpiresAt is not null && LeaseExpiresAt > now) return false;
+        if (Status == ScanJobStatus.Running) RecoverExpiredLease(now);
+        if (Status != ScanJobStatus.Queued || IsCancellationRequested) return false;
+        Status = ScanJobStatus.Running;
+        StartedAt = now;
+        AssignedWorkerIdentity = workerIdentity.Trim();
+        LeaseOwnerWorkerId = AssignedWorkerIdentity;
+        LeaseAcquiredAt = now;
+        LeaseExpiresAt = now.Add(duration);
+        LastLeaseHeartbeatAt = now;
+        FailureReason = null;
+        RowVersion = Guid.NewGuid().ToByteArray();
+        return true;
+    }
+    public bool RenewLease(string workerIdentity, DateTimeOffset now, TimeSpan duration)
+    {
+        if (Status != ScanJobStatus.Running || !string.Equals(LeaseOwnerWorkerId, workerIdentity?.Trim(), StringComparison.Ordinal) || LeaseExpiresAt is null || LeaseExpiresAt <= now) return false;
+        LeaseExpiresAt = now.Add(duration);
+        LastLeaseHeartbeatAt = now;
+        RowVersion = Guid.NewGuid().ToByteArray();
+        return true;
+    }
+    public bool HasActiveLease(DateTimeOffset now) => Status == ScanJobStatus.Running && LeaseExpiresAt is not null && LeaseExpiresAt > now;
+    public bool IsLeaseOwnedBy(string workerIdentity, DateTimeOffset now) => HasActiveLease(now) && string.Equals(LeaseOwnerWorkerId, workerIdentity?.Trim(), StringComparison.Ordinal);
+    public void RecoverExpiredLease(DateTimeOffset now)
+    {
+        if (Status == ScanJobStatus.Running && LeaseExpiresAt is not null && LeaseExpiresAt <= now)
+        {
+            Status = ScanJobStatus.Queued;
+            StartedAt = null;
+            AssignedWorkerIdentity = null;
+            LeaseOwnerWorkerId = null;
+            LeaseAcquiredAt = null;
+            LeaseExpiresAt = null;
+            LastLeaseHeartbeatAt = null;
+            FailureReason = "Recovered after lease expiration.";
+            RowVersion = Guid.NewGuid().ToByteArray();
+        }
+    }
+    public void ReleaseLeaseForRetry(string reason)
+    {
+        if (Status != ScanJobStatus.Running) return;
+        Status = ScanJobStatus.Queued;
+        StartedAt = null;
+        AssignedWorkerIdentity = null;
+        LeaseOwnerWorkerId = null;
+        LeaseAcquiredAt = null;
+        LeaseExpiresAt = null;
+        LastLeaseHeartbeatAt = null;
+        FailureReason = reason;
+        RowVersion = Guid.NewGuid().ToByteArray();
+    }
     public void Complete() { if (Status != ScanJobStatus.Running) throw new InvalidOperationException("Only running jobs can complete."); Status = ScanJobStatus.Completed; CompletedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); }
     public void Fail(string reason) { if (Status is ScanJobStatus.Completed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return; Status = ScanJobStatus.Failed; FailureReason = reason; CompletedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); }
     public void Cancel() { if (Status is ScanJobStatus.Completed or ScanJobStatus.Failed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return; CancellationRequestedAt ??= DateTimeOffset.UtcNow; Status = ScanJobStatus.Cancelled; FailureReason = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); }
     public void Expire() { if (Status is ScanJobStatus.Queued or ScanJobStatus.Running) { Status = ScanJobStatus.Expired; CompletedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); } }
-    public void RecoverInterrupted() { if (Status == ScanJobStatus.Running) { Status = ScanJobStatus.Queued; StartedAt = null; AssignedWorkerIdentity = null; FailureReason = "Recovered after worker interruption."; RowVersion = Guid.NewGuid().ToByteArray(); } }
+    public void RecoverInterrupted() => RecoverExpiredLease(DateTimeOffset.UtcNow);
 }
 
 public sealed class AgentExecution
@@ -159,7 +219,7 @@ public sealed class WorkerRegistration
     {
         Id = Guid.NewGuid(); TenantId = tenantId; Identity = identity; Version = version;
         Capabilities = capabilities.ToList(); Status = WorkerStatus.Registered; RegisteredAt = DateTimeOffset.UtcNow;
-        LastHeartbeatAt = RegisteredAt;
+        LastHeartbeatAt = RegisteredAt; MaximumCapacity = 1;
     }
     public Guid Id { get; private set; }
     public Guid TenantId { get; private set; }
@@ -170,8 +230,20 @@ public sealed class WorkerRegistration
     public DateTimeOffset RegisteredAt { get; private set; }
     public DateTimeOffset LastHeartbeatAt { get; private set; }
     public DateTimeOffset? LastJobAt { get; private set; }
-    public void Heartbeat() { LastHeartbeatAt = DateTimeOffset.UtcNow; Status = WorkerStatus.Healthy; }
-    public void MarkJob() { LastJobAt = DateTimeOffset.UtcNow; Heartbeat(); }
+    public int CurrentActiveJobs { get; private set; }
+    public int MaximumCapacity { get; private set; }
+    public DateTimeOffset? LastJobStartedAt { get; private set; }
+    public DateTimeOffset? LastJobCompletedAt { get; private set; }
+    public void Heartbeat(int activeJobs = 0, int capacity = 1, DateTimeOffset? lastJobStartedAt = null, DateTimeOffset? lastJobCompletedAt = null)
+    {
+        CurrentActiveJobs = Math.Max(0, activeJobs); MaximumCapacity = Math.Max(1, capacity); LastHeartbeatAt = DateTimeOffset.UtcNow; Status = WorkerStatus.Healthy;
+        LastJobStartedAt = lastJobStartedAt ?? LastJobStartedAt; LastJobCompletedAt = lastJobCompletedAt ?? LastJobCompletedAt;
+    }
+    public bool IsAvailable(DateTimeOffset now, TimeSpan staleAfter) => Status is WorkerStatus.Registered or WorkerStatus.Healthy && LastHeartbeatAt >= now.Subtract(staleAfter) && CurrentActiveJobs < MaximumCapacity;
+    public bool IsStale(DateTimeOffset now, TimeSpan staleAfter) => LastHeartbeatAt < now.Subtract(staleAfter);
+    public void MarkJobStarted(DateTimeOffset now) { LastJobAt = now; LastJobStartedAt = now; }
+    public void MarkJobCompleted(DateTimeOffset now) { LastJobAt = now; LastJobCompletedAt = now; }
+    public void MarkJob() { MarkJobStarted(DateTimeOffset.UtcNow); Heartbeat(CurrentActiveJobs, MaximumCapacity, LastJobStartedAt, LastJobCompletedAt); }
     public void MarkUnhealthy() { Status = WorkerStatus.Unhealthy; }
 }
 
@@ -237,9 +309,26 @@ public sealed class OutboxMessage
     public DateTimeOffset CreatedAt { get; private set; }
     public DateTimeOffset? DispatchedAt { get; private set; }
     public DateTimeOffset? LastAttemptAt { get; private set; }
+    public DateTimeOffset? NextAttemptAt { get; private set; }
+    public string? LeaseOwner { get; private set; }
+    public DateTimeOffset? LeaseAcquiredAt { get; private set; }
+    public DateTimeOffset? LeaseExpiresAt { get; private set; }
     public string? LastError { get; private set; }
-    public void MarkDispatched() { DispatchedAt = DateTimeOffset.UtcNow; LastError = null; }
-    public void RecordFailure(string error) { AttemptCount++; LastAttemptAt = DateTimeOffset.UtcNow; LastError = error[..Math.Min(error.Length, 2000)]; }
+    public bool TryAcquireLease(string owner, DateTimeOffset now, TimeSpan duration)
+    {
+        if (DispatchedAt is not null || string.IsNullOrWhiteSpace(owner) || duration <= TimeSpan.Zero || (LeaseExpiresAt is not null && LeaseExpiresAt > now)) return false;
+        LeaseOwner = owner; LeaseAcquiredAt = now; LeaseExpiresAt = now.Add(duration); return true;
+    }
+    public void MarkDispatched()
+    {
+        DispatchedAt = DateTimeOffset.UtcNow; LastError = null; NextAttemptAt = null; LeaseOwner = null; LeaseAcquiredAt = null; LeaseExpiresAt = null;
+    }
+    public void RecordFailure(string error, DateTimeOffset now, TimeSpan baseDelay, TimeSpan maxDelay)
+    {
+        AttemptCount++; LastAttemptAt = now; LastError = error[..Math.Min(error.Length, 2000)];
+        var seconds = Math.Min(maxDelay.TotalSeconds, baseDelay.TotalSeconds * Math.Pow(2, Math.Min(AttemptCount - 1, 20)));
+        NextAttemptAt = now.AddSeconds(Math.Max(1, seconds)); LeaseOwner = null; LeaseAcquiredAt = null; LeaseExpiresAt = null;
+    }
 }
 
 public sealed class Asset

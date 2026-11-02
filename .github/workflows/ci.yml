@@ -8,6 +8,19 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     services:
+      postgres:
+        image: postgres:17-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: sentinelai
+          POSTGRES_USER: sentinelai
+          POSTGRES_PASSWORD: sentinelai
+        options: >-
+          --health-cmd "pg_isready -U sentinelai -d sentinelai"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
       rabbitmq:
         image: rabbitmq:4-management-alpine
         ports:
@@ -34,6 +47,7 @@ jobs:
           RABBITMQ_TEST_PORT: "5672"
           RABBITMQ_TEST_USER: sentinelai
           RABBITMQ_TEST_PASSWORD: sentinelai
+          SENTINELAI_POSTGRES_CONNECTION: Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=sentinelai
       - run: docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
       - uses: actions/upload-artifact@v4
         if: always()

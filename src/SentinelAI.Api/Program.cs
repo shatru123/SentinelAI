@@ -155,12 +155,12 @@ workers.MapPost("/register", async (HttpContext context, WorkerRegistrationReque
 {
     var principal = ToPrincipal(context);
     var identity = request.Identity.Trim();
-    if (identity.Length is 0 or > 128 || request.Capabilities.Count is 0 or > 32 || !request.Capabilities.Contains("passive-mock", StringComparer.OrdinalIgnoreCase)) return Results.BadRequest("Invalid worker identity or capabilities.");
+    if (identity.Length is 0 or > 128 || request.Capabilities is null || request.Capabilities.Count is 0 or > 32 || request.Capacity is < 1 or > 256 || !request.Capabilities.Contains("passive-mock", StringComparer.OrdinalIgnoreCase)) return Results.BadRequest("Invalid worker identity, capacity or capabilities.");
     if (!identity.Equals(context.User.FindFirstValue("worker_id"), StringComparison.Ordinal)) return Results.Unauthorized();
     var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == identity, cancellationToken);
     if (worker is null) { worker = new WorkerRegistration(principal.TenantId, identity, request.Version.Trim(), request.Capabilities); db.Workers.Add(worker); }
     if (worker.Status == WorkerStatus.Disabled) return Results.Forbid();
-    worker.Heartbeat();
+    worker.Heartbeat(0, request.Capacity);
     await db.SaveChangesAsync(cancellationToken);
     return Results.Ok(ToWorkerResponse(worker));
 });
@@ -170,14 +170,19 @@ workers.MapPost("/heartbeat", async (HttpContext context, WorkerHeartbeatRequest
     if (!request.Identity.Trim().Equals(context.User.FindFirstValue("worker_id"), StringComparison.Ordinal)) return Results.Unauthorized();
     var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == request.Identity.Trim(), cancellationToken);
     if (worker is null) return Results.NotFound();
-    worker.Heartbeat(); await db.SaveChangesAsync(cancellationToken);
+    if (request.ActiveJobs < 0 || request.ActiveJobs > request.Capacity || request.Capacity > 256) return Results.BadRequest("Invalid worker heartbeat capacity.");
+    worker.Heartbeat(request.ActiveJobs, request.Capacity, request.LastJobStartedAt, request.LastJobCompletedAt); await db.SaveChangesAsync(cancellationToken);
     return Results.Ok(ToWorkerResponse(worker));
 });
 
 api.MapGet("/workers", async (HttpContext context, IAppDbContext db, CancellationToken cancellationToken) =>
 {
     var tenantId = ToPrincipal(context).TenantId;
-    var workers = await db.Workers.AsNoTracking().Where(x => x.TenantId == tenantId).OrderBy(x => x.Identity).ToListAsync(cancellationToken);
+    var workers = await db.Workers.Where(x => x.TenantId == tenantId).OrderBy(x => x.Identity).ToListAsync(cancellationToken);
+    var now = DateTimeOffset.UtcNow;
+    var staleAfter = TimeSpan.FromSeconds(Math.Clamp(context.RequestServices.GetRequiredService<IConfiguration>().GetValue("Worker:HeartbeatStaleSeconds", 45), 15, 3600));
+    foreach (var worker in workers) if (worker.IsStale(now, staleAfter)) worker.MarkUnhealthy();
+    if (workers.Any(x => x.Status == WorkerStatus.Unhealthy)) await db.SaveChangesAsync(cancellationToken);
     return Results.Ok(workers.Select(ToWorkerResponse));
 }).RequireAuthorization("Reader");
 
@@ -193,5 +198,5 @@ static PrincipalContext ToPrincipal(HttpContext context)
 }
 
 static (int Page, int PageSize) NormalizePage(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize, 1, 100));
-static WorkerResponse ToWorkerResponse(WorkerRegistration worker) => new(worker.Id, worker.Identity, worker.Version, worker.Status, worker.Capabilities, worker.LastHeartbeatAt);
+static WorkerResponse ToWorkerResponse(WorkerRegistration worker) => new(worker.Id, worker.Identity, worker.Version, worker.Status, worker.Capabilities, worker.LastHeartbeatAt, worker.CurrentActiveJobs, worker.MaximumCapacity, worker.LastJobStartedAt, worker.LastJobCompletedAt);
 public partial class Program { }

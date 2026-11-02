@@ -12,7 +12,9 @@ namespace SentinelAI.Worker;
 
 public sealed class WorkerControlPlaneClient(HttpClient httpClient, WorkerOptions options, ILogger<WorkerControlPlaneClient> logger)
 {
+    private int healthy;
     public bool Enabled => options.ControlPlaneUrl is not null;
+    public bool IsHealthy => !Enabled || Volatile.Read(ref healthy) == 1;
     public async Task RegisterAsync(CancellationToken cancellationToken)
     {
         if (!Enabled) return;
@@ -20,8 +22,9 @@ public sealed class WorkerControlPlaneClient(HttpClient httpClient, WorkerOption
         {
             try
             {
-                using var response = await httpClient.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest(options.Identity, options.Version, options.Capabilities), cancellationToken);
+                using var response = await httpClient.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest(options.Identity, options.Version, options.Capabilities, options.Concurrency), cancellationToken);
                 response.EnsureSuccessStatusCode();
+                Volatile.Write(ref healthy, 1);
                 logger.LogInformation("Worker {Identity} registered with the control plane.", options.Identity);
                 return;
             }
@@ -32,12 +35,14 @@ public sealed class WorkerControlPlaneClient(HttpClient httpClient, WorkerOption
             }
         }
     }
-    public async Task HeartbeatAsync(int activeJobs, CancellationToken cancellationToken)
+    public async Task HeartbeatAsync(int activeJobs, DateTimeOffset? lastJobStartedAt, DateTimeOffset? lastJobCompletedAt, CancellationToken cancellationToken)
     {
         if (!Enabled) return;
-        using var response = await httpClient.PostAsJsonAsync("/api/v1/workers/heartbeat", new WorkerHeartbeatRequest(options.Identity, activeJobs, options.Concurrency), cancellationToken);
+        using var response = await httpClient.PostAsJsonAsync("/api/v1/workers/heartbeat", new WorkerHeartbeatRequest(options.Identity, activeJobs, options.Concurrency, lastJobStartedAt, lastJobCompletedAt), cancellationToken);
         response.EnsureSuccessStatusCode();
+        Volatile.Write(ref healthy, 1);
     }
+    public void MarkUnhealthy() => Volatile.Write(ref healthy, 0);
 }
 
 public sealed class WorkerHeartbeatService(WorkerControlPlaneClient controlPlane, WorkerActivityTracker activity, ILogger<WorkerHeartbeatService> logger) : BackgroundService
@@ -47,8 +52,8 @@ public sealed class WorkerHeartbeatService(WorkerControlPlaneClient controlPlane
         if (!controlPlane.Enabled) { logger.LogInformation("Worker control-plane registration is disabled; broker authentication remains required in production."); return; }
         while (!stoppingToken.IsCancellationRequested)
         {
-            try { await controlPlane.HeartbeatAsync(activity.ActiveJobs, stoppingToken); }
-            catch (Exception exception) when (!stoppingToken.IsCancellationRequested) { logger.LogWarning(exception, "Worker heartbeat failed; retrying after recovery interval."); }
+            try { await controlPlane.HeartbeatAsync(activity.ActiveJobs, activity.LastJobStartedAt, activity.LastJobCompletedAt, stoppingToken); }
+            catch (Exception exception) when (!stoppingToken.IsCancellationRequested) { controlPlane.MarkUnhealthy(); logger.LogWarning(exception, "Worker heartbeat failed; retrying after recovery interval."); }
             await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
         }
     }
@@ -65,10 +70,10 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
     {
         logger.LogInformation("SentinelAI worker {Identity} starting with bounded concurrency {Concurrency}. Active network probing is disabled.", options.Identity, options.Concurrency);
         await controlPlane.RegisterAsync(stoppingToken);
-        await using (var recoveryScope = scopeFactory.CreateAsyncScope())
-            await recoveryScope.ServiceProvider.GetRequiredService<ScanExecutionService>().RecoverInterruptedJobsAsync(stoppingToken, options.TenantId);
-
         if (options.TenantId is null) throw new InvalidOperationException("A worker tenant assignment is required in production.");
+        await using (var recoveryScope = scopeFactory.CreateAsyncScope())
+            await recoveryScope.ServiceProvider.GetRequiredService<ScanExecutionService>().RecoverExpiredLeasesAsync(stoppingToken, options.TenantId);
+
         var cancellationListener = ListenForCancellationsAsync(options.Identity, stoppingToken);
         var gate = new SemaphoreSlim(options.Concurrency, options.Concurrency);
         try
@@ -102,11 +107,16 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
     private async Task ProcessDeliveryAsync(ScanJobDelivery delivery, SemaphoreSlim gate, CancellationToken stoppingToken)
     {
         var tracked = false;
+        CancellationTokenSource? leaseStop = null;
+        Task? leaseRenewal = null;
         try
         {
             if (delivery.TenantId != options.TenantId) { logger.LogError("Worker {Identity} received a cross-tenant job {JobId}; dead-lettering without acknowledgement.", options.Identity, delivery.JobId); await delivery.RejectAsync(false, CancellationToken.None); return; }
+            if (!controlPlane.IsHealthy) { logger.LogWarning("Worker {Identity} is not healthy; retrying job {JobId} without processing it.", options.Identity, delivery.JobId); await delivery.RejectAsync(true, CancellationToken.None); return; }
             var jobToken = cancellationRegistry.Register(delivery.JobId, stoppingToken);
             activity.Increment(); tracked = true;
+            leaseStop = CancellationTokenSource.CreateLinkedTokenSource(jobToken, stoppingToken);
+            leaseRenewal = RenewLeaseLoopAsync(delivery.JobId, options.Identity, leaseStop.Token, stoppingToken);
             await using var scope = scopeFactory.CreateAsyncScope();
             var outcome = await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().ExecuteAsync(delivery.JobId, jobToken, options.TenantId, options.Identity);
             if (outcome is ScanExecutionOutcome.Missing or ScanExecutionOutcome.Unauthorized)
@@ -117,6 +127,8 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
             }
             await delivery.AcknowledgeAsync(stoppingToken);
             if (outcome == ScanExecutionOutcome.Completed) CompletedJobs.Add(1);
+            if (outcome is ScanExecutionOutcome.AlreadyCompleted or ScanExecutionOutcome.AlreadyRunning or ScanExecutionOutcome.ClaimedByAnotherWorker)
+                logger.LogDebug("Duplicate or already-owned job {JobId} acknowledged with outcome {Outcome}.", delivery.JobId, outcome);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -136,10 +148,32 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
         }
         finally
         {
+            if (leaseStop is not null)
+            {
+                leaseStop.Cancel();
+                if (leaseRenewal is not null) try { await leaseRenewal; } catch (OperationCanceledException) { }
+                leaseStop.Dispose();
+            }
             cancellationRegistry.Remove(delivery.JobId);
             if (tracked) activity.Decrement();
             gate.Release();
         }
+    }
+
+    private async Task RenewLeaseLoopAsync(Guid jobId, string workerIdentity, CancellationToken jobToken, CancellationToken stoppingToken)
+    {
+        var interval = TimeSpan.FromSeconds(Math.Clamp(options.LeaseRenewalSeconds, 2, 300));
+        try
+        {
+            while (!jobToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+            {
+                await Task.Delay(interval, jobToken);
+                await using var scope = scopeFactory.CreateAsyncScope();
+                if (!await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().RenewLeaseAsync(jobId, workerIdentity, jobToken)) return;
+            }
+        }
+        catch (OperationCanceledException) when (jobToken.IsCancellationRequested || stoppingToken.IsCancellationRequested) { }
+        catch (Exception exception) { logger.LogWarning(exception, "Lease renewal failed for job {JobId}.", jobId); }
     }
 }
 
@@ -151,6 +185,7 @@ public sealed class WorkerOptions
     public string? ControlPlaneUrl { get; }
     public int Concurrency { get; }
     public int MaxAttempts { get; }
+    public int LeaseRenewalSeconds { get; }
     public Guid? TenantId { get; }
     public WorkerOptions(IConfiguration configuration)
     {
@@ -159,6 +194,7 @@ public sealed class WorkerOptions
         ControlPlaneUrl = string.IsNullOrWhiteSpace(url) ? null : url.TrimEnd('/');
         Concurrency = Math.Clamp(configuration.GetValue("Worker:Concurrency", 2), 1, 32);
         MaxAttempts = Math.Clamp(configuration.GetValue("RabbitMQ:MaxAttempts", 3), 1, 20);
+        LeaseRenewalSeconds = Math.Clamp(configuration.GetValue("Worker:LeaseRenewalSeconds", 15), 2, 300);
         TenantId = Guid.TryParse(configuration["Worker:TenantId"] ?? configuration["Authentication:WorkerTenantId"], out var tenantId) ? tenantId : null;
     }
 }

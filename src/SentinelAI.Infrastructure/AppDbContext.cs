@@ -84,12 +84,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Tenant>().HasIndex(x => x.Name).IsUnique();
         modelBuilder.Entity<TargetScope>().HasIndex(x => new { x.TenantId, x.ExpiresAt });
         modelBuilder.Entity<AgentJob>().HasIndex(x => new { x.TenantId, x.Status, x.CreatedAt });
+        modelBuilder.Entity<AgentJob>().HasIndex(x => new { x.Status, x.LeaseExpiresAt });
         modelBuilder.Entity<Asset>().HasIndex(x => new { x.TenantId, x.Address }).IsUnique();
         modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.Severity });
         modelBuilder.Entity<AuditEvent>().HasIndex(x => new { x.TenantId, x.OccurredAt });
         modelBuilder.Entity<WorkerRegistration>().HasIndex(x => new { x.TenantId, x.Identity }).IsUnique();
         modelBuilder.Entity<PublicTargetAuthorization>().HasIndex(x => new { x.TenantId, x.Target, x.Status });
-        modelBuilder.Entity<OutboxMessage>().HasIndex(x => new { x.DispatchedAt, x.CreatedAt });
+        modelBuilder.Entity<OutboxMessage>().HasIndex(x => new { x.DispatchedAt, x.NextAttemptAt, x.LeaseExpiresAt, x.CreatedAt });
     }
 
     private static void ConfigureTenant(PropertyBuilder<Guid> property) => property.IsRequired();

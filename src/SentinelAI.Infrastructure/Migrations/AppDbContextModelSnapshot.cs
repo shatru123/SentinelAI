@@ -111,6 +111,18 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<string>("FailureReason")
                         .HasColumnType("text");
 
+                    b.Property<DateTimeOffset?>("LastLeaseHeartbeatAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LeaseAcquiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LeaseOwnerWorkerId")
+                        .HasColumnType("text");
+
                     b.Property<string>("OperationProfile")
                         .IsRequired()
                         .HasColumnType("text");
@@ -136,6 +148,8 @@ namespace SentinelAI.Infrastructure.Migrations
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Status", "LeaseExpiresAt");
 
                     b.HasIndex("TenantId", "Status", "CreatedAt");
 
@@ -358,9 +372,21 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<string>("LastError")
                         .HasColumnType("text");
 
+                    b.Property<DateTimeOffset?>("LeaseAcquiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasColumnType("text");
+
                     b.Property<string>("MessageType")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Payload")
                         .IsRequired()
@@ -371,7 +397,7 @@ namespace SentinelAI.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DispatchedAt", "CreatedAt");
+                    b.HasIndex("DispatchedAt", "NextAttemptAt", "LeaseExpiresAt", "CreatedAt");
 
                     b.ToTable("OutboxMessages");
                 });
@@ -456,6 +482,9 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
+
+                    b.Property<bool>("AllowSubdomains")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("ApprovedOperationProfiles")
                         .IsRequired()
@@ -578,6 +607,9 @@ namespace SentinelAI.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<int>("CurrentActiveJobs")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Identity")
                         .IsRequired()
                         .HasColumnType("text");
@@ -587,6 +619,15 @@ namespace SentinelAI.Infrastructure.Migrations
 
                     b.Property<DateTimeOffset?>("LastJobAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastJobCompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastJobStartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("MaximumCapacity")
+                        .HasColumnType("integer");
 
                     b.Property<DateTimeOffset>("RegisteredAt")
                         .HasColumnType("timestamp with time zone");

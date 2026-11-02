@@ -1,0 +1,12 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {"type":"timeseries","title":"Job throughput","gridPos":{"h":8,"w":12,"x":0,"y":0},"targets":[{"expr":"sum(rate(sentinelai_jobs_completed_total[5m]))","legendFormat":"completed/s"}]},
+    {"type":"timeseries","title":"Job failures","gridPos":{"h":8,"w":12,"x":12,"y":0},"targets":[{"expr":"sum(rate(sentinelai_jobs_failed_total[5m]))","legendFormat":"failed/s"}]}
+  ],
+  "schemaVersion": 39,
+  "title": "SentinelAI Overview",
+  "uid": "sentinelai-overview",
+  "version": 1
+}

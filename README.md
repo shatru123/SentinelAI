@@ -12,7 +12,7 @@ SentinelAI is designed to discover and inventory explicitly authorized assets, e
 |---|---|
 | Repository foundation and architecture | Complete |
 | Phase 1 solution foundation | Complete |
-| Mock worker lifecycle | Complete |
+| Phase 1.1 broker-backed worker and security remediation | Complete |
 | Authorized network discovery | Planned |
 | Vulnerability correlation | Planned |
 | OpenAI, Claude and Ollama providers | Planned |
@@ -91,7 +91,7 @@ Read [SECURITY.md](SECURITY.md) before operating the platform.
 
 ## Development
 
-The Phase 1 control plane defaults to an EF Core in-memory database in Development, so no cloud service is required for the API smoke path. The worker and API use the bounded mock adapter; active network probing is disabled.
+Development defaults to an EF Core in-memory database and an in-memory queue only when explicitly configured in `appsettings.Development.json`; the production and Compose paths use PostgreSQL, RabbitMQ, and the standalone worker. The only execution adapter is the bounded passive mock adapter; active network probing is disabled.
 
 ```bash
 dotnet restore SentinelAI.slnx
@@ -109,6 +109,8 @@ docker compose --env-file .env -f deploy/docker/docker-compose.yml up --build
 ```
 
 Compose applies the checked-in EF migration on API startup when `Database__ApplyMigrations=true`. See [development](docs/development.md) and [deployment](docs/deployment.md) for boundaries and limitations.
+
+The Compose API publishes durable persistent jobs to `sentinelai.scan.jobs`; `SentinelAI.Worker` consumes them with manual acknowledgements, bounded concurrency, retry/dead-letter handling, cancellation signals, and restart recovery. Worker registration and heartbeats are persisted in PostgreSQL and shown through the authenticated API. Set `WORKER_CONTROL_PLANE_TOKEN` and `WORKER_TENANT_ID` in `.env` before a shared deployment.
 
 ## Contributing
 

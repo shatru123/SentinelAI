@@ -20,6 +20,7 @@ public interface IAppDbContext
     DbSet<AuditEvent> AuditEvents { get; }
     DbSet<AIAnalysis> AIAnalyses { get; }
     DbSet<Notification> Notifications { get; }
+    DbSet<WorkerRegistration> Workers { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }
 
@@ -33,8 +34,14 @@ public sealed record PrincipalContext(Guid TenantId, Guid UserId, string Subject
 public interface IScanJobQueue
 {
     ValueTask EnqueueAsync(Guid jobId, CancellationToken cancellationToken = default);
-    IAsyncEnumerable<Guid> ReadAllAsync(CancellationToken cancellationToken = default);
+    IAsyncEnumerable<ScanJobDelivery> ReadAllAsync(CancellationToken cancellationToken = default);
+    ValueTask RequestCancellationAsync(Guid jobId, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<Guid> ReadCancellationsAsync(CancellationToken cancellationToken = default);
 }
+
+public sealed record ScanJobDelivery(Guid JobId, int Attempt,
+    Func<CancellationToken, ValueTask> AcknowledgeAsync,
+    Func<bool, CancellationToken, ValueTask> RejectAsync);
 
 public interface IScopeService
 {
@@ -56,7 +63,9 @@ public sealed class ScopeService(IAppDbContext db, ITargetScopeValidator validat
         if (!principal.CanOperate) throw new UnauthorizedAccessException("The current role cannot create scopes.");
         var scope = new TargetScope(principal.TenantId, request.Name.Trim(), principal.UserId, request.ExpiresAt);
         scope.Configure(request.Targets, request.Exclusions ?? [], request.ApprovedOperationProfiles, request.RequestsPerMinute,
-            request.MaxExecutionSeconds, request.AuthorizationEvidence.Trim(), request.PublicTargetOwnershipVerified);
+            request.MaxExecutionSeconds, request.AuthorizationEvidence.Trim(), false);
+        scope.ConfigureVerifications((request.PublicTargetAuthorizations ?? []).Select(x =>
+            new PublicTargetVerification(x.Target, x.Evidence, x.Verifier, x.Method, x.VerifiedAt)).ToArray());
         var validation = validator.ValidateDefinition(scope, principal.TenantId, DateTimeOffset.UtcNow);
         if (!validation.IsValid) throw new ScopeValidationException(validation.Errors);
         db.TargetScopes.Add(scope);
@@ -111,6 +120,7 @@ public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validato
         job.Cancel();
         db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "scan.cancelled", nameof(AgentJob), job.Id, "Cancellation requested by operator."));
         await db.SaveChangesAsync(cancellationToken);
+        await queue.RequestCancellationAsync(job.Id, cancellationToken);
         return true;
     }
 

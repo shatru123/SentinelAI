@@ -9,7 +9,16 @@ services:
       ConnectionStrings__SentinelAI: Host=postgres;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       Database__Provider: Postgres
       Database__ApplyMigrations: "true"
-      Authentication__UseDevelopmentHeaders: "false"
+      Messaging__Mode: RabbitMq
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__Username: ${RABBITMQ_USER}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD}
+      Authentication__WorkerToken: ${WORKER_CONTROL_PLANE_TOKEN:-local-worker-token-change-me}
+      Authentication__WorkerTenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # Local Compose uses an explicit, server-configured development identity for the dashboard.
+      # Replace this with OIDC/JWT configuration before any shared deployment.
+      Authentication__UseDevelopmentHeaders: "true"
       AI__DefaultProvider: ${AI_PROVIDER:-ollama}
       AI__OpenAI__ApiKey: ${OPENAI_API_KEY:-}
       AI__Anthropic__ApiKey: ${ANTHROPIC_API_KEY:-}
@@ -36,6 +45,12 @@ services:
     environment:
       ASPNETCORE_URLS: http://+:8080
       Api__BaseUrl: http://api:8080
+      Api__UseDevelopmentHeaders: "true"
+      Dashboard__TenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
+      Dashboard__UserId: 00000000-0000-0000-0000-000000000002
+      Dashboard__UserName: compose-operator
+      Dashboard__Role: SecurityAnalyst
+      Web__EnableHttpsRedirection: "false"
     ports: ["127.0.0.1:5081:8080"]
     depends_on: { api: { condition: service_healthy } }
     networks:
@@ -50,7 +65,18 @@ services:
       DOTNET_ENVIRONMENT: Production
       Database__Provider: Postgres
       ConnectionStrings__SentinelAI: Host=postgres;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
-    depends_on: { postgres: { condition: service_healthy } }
+      Messaging__Mode: RabbitMq
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__Username: ${RABBITMQ_USER}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD}
+      Worker__ControlPlaneUrl: http://api:8080
+      Worker__ControlPlaneToken: ${WORKER_CONTROL_PLANE_TOKEN:-local-worker-token-change-me}
+      Worker__TenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      api: { condition: service_started }
     networks:
       control:
         aliases: [worker]
@@ -90,19 +116,40 @@ services:
     image: otel/opentelemetry-collector-contrib:0.141.0
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes: [../observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro]
+    depends_on: [tempo]
+    networks: [control]
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    volumes:
+      - ../observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - sentinelai-prometheus:/prometheus
+    networks: [control]
+
+  tempo:
+    image: grafana/tempo:2.8.2
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ../observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - sentinelai-tempo:/var/tempo
     networks: [control]
 
   grafana:
     image: grafana/grafana:12.2.0
     ports: ["127.0.0.1:3000:3000"]
-    volumes: [sentinelai-grafana:/var/lib/grafana]
-    depends_on: [otel-collector]
+    depends_on: [otel-collector, prometheus, tempo]
+    volumes:
+      - sentinelai-grafana:/var/lib/grafana
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks: [control]
 
 volumes:
   sentinelai-postgres:
   sentinelai-rabbitmq:
   sentinelai-grafana:
+  sentinelai-prometheus:
+  sentinelai-tempo:
 
 networks:
   control:

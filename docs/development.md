@@ -4,7 +4,7 @@
 
 The API uses development header authentication only when the environment is Development (or `Authentication:UseDevelopmentHeaders` is explicitly enabled). Production expects an OpenID Connect-compatible JWT authority. Every operator request carries a tenant and user claim, and application queries filter by tenant.
 
-The Phase 1 worker lifecycle uses an in-process bounded queue and a deterministic mock adapter. A job is persisted as `Queued`, processed as `Running`, and completed with an audit event and a passive asset record. No active network probing is enabled.
+The production worker lifecycle uses RabbitMQ. The API persists a job before publishing a durable message; the standalone worker consumes with manual acknowledgement, bounded concurrency, retry and dead-letter handling, per-job cancellation, maximum execution duration, idempotent status checks, and restart recovery. The in-memory queue is available only when `Messaging:Mode=InMemory`, and an in-process processor is disabled unless `Worker:RunInProcess=true`.
 
 ## Database
 
@@ -12,7 +12,9 @@ Development defaults to EF Core InMemory. Production uses PostgreSQL and the mig
 
 ## Safety boundary
 
-`SentinelAI.Security.Policy` is deterministic and independent of AI providers. It validates authorization evidence, expiration, target shape, private/public target rules, operation profiles, exclusions and execution-time target membership. AI provider adapters are advisory placeholders until the provider gateway milestone is implemented.
+`SentinelAI.Security.Policy` is deterministic and independent of AI providers. Public targets require a persisted verification record containing evidence, verifier, method, and timestamp; the legacy request Boolean is ignored. The policy validates strict IPv4/IPv6 and CIDR syntax, special-purpose ranges, IPv6 ULA, domain boundaries, CIDR exclusions, execution-time DNS results, DNS rebinding, and web redirects. AI remains advisory and cannot add targets or bypass policy.
+
+The Blazor dashboard uses a server-side cookie/OIDC-compatible authentication model. Development login is generated from server configuration and the authenticated principal is translated into API headers; production forwards a saved OIDC access token from the server-side authentication context. No browser local storage or user-selected tenant header is trusted.
 
 ## Useful commands
 
@@ -22,3 +24,5 @@ dotnet build SentinelAI.slnx
 dotnet test SentinelAI.slnx
 docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
 ```
+
+To exercise the broker path, start Compose and inspect `docker compose ... logs worker api`; the worker should register with the control plane and the RabbitMQ queues should exist. Grafana is at `http://127.0.0.1:3000` with Prometheus and Tempo provisioned from `deploy/observability`.

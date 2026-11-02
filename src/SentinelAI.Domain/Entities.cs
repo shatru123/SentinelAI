@@ -12,6 +12,8 @@ public enum FindingSeverity { Informational, Low, Medium, High, Critical }
 public enum AgentExecutionStatus { Pending, Running, Completed, Failed, Cancelled }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum UserRole { Admin, SecurityAnalyst, Viewer, Worker }
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum WorkerStatus { Registered, Healthy, Unhealthy, Disabled }
 
 public sealed class Tenant
 {
@@ -51,6 +53,7 @@ public sealed class TargetScope
     public int MaxExecutionSeconds { get; private set; } = 300;
     public string AuthorizationEvidence { get; private set; } = string.Empty;
     public bool PublicTargetOwnershipVerified { get; private set; }
+    public List<PublicTargetVerification> PublicTargetVerifications { get; private set; } = [];
     public DateTimeOffset ExpiresAt { get; private set; }
     public Guid CreatedBy { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
@@ -65,9 +68,17 @@ public sealed class TargetScope
         RequestsPerMinute = requestsPerMinute; MaxExecutionSeconds = maxExecutionSeconds;
         AuthorizationEvidence = authorizationEvidence; PublicTargetOwnershipVerified = publicTargetOwnershipVerified;
     }
+
+    public void ConfigureVerifications(IReadOnlyCollection<PublicTargetVerification> verifications)
+    {
+        PublicTargetVerifications = verifications.ToList();
+        // Kept for migration/source compatibility only. The policy engine never trusts this flag.
+        PublicTargetOwnershipVerified = false;
+    }
 }
 
 public sealed record TargetDefinition(TargetKind Kind, string Value);
+public sealed record PublicTargetVerification(string Target, string Evidence, string Verifier, string Method, DateTimeOffset VerifiedAt);
 
 public sealed class ScanPolicy
 {
@@ -99,10 +110,12 @@ public sealed class AgentJob
     public string? FailureReason { get; private set; }
     public byte[] RowVersion { get; private set; } = Guid.NewGuid().ToByteArray();
     public void Start() { if (Status != ScanJobStatus.Queued) throw new InvalidOperationException("Only queued jobs can start."); Status = ScanJobStatus.Running; StartedAt = DateTimeOffset.UtcNow; }
+    public bool TryStart() { if (Status != ScanJobStatus.Queued) return false; Start(); return true; }
     public void Complete() { if (Status != ScanJobStatus.Running) throw new InvalidOperationException("Only running jobs can complete."); Status = ScanJobStatus.Completed; CompletedAt = DateTimeOffset.UtcNow; }
-    public void Fail(string reason) { Status = ScanJobStatus.Failed; FailureReason = reason; CompletedAt = DateTimeOffset.UtcNow; }
-    public void Cancel() { if (Status is ScanJobStatus.Completed or ScanJobStatus.Failed or ScanJobStatus.Cancelled) return; Status = ScanJobStatus.Cancelled; CompletedAt = DateTimeOffset.UtcNow; }
+    public void Fail(string reason) { if (Status is ScanJobStatus.Completed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return; Status = ScanJobStatus.Failed; FailureReason = reason; CompletedAt = DateTimeOffset.UtcNow; }
+    public void Cancel() { if (Status is ScanJobStatus.Completed or ScanJobStatus.Failed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return; Status = ScanJobStatus.Cancelled; FailureReason = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; }
     public void Expire() { if (Status is ScanJobStatus.Queued or ScanJobStatus.Running) { Status = ScanJobStatus.Expired; CompletedAt = DateTimeOffset.UtcNow; } }
+    public void RecoverInterrupted() { if (Status == ScanJobStatus.Running) { Status = ScanJobStatus.Queued; StartedAt = null; FailureReason = "Recovered after worker interruption."; } }
 }
 
 public sealed class AgentExecution
@@ -117,10 +130,33 @@ public sealed class AgentExecution
     public DateTimeOffset? StartedAt { get; private set; }
     public DateTimeOffset? CompletedAt { get; private set; }
     public string? Error { get; private set; }
-    public void Start() { Status = AgentExecutionStatus.Running; StartedAt = DateTimeOffset.UtcNow; }
-    public void Complete() { Status = AgentExecutionStatus.Completed; CompletedAt = DateTimeOffset.UtcNow; }
-    public void Fail(string error) { Status = AgentExecutionStatus.Failed; Error = error; CompletedAt = DateTimeOffset.UtcNow; }
-    public void Cancel() { Status = AgentExecutionStatus.Cancelled; CompletedAt = DateTimeOffset.UtcNow; }
+    public void Start() { if (Status != AgentExecutionStatus.Pending) throw new InvalidOperationException("Only pending executions can start."); Status = AgentExecutionStatus.Running; StartedAt = DateTimeOffset.UtcNow; }
+    public void Complete() { if (Status != AgentExecutionStatus.Running) throw new InvalidOperationException("Only running executions can complete."); Status = AgentExecutionStatus.Completed; CompletedAt = DateTimeOffset.UtcNow; }
+    public void Fail(string error) { if (Status is AgentExecutionStatus.Completed or AgentExecutionStatus.Cancelled) return; Status = AgentExecutionStatus.Failed; Error = error; CompletedAt = DateTimeOffset.UtcNow; }
+    public void Cancel() { if (Status is AgentExecutionStatus.Completed or AgentExecutionStatus.Cancelled) return; Status = AgentExecutionStatus.Cancelled; Error = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; }
+}
+
+public sealed class WorkerRegistration
+{
+    private WorkerRegistration() { }
+    public WorkerRegistration(Guid tenantId, string identity, string version, IReadOnlyCollection<string> capabilities)
+    {
+        Id = Guid.NewGuid(); TenantId = tenantId; Identity = identity; Version = version;
+        Capabilities = capabilities.ToList(); Status = WorkerStatus.Registered; RegisteredAt = DateTimeOffset.UtcNow;
+        LastHeartbeatAt = RegisteredAt;
+    }
+    public Guid Id { get; private set; }
+    public Guid TenantId { get; private set; }
+    public string Identity { get; private set; } = string.Empty;
+    public string Version { get; private set; } = string.Empty;
+    public List<string> Capabilities { get; private set; } = [];
+    public WorkerStatus Status { get; private set; }
+    public DateTimeOffset RegisteredAt { get; private set; }
+    public DateTimeOffset LastHeartbeatAt { get; private set; }
+    public DateTimeOffset? LastJobAt { get; private set; }
+    public void Heartbeat() { LastHeartbeatAt = DateTimeOffset.UtcNow; Status = WorkerStatus.Healthy; }
+    public void MarkJob() { LastJobAt = DateTimeOffset.UtcNow; Heartbeat(); }
+    public void MarkUnhealthy() { Status = WorkerStatus.Unhealthy; }
 }
 
 public sealed class Asset

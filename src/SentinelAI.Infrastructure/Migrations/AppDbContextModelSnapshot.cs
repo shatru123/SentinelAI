@@ -17,7 +17,7 @@ namespace SentinelAI.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.11")
+                .HasAnnotation("ProductVersion", "10.0.4")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -392,6 +392,10 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<bool>("PublicTargetOwnershipVerified")
                         .HasColumnType("boolean");
 
+                    b.Property<string>("PublicTargetVerifications")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<int>("RequestsPerMinute")
                         .HasColumnType("integer");
 
@@ -466,6 +470,47 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Users");
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.WorkerRegistration", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Capabilities")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Identity")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("LastHeartbeatAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastJobAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("RegisteredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Identity")
+                        .IsUnique();
+
+                    b.ToTable("Workers");
                 });
 #pragma warning restore 612, 618
         }

@@ -1,4 +1,5 @@
 @page "/settings"
+@attribute [Authorize]
 <PageTitle>Settings · SentinelAI</PageTitle>
 <div class="page-heading"><div><p class="eyebrow">Control plane / configuration</p><h1>Settings</h1><p class="muted">Provider credentials belong in runtime secrets, never in source control.</p></div></div>
 <section class="panel"><div class="panel-heading"><h2>AI providers</h2><span class="status-pill healthy">ADVISORY ONLY</span></div><p class="muted">OpenAI, Anthropic Claude, and local Ollama adapters are represented behind a common interface. Live provider calls are a later milestone.</p></section>

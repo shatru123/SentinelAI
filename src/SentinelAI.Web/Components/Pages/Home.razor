@@ -1,10 +1,11 @@
 @page "/"
+@attribute [Authorize]
 @using System.Net.Http.Json
 @using SentinelAI.Contracts
 @inject IHttpClientFactory HttpClientFactory
 
 <PageTitle>Overview · SentinelAI</PageTitle>
-<div class="page-heading"><div><p class="eyebrow">Security operations / overview</p><h1>Good morning, operator.</h1><p class="muted">Your defensive posture at a glance.</p></div><button class="primary-button">+ New assessment</button></div>
+<div class="page-heading"><div><p class="eyebrow">Security operations / overview</p><h1>Good morning, operator.</h1><p class="muted">Your defensive posture at a glance.</p></div><AuthorizeView Roles="Admin,SecurityAnalyst"><Authorized><a class="primary-button" href="scans">+ New assessment</a></Authorized></AuthorizeView></div>
 <div class="metric-grid">
     <div class="metric-card"><span>Assets discovered</span><strong>@AssetCount</strong><small>Phase 1 inventory</small></div>
     <div class="metric-card"><span>Online assets</span><strong>—</strong><small>Mock adapter only</small></div>

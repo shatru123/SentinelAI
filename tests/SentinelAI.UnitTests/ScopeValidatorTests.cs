@@ -44,6 +44,50 @@ public sealed class ScopeValidatorTests
         Assert.Contains(result.Errors, error => error.Contains("outside", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void IPv6_unique_local_scope_is_accepted()
+    {
+        var scope = CreateScope("fd12:3456::/48", DateTimeOffset.UtcNow.AddHours(1));
+        var result = validator.ValidateDefinition(scope, tenantId, DateTimeOffset.UtcNow);
+        Assert.True(result.IsValid);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("169.254.1.1")]
+    [InlineData("::1")]
+    [InlineData("fe80::1")]
+    [InlineData("ff02::1")]
+    [InlineData("2001:db8::1")]
+    public void Special_purpose_addresses_are_rejected(string target)
+    {
+        var scope = CreateScope(target, DateTimeOffset.UtcNow.AddHours(1));
+        var result = validator.ValidateDefinition(scope, tenantId, DateTimeOffset.UtcNow);
+        Assert.False(result.IsValid);
+    }
+
+    [Fact]
+    public async Task Cidr_exclusion_matches_an_address_inside_the_range()
+    {
+        var scope = CreateScope("10.20.0.0/16", DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.20.0.0/16")], ["10.20.10.0/24"], ["mock-passive"], 30, 300, "ticket-123", false);
+        var result = await validator.ValidateExecutionAsync(scope, tenantId, "10.20.10.4", "mock-passive");
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, error => error.Contains("excluded", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Domain_matching_is_boundary_aware_and_dns_rebinding_is_rejected()
+    {
+        var scope = new TargetScope(tenantId, "public-web", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://example.com")], [], ["web-passive"], 30, 300, "ticket-123", false);
+        scope.ConfigureVerifications([new PublicTargetVerification("https://example.com", "ticket-123", "security", "registry", DateTimeOffset.UtcNow)]);
+        var boundary = await new TargetScopeValidator(new RebindingResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://notexample.com", "web-passive");
+        var rebinding = await new TargetScopeValidator(new RebindingResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com", "web-passive");
+        Assert.False(boundary.IsValid);
+        Assert.False(rebinding.IsValid);
+    }
+
     private TargetScope CreateScope(string target, DateTimeOffset expiresAt)
     {
         var scope = new TargetScope(tenantId, "test-scope", Guid.NewGuid(), expiresAt);
@@ -54,5 +98,10 @@ public sealed class ScopeValidatorTests
     private sealed class StubResolver : IHostAddressResolver
     {
         public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<IPAddress>>([IPAddress.Parse("10.20.1.2")]);
+    }
+
+    private sealed class RebindingResolver : IHostAddressResolver
+    {
+        public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<IPAddress>>([IPAddress.Parse("10.0.0.4")]);
     }
 }

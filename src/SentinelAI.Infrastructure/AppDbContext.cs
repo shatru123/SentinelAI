@@ -22,6 +22,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<AIAnalysis> AIAnalyses => Set<AIAnalysis>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<WorkerRegistration> Workers => Set<WorkerRegistration>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -39,6 +40,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AuditEvent>().HasKey(x => x.Id);
         modelBuilder.Entity<AIAnalysis>().HasKey(x => x.Id);
         modelBuilder.Entity<Notification>().HasKey(x => x.Id);
+        modelBuilder.Entity<WorkerRegistration>().HasKey(x => x.Id);
 
         ConfigureTenant(modelBuilder.Entity<User>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<TargetScope>().Property(x => x.TenantId));
@@ -51,6 +53,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<AuditEvent>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<AIAnalysis>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<Notification>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<WorkerRegistration>().Property(x => x.TenantId));
 
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var targetComparer = new ValueComparer<List<TargetDefinition>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList());
@@ -59,6 +62,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         scope.Property(x => x.Targets).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<TargetDefinition>>(v, jsonOptions) ?? new List<TargetDefinition>()).Metadata.SetValueComparer(targetComparer);
         scope.Property(x => x.Exclusions).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
         scope.Property(x => x.ApprovedOperationProfiles).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
+        scope.Property(x => x.PublicTargetVerifications).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<PublicTargetVerification>>(v, jsonOptions) ?? new List<PublicTargetVerification>()).Metadata.SetValueComparer(new ValueComparer<List<PublicTargetVerification>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList()));
+        modelBuilder.Entity<WorkerRegistration>().Property(x => x.Capabilities).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
 
         modelBuilder.Entity<Tenant>().Property<byte[]>("RowVersion").IsConcurrencyToken();
         modelBuilder.Entity<TargetScope>().Property<byte[]>("RowVersion").IsConcurrencyToken();
@@ -69,6 +74,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Asset>().HasIndex(x => new { x.TenantId, x.Address }).IsUnique();
         modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.Severity });
         modelBuilder.Entity<AuditEvent>().HasIndex(x => new { x.TenantId, x.OccurredAt });
+        modelBuilder.Entity<WorkerRegistration>().HasIndex(x => new { x.TenantId, x.Identity }).IsUnique();
     }
 
     private static void ConfigureTenant(PropertyBuilder<Guid> property) => property.IsRequired();

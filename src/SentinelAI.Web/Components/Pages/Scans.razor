@@ -1,4 +1,47 @@
 @page "/scans"
+@attribute [Authorize]
+@using System.Net.Http.Json
+@using SentinelAI.Contracts
+@using SentinelAI.Domain
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Navigation
 <PageTitle>Scans · SentinelAI</PageTitle>
-<div class="page-heading"><div><p class="eyebrow">Assessments / controlled execution</p><h1>Security scans</h1><p class="muted">Every assessment is bound to a validated authorization scope.</p></div><button class="primary-button">+ New assessment</button></div>
-<section class="panel"><div class="empty-state"><span class="empty-icon">◎</span><strong>No assessments yet</strong><p>Phase 1 is ready for authorized mock assessments. Active network probing remains disabled.</p></div></section>
+<div class="page-heading"><div><p class="eyebrow">Assessments / controlled execution</p><h1>Security scans</h1><p class="muted">Every assessment is bound to a validated authorization scope.</p></div></div>
+<AuthorizeView Roles="Admin,SecurityAnalyst"><Authorized>
+<section class="panel assessment-form"><div class="panel-heading"><div><p class="eyebrow">Authorized workflow</p><h2>New passive assessment</h2></div><span class="status-pill healthy">NO ACTIVE PROBING</span></div>
+<div class="form-grid"><label>Assessment name<input @bind="name" maxlength="80" /></label><label>Private target or CIDR<input @bind="target" maxlength="253" /></label><label>Operation profile<select @bind="profile"><option value="mock-passive">mock-passive</option></select></label><label>Expires in hours<input type="number" min="1" max="720" @bind="expiryHours" /></label></div>
+<label>Authorization evidence<input @bind="evidence" maxlength="200" /></label><button class="primary-button" @onclick="CreateAssessment" disabled="@submitting">@(submitting ? "Submitting…" : "+ Create authorized assessment")</button>
+@if (!string.IsNullOrWhiteSpace(message)) { <p class="@(failed ? "error-text" : "muted")">@message</p> }</section>
+</Authorized><NotAuthorized><section class="panel"><p class="muted">Your role can view assessments but cannot create them.</p></section></NotAuthorized></AuthorizeView>
+<section class="panel"><div class="empty-state"><span class="empty-icon">◎</span><strong>Passive assessment queue</strong><p>Jobs are delivered to the standalone worker through RabbitMQ. Active network probing remains disabled.</p></div></section>
+
+@code {
+    private string name = "private-lab-assessment";
+    private string target = "10.20.0.0/16";
+    private string profile = "mock-passive";
+    private string evidence = "operator-approved-lab";
+    private int expiryHours = 24;
+    private bool submitting;
+    private bool failed;
+    private string? message;
+
+    private async Task CreateAssessment()
+    {
+        submitting = true; failed = false; message = null;
+        try
+        {
+            var client = HttpClientFactory.CreateClient("SentinelApi");
+            var scopeRequest = new CreateScopeRequest(name, [new TargetDefinition(TargetKind.Network, target)], [], [profile], 30, 300, evidence, DateTimeOffset.UtcNow.AddHours(Math.Clamp(expiryHours, 1, 720)));
+            using var scopeResponse = await client.PostAsJsonAsync("/api/v1/scopes", scopeRequest);
+            if (!scopeResponse.IsSuccessStatusCode) { failed = true; message = $"Scope was rejected ({(int)scopeResponse.StatusCode}). Check authorization evidence and target boundaries."; return; }
+            var scope = await scopeResponse.Content.ReadFromJsonAsync<ScopeResponse>() ?? throw new InvalidOperationException("Scope response was empty.");
+            using var scanResponse = await client.PostAsJsonAsync("/api/v1/scans", new CreateScanRequest(scope.Id, profile));
+            if (!scanResponse.IsSuccessStatusCode) { failed = true; message = $"Scope created, but scan submission failed ({(int)scanResponse.StatusCode})."; return; }
+            var scan = await scanResponse.Content.ReadFromJsonAsync<ScanResponse>();
+            message = scan is null ? "Assessment submitted." : $"Assessment {scan.Id} submitted to the worker queue.";
+        }
+        catch (HttpRequestException) { failed = true; message = "The control plane is unavailable. Start the API and try again."; }
+        catch (Exception exception) { failed = true; message = exception.Message; }
+        finally { submitting = false; }
+    }
+}

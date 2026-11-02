@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
+using OpenTelemetry.Exporter;
 using SentinelAI.Application;
 using SentinelAI.Contracts;
 using SentinelAI.Domain;
@@ -18,18 +19,33 @@ builder.Services.AddOpenApi();
 builder.Services.AddSentinelInfrastructure(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IScopeService, ScopeService>();
 builder.Services.AddScoped<IScanService, ScanService>();
-builder.Services.AddOpenTelemetry().WithTracing(tracing => tracing.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation())
-    .WithMetrics(metrics => metrics.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation());
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddSource("SentinelAI.RabbitMq", "SentinelAI.Worker").AddOtlpExporter())
+    .WithMetrics(metrics => metrics.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddMeter("SentinelAI.Jobs").AddOtlpExporter());
 
 if (builder.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Authentication:UseDevelopmentHeaders"))
-    builder.Services.AddAuthentication("DevelopmentHeaders").AddScheme<AuthenticationSchemeOptions, SentinelAI.Api.DevelopmentAuthenticationHandler>("DevelopmentHeaders", _ => { });
+    builder.Services.AddAuthentication(options => { options.DefaultAuthenticateScheme = "DevelopmentSmart"; options.DefaultChallengeScheme = "DevelopmentSmart"; })
+        .AddPolicyScheme("DevelopmentSmart", null, options => options.ForwardDefaultSelector = context =>
+            context.Request.Headers.Authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(builder.Configuration["Authentication:WorkerToken"]) &&
+            CryptographicTokenMatch(context.Request.Headers.Authorization.ToString()[7..], builder.Configuration["Authentication:WorkerToken"]!)
+                ? "WorkerToken" : "DevelopmentHeaders")
+        .AddScheme<AuthenticationSchemeOptions, SentinelAI.Api.DevelopmentAuthenticationHandler>("DevelopmentHeaders", _ => { })
+        .AddScheme<AuthenticationSchemeOptions, SentinelAI.Api.WorkerAuthenticationHandler>("WorkerToken", _ => { });
 else
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
-    {
-        options.Authority = builder.Configuration["Authentication:Authority"];
-        options.Audience = builder.Configuration["Authentication:Audience"] ?? "sentinelai-api";
-        options.RequireHttpsMetadata = true;
-    });
+    builder.Services.AddAuthentication(options => { options.DefaultAuthenticateScheme = "SmartBearer"; options.DefaultChallengeScheme = "SmartBearer"; })
+        .AddPolicyScheme("SmartBearer", null, options => options.ForwardDefaultSelector = context =>
+            context.Request.Headers.Authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(builder.Configuration["Authentication:WorkerToken"]) &&
+            CryptographicTokenMatch(context.Request.Headers.Authorization.ToString()[7..], builder.Configuration["Authentication:WorkerToken"]!)
+                ? "WorkerToken" : JwtBearerDefaults.AuthenticationScheme)
+        .AddScheme<AuthenticationSchemeOptions, SentinelAI.Api.WorkerAuthenticationHandler>("WorkerToken", _ => { })
+        .AddJwtBearer(options =>
+        {
+            options.Authority = builder.Configuration["Authentication:Authority"];
+            options.Audience = builder.Configuration["Authentication:Audience"] ?? "sentinelai-api";
+            options.RequireHttpsMetadata = true;
+        });
 
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Operator", policy => policy.RequireAuthenticatedUser().RequireRole(nameof(UserRole.Admin), nameof(UserRole.SecurityAnalyst)))
@@ -120,6 +136,34 @@ api.MapGet("/monitoring/events", async (HttpContext context, IAppDbContext db, C
     return Results.Ok(await db.AuditEvents.AsNoTracking().Where(x => x.TenantId == tenantId).OrderByDescending(x => x.OccurredAt).Take(100).ToListAsync(cancellationToken));
 }).RequireAuthorization("Reader");
 
+var workers = app.MapGroup("/api/v1/workers").RequireAuthorization("Worker");
+workers.MapPost("/register", async (HttpContext context, WorkerRegistrationRequest request, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var identity = request.Identity.Trim();
+    if (identity.Length is 0 or > 128 || request.Capabilities.Count > 32) return Results.BadRequest("Invalid worker identity or capabilities.");
+    var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == identity, cancellationToken);
+    if (worker is null) { worker = new WorkerRegistration(principal.TenantId, identity, request.Version.Trim(), request.Capabilities); db.Workers.Add(worker); }
+    worker.Heartbeat();
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(ToWorkerResponse(worker));
+});
+workers.MapPost("/heartbeat", async (HttpContext context, WorkerHeartbeatRequest request, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == request.Identity.Trim(), cancellationToken);
+    if (worker is null) return Results.NotFound();
+    worker.Heartbeat(); await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(ToWorkerResponse(worker));
+});
+
+api.MapGet("/workers", async (HttpContext context, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var workers = await db.Workers.AsNoTracking().Where(x => x.TenantId == tenantId).OrderBy(x => x.Identity).ToListAsync(cancellationToken);
+    return Results.Ok(workers.Select(ToWorkerResponse));
+}).RequireAuthorization("Reader");
+
 app.Run();
 
 static PrincipalContext ToPrincipal(HttpContext context)
@@ -132,5 +176,7 @@ static PrincipalContext ToPrincipal(HttpContext context)
 }
 
 static (int Page, int PageSize) NormalizePage(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize, 1, 100));
+static WorkerResponse ToWorkerResponse(WorkerRegistration worker) => new(worker.Id, worker.Identity, worker.Version, worker.Status, worker.Capabilities, worker.LastHeartbeatAt);
+static bool CryptographicTokenMatch(string left, string right) => System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(left), System.Text.Encoding.UTF8.GetBytes(right));
 
 public partial class Program { }

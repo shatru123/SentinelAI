@@ -14,7 +14,7 @@ Development defaults to EF Core InMemory. Production uses PostgreSQL and the mig
 
 `SentinelAI.Security.Policy` is deterministic and independent of AI providers. Public targets require a separate persisted request and administrator approval containing evidence, authenticated approver, method, timestamp and expiry; the legacy request Boolean and caller-supplied verification records are ignored. The policy validates strict IPv4/IPv6 and CIDR syntax, special-purpose ranges, IPv6 ULA, domain boundaries, CIDR exclusions, execution-time DNS results, DNS rebinding, and web redirects. The resulting validated execution target pins approved addresses for adapters while preserving the original hostname for protocol headers/SNI. AI remains advisory and cannot add targets or bypass policy.
 
-The Blazor dashboard uses a server-side cookie/OIDC-compatible authentication model. Development login is generated from server configuration and the authenticated principal is translated into API headers; production forwards a saved OIDC access token from the server-side authentication context. No browser local storage or user-selected tenant header is trusted.
+The Blazor dashboard uses a server-side cookie/OIDC-compatible authentication model. Development login is generated from server configuration and the authenticated principal is translated into API headers; production forwards a saved OIDC access token from the server-side authentication context or encrypted authentication ticket when an interactive circuit has no `HttpContext`. No browser local storage or user-selected tenant header is trusted. Use `/auth/login` for the local development sign-in flow.
 
 ## Useful commands
 
@@ -24,6 +24,8 @@ dotnet build SentinelAI.slnx
 dotnet test SentinelAI.slnx
 docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
 ```
+
+For local launch profiles, run the API at `http://localhost:5109` and the Web app at `http://localhost:5056`. The Development Web configuration points to `http://localhost:5109`; do not change it to the Compose host port. Compose keeps its separate override: the browser-facing API is `http://127.0.0.1:5080`, the Web app is `http://127.0.0.1:5081`, and the Web container calls the API at `http://api:8080` over the internal network. If Assets or Findings show an unavailable-API message, confirm the selected launch profile, API health endpoint, sign in at `/auth/login`, and restart the Web app after configuration changes.
 
 To exercise the broker path, start Compose and inspect `docker compose ... logs worker api`; the worker should register with the control plane and the RabbitMQ queues should exist. Grafana is at `http://127.0.0.1:3000` with Prometheus and Tempo provisioned from `deploy/observability`; local credentials default to `admin` / `admin` and can be changed with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`.
 

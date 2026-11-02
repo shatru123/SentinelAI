@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\SentinelAI.Domain\SentinelAI.Domain.csproj" />
     <ProjectReference Include="..\..\src\SentinelAI.Security.Policy\SentinelAI.Security.Policy.csproj" />
     <ProjectReference Include="..\..\src\SentinelAI.Infrastructure\SentinelAI.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\SentinelAI.Web\SentinelAI.Web.csproj" />
   </ItemGroup>
 
   <ItemGroup>

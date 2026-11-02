@@ -1,9 +1,8 @@
 @page "/scans"
 @attribute [Authorize]
-@using System.Net.Http.Json
 @using SentinelAI.Contracts
 @using SentinelAI.Domain
-@inject IHttpClientFactory HttpClientFactory
+@inject SentinelApiClient ApiClient
 @inject NavigationManager Navigation
 <PageTitle>Scans · SentinelAI</PageTitle>
 <div class="page-heading"><div><p class="eyebrow">Assessments / controlled execution</p><h1>Security scans</h1><p class="muted">Every assessment is bound to a validated authorization scope.</p></div></div>
@@ -30,18 +29,12 @@
         submitting = true; failed = false; message = null;
         try
         {
-            var client = HttpClientFactory.CreateClient("SentinelApi");
             var scopeRequest = new CreateScopeRequest(name, [new TargetDefinition(TargetKind.Network, target)], [], [profile], 30, 300, evidence, DateTimeOffset.UtcNow.AddHours(Math.Clamp(expiryHours, 1, 720)));
-            using var scopeResponse = await client.PostAsJsonAsync("/api/v1/scopes", scopeRequest);
-            if (!scopeResponse.IsSuccessStatusCode) { failed = true; message = $"Scope was rejected ({(int)scopeResponse.StatusCode}). Check authorization evidence and target boundaries."; return; }
-            var scope = await scopeResponse.Content.ReadFromJsonAsync<ScopeResponse>() ?? throw new InvalidOperationException("Scope response was empty.");
-            using var scanResponse = await client.PostAsJsonAsync("/api/v1/scans", new CreateScanRequest(scope.Id, profile));
-            if (!scanResponse.IsSuccessStatusCode) { failed = true; message = $"Scope created, but scan submission failed ({(int)scanResponse.StatusCode})."; return; }
-            var scan = await scanResponse.Content.ReadFromJsonAsync<ScanResponse>();
-            message = scan is null ? "Assessment submitted." : $"Assessment {scan.Id} submitted to the worker queue.";
+            var scope = await ApiClient.PostJsonAsync<CreateScopeRequest, ScopeResponse>("/api/v1/scopes", scopeRequest);
+            var scan = await ApiClient.PostJsonAsync<CreateScanRequest, ScanResponse>("/api/v1/scans", new CreateScanRequest(scope.Id, profile));
+            message = $"Assessment {scan.Id} submitted to the worker queue.";
         }
-        catch (HttpRequestException) { failed = true; message = "The control plane is unavailable. Start the API and try again."; }
-        catch (Exception exception) { failed = true; message = exception.Message; }
+        catch (SentinelApiException exception) { failed = true; message = exception.UserMessage; }
         finally { submitting = false; }
     }
 }

@@ -8,11 +8,9 @@ using SentinelAI.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<AuthenticatedApiHandler>();
-builder.Services.AddScoped<AuthenticatedApiTokenStore>();
 builder.Services.AddScoped<SentinelApiClient>();
 builder.Services.AddHttpClient("SentinelApi", client => client.BaseAddress = new Uri(builder.Configuration["Api:BaseUrl"] ?? "http://localhost:5109"))
-    .AddHttpMessageHandler<AuthenticatedApiHandler>();
+    .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddAuthentication(options =>
 {

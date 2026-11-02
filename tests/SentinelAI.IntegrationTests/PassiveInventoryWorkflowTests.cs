@@ -13,6 +13,7 @@ using SentinelAI.Worker;
 
 namespace SentinelAI.IntegrationTests;
 
+[Collection("PostgreSQL integration")]
 public sealed class PassiveInventoryWorkflowTests
 {
     [Fact]

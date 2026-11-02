@@ -1,12 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using SentinelAI.Application;
 using SentinelAI.Domain;
 using SentinelAI.Infrastructure;
 using SentinelAI.Security.Policy;
 
 namespace SentinelAI.IntegrationTests;
 
+[Collection("PostgreSQL integration")]
 public sealed class PostgresReliabilityTests
 {
     [Fact]
@@ -139,8 +141,21 @@ public sealed class PostgresReliabilityTests
 
             db.Add(new AssetService(tenant.Id, asset.Id, "https", 443, "web", "1"));
             await db.SaveChangesAsync();
+
+            db.Add(new AssetService(otherTenant.Id, asset.Id, "https", 443, "cross-tenant", "1"));
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+            db.ChangeTracker.Clear();
+
+            db.Add(new AssetService(tenant.Id, Guid.NewGuid(), "https", 8443, "orphan", "1"));
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+            db.ChangeTracker.Clear();
+
             db.Add(new AssetService(tenant.Id, asset.Id, "https", 443, "web", "1"));
             await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+
+            db.ChangeTracker.Clear();
+            await db.Assets.Where(x => x.Id == asset.Id).ExecuteDeleteAsync();
+            Assert.Empty(await db.AssetServices.Where(x => x.AssetId == asset.Id).ToListAsync());
         }
         finally
         {
@@ -149,6 +164,174 @@ public sealed class PostgresReliabilityTests
             await db.TargetScopes.Where(x => x.TenantId == tenant.Id || x.TenantId == otherTenant.Id).ExecuteDeleteAsync();
             await db.Tenants.Where(x => x.Id == tenant.Id || x.Id == otherTenant.Id).ExecuteDeleteAsync();
         }
+    }
+
+    [Fact]
+    public async Task Postgres_backfills_reachability_history_without_overwriting_observation_or_existing_values()
+    {
+        var connection = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION")
+            ?? "Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=replace-with-local-dev-password";
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+        Assert.Contains("20261102170000_Phase211ReachabilityHistoryBackfill", await db.Database.GetAppliedMigrationsAsync());
+
+        var tenant = new Tenant($"history-{Guid.NewGuid():N}");
+        var scope = new TargetScope(tenant.Id, "history", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        var online = new Asset(tenant.Id, scope.Id, "10.61.0.5", TargetKind.Network);
+        online.RecordReachabilityConfirmation();
+        var expectedObservedAt = online.LastObservedAt;
+        var offline = new Asset(tenant.Id, scope.Id, "10.61.0.6", TargetKind.Network);
+        var existingOnline = new Asset(tenant.Id, scope.Id, "10.61.0.7", TargetKind.Network);
+        existingOnline.RecordReachabilityConfirmation();
+        var existingReachability = existingOnline.LastSuccessfulReachabilityAt;
+        db.AddRange(tenant, scope, online, offline, existingOnline);
+        await db.SaveChangesAsync();
+
+        try
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE \"Assets\" SET \"LastSuccessfulReachabilityAt\" = NULL WHERE \"Id\" = {online.Id}");
+            await db.Database.ExecuteSqlRawAsync("""
+                UPDATE "Assets"
+                SET "LastSuccessfulReachabilityAt" = "LastObservedAt"
+                WHERE "IsOnline" = TRUE
+                  AND "LastSuccessfulReachabilityAt" IS NULL;
+                """);
+
+            var persistedOnline = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == online.Id);
+            var persistedOffline = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == offline.Id);
+            var persistedExisting = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == existingOnline.Id);
+            Assert.Equal(online.Id, persistedOnline.Id);
+            Assert.Equal(tenant.Id, persistedOnline.TenantId);
+            Assert.Equal(expectedObservedAt, persistedOnline.LastObservedAt);
+            Assert.Equal(expectedObservedAt, persistedOnline.LastSuccessfulReachabilityAt);
+            Assert.Equal(offline.Id, persistedOffline.Id);
+            Assert.Null(persistedOffline.LastSuccessfulReachabilityAt);
+            Assert.Equal(existingReachability, persistedExisting.LastSuccessfulReachabilityAt);
+        }
+        finally
+        {
+            await db.Assets.Where(x => x.TenantId == tenant.Id).ExecuteDeleteAsync();
+            await db.TargetScopes.Where(x => x.TenantId == tenant.Id).ExecuteDeleteAsync();
+            await db.Tenants.Where(x => x.Id == tenant.Id).ExecuteDeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Postgres_cancellation_during_collection_persists_no_inventory()
+    {
+        var connection = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION")
+            ?? "Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=replace-with-local-dev-password";
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+        var seed = await SeedInventoryExecutionAsync(db, $"cancel-{Guid.NewGuid():N}");
+        var adapter = new PausingInventoryAdapter();
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new EmptyResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance, adapter);
+        using var cancellation = new CancellationTokenSource();
+
+        try
+        {
+            var running = service.ExecuteAsync(seed.JobId, cancellation.Token, seed.TenantId, seed.WorkerIdentity);
+            await adapter.Started.Task;
+            cancellation.Cancel();
+            var outcome = await running;
+
+            Assert.True(adapter.CancellationObserved.Task.IsCompletedSuccessfully);
+            Assert.NotEqual(ScanExecutionOutcome.Completed, outcome);
+            await using var verifyDb = new AppDbContext(options);
+            Assert.Empty(await verifyDb.Assets.Where(x => x.TenantId == seed.TenantId).ToListAsync());
+            Assert.NotEqual(ScanJobStatus.Completed, (await verifyDb.AgentJobs.SingleAsync(x => x.Id == seed.JobId)).Status);
+        }
+        finally
+        {
+            await CleanupInventoryExecutionAsync(db, seed.TenantId, seed.JobId, seed.ScopeId, seed.WorkerIdentity);
+        }
+    }
+
+    [Fact]
+    public async Task Postgres_lease_loss_during_collection_persists_no_inventory()
+    {
+        var connection = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION")
+            ?? "Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=replace-with-local-dev-password";
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+        var seed = await SeedInventoryExecutionAsync(db, $"lease-{Guid.NewGuid():N}");
+        var adapter = new PausingInventoryAdapter();
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new EmptyResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance, adapter);
+
+        try
+        {
+            var running = service.ExecuteAsync(seed.JobId, CancellationToken.None, seed.TenantId, seed.WorkerIdentity);
+            await adapter.Started.Task;
+            await using (var takeoverDb = new AppDbContext(options))
+            {
+                var takeover = await takeoverDb.AgentJobs.SingleAsync(x => x.Id == seed.JobId);
+                takeover.ReleaseLeaseForRetry("integration lease transfer");
+                Assert.True(takeover.TryAcquireLease("replacement-worker", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+                await takeoverDb.SaveChangesAsync();
+            }
+
+            adapter.Release();
+            var outcome = await running;
+
+            Assert.Equal(ScanExecutionOutcome.ClaimedByAnotherWorker, outcome);
+            await using var verifyDb = new AppDbContext(options);
+            Assert.Empty(await verifyDb.Assets.Where(x => x.TenantId == seed.TenantId).ToListAsync());
+            var persistedJob = await verifyDb.AgentJobs.SingleAsync(x => x.Id == seed.JobId);
+            Assert.NotEqual(ScanJobStatus.Completed, persistedJob.Status);
+            Assert.Equal("replacement-worker", persistedJob.LeaseOwnerWorkerId);
+        }
+        finally
+        {
+            await CleanupInventoryExecutionAsync(db, seed.TenantId, seed.JobId, seed.ScopeId, seed.WorkerIdentity);
+        }
+    }
+
+    private static async Task<InventoryExecutionSeed> SeedInventoryExecutionAsync(AppDbContext db, string workerIdentity)
+    {
+        var tenant = new Tenant($"execution-{Guid.NewGuid():N}");
+        var user = new User(tenant.Id, $"execution-{Guid.NewGuid():N}", "Execution", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "private-execution", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], [], [InventoryOperationProfiles.NetworkInventoryPassive], 10, 120, "phase21.1-execution", false);
+        var worker = new WorkerRegistration(tenant.Id, workerIdentity, "test", ["passive-inventory"]);
+        worker.Heartbeat(0, 1);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, InventoryOperationProfiles.NetworkInventoryPassive);
+        db.AddRange(tenant, user, scope, worker, job, new AgentExecution(job.Id, "PausingInventoryAdapter"));
+        await db.SaveChangesAsync();
+        return new InventoryExecutionSeed(tenant.Id, scope.Id, job.Id, workerIdentity);
+    }
+
+    private static async Task CleanupInventoryExecutionAsync(AppDbContext db, Guid tenantId, Guid jobId, Guid scopeId, string workerIdentity)
+    {
+        await db.AssetServices.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync();
+        await db.Assets.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync();
+        await db.AgentExecutions.Where(x => x.AgentJobId == jobId).ExecuteDeleteAsync();
+        await db.AgentJobs.Where(x => x.Id == jobId).ExecuteDeleteAsync();
+        await db.TargetScopes.Where(x => x.Id == scopeId).ExecuteDeleteAsync();
+        await db.Workers.Where(x => x.TenantId == tenantId && x.Identity == workerIdentity).ExecuteDeleteAsync();
+        await db.Users.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync();
+        await db.Tenants.Where(x => x.Id == tenantId).ExecuteDeleteAsync();
+    }
+
+    private sealed record InventoryExecutionSeed(Guid TenantId, Guid ScopeId, Guid JobId, string WorkerIdentity);
+
+    private sealed class PausingInventoryAdapter : IPassiveInventoryAdapter
+    {
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<IReadOnlyCollection<InventoryObservation>> CollectAsync(IReadOnlyCollection<AuthorizedInventoryTarget> targets, int requestsPerMinute, CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            try { await release.Task.WaitAsync(cancellationToken); }
+            catch (OperationCanceledException) { CancellationObserved.TrySetResult(); throw; }
+            return [new InventoryObservation("10.70.0.5", TargetKind.Network, false, [])];
+        }
+
+        public void Release() => release.TrySetResult();
     }
 
     private sealed class EmptyResolver : IHostAddressResolver

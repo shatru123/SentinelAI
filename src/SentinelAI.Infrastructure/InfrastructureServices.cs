@@ -249,18 +249,21 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 }
             }
 
+            await using var inventoryTransaction = await db.BeginTransactionAsync(timeout.Token);
             await db.Entry(job).ReloadAsync(timeout.Token);
             if (workerIdentity is not null && !job.IsLeaseOwnedBy(workerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
-            if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled) { execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Cancelled; }
-            if (job.ExpiresAt <= DateTimeOffset.UtcNow) { job.Expire(); execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Expired; }
+            if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled) { execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); await inventoryTransaction.CommitAsync(CancellationToken.None); return ScanExecutionOutcome.Cancelled; }
+            if (job.ExpiresAt <= DateTimeOffset.UtcNow) { job.Expire(); execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); await inventoryTransaction.CommitAsync(CancellationToken.None); return ScanExecutionOutcome.Expired; }
             execution.Complete(); job.Complete();
             db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.completed", nameof(AgentJob), job.Id, "Passive assessment completed; no active network probing was performed."));
             await db.SaveChangesAsync(timeout.Token);
+            await inventoryTransaction.CommitAsync(timeout.Token);
             return ScanExecutionOutcome.Completed;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
             await db.Entry(job).ReloadAsync(CancellationToken.None);
+            DiscardPendingInventoryChanges();
             if (workerIdentity is not null && !job.IsLeaseOwnedBy(workerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
             if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled)
             {
@@ -283,6 +286,24 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         {
             logger.LogWarning(exception, "Job {JobId} failed during execution.", jobId);
             throw;
+        }
+    }
+
+    private void DiscardPendingInventoryChanges()
+    {
+        foreach (var entry in db.ChangeTracker.Entries().Where(entry => entry.Entity is Asset or AssetService).ToList())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                entry.State = EntityState.Detached;
+                continue;
+            }
+
+            if (entry.State == EntityState.Modified)
+            {
+                entry.CurrentValues.SetValues(entry.OriginalValues);
+                entry.State = EntityState.Unchanged;
+            }
         }
     }
 

@@ -77,6 +77,22 @@ public sealed class ScopeValidatorTests
     }
 
     [Fact]
+    public async Task Cidr_exclusion_boundaries_allow_only_addresses_outside_the_excluded_range()
+    {
+        var scope = CreateScope("10.40.0.0/24", DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.40.0.0/24")], ["10.40.0.128/25"], ["mock-passive"], 30, 300, "ticket-123", false);
+
+        var lowerBoundary = await validator.ValidateExecutionAsync(scope, tenantId, "10.40.0.127", "mock-passive");
+        var upperBoundary = await validator.ValidateExecutionAsync(scope, tenantId, "10.40.0.128", "mock-passive");
+        var lastAddress = await validator.ValidateExecutionAsync(scope, tenantId, "10.40.0.255", "mock-passive");
+
+        Assert.True(lowerBoundary.IsValid);
+        Assert.False(upperBoundary.IsValid);
+        Assert.False(lastAddress.IsValid);
+        Assert.Contains(upperBoundary.Errors, error => error.Contains("excluded", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Domain_matching_is_boundary_aware_and_dns_rebinding_is_rejected()
     {
         var scope = new TargetScope(tenantId, "public-web", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));

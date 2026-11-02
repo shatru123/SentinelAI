@@ -99,6 +99,100 @@ public sealed class ScanLifecycleTests
     }
 
     [Fact]
+    public async Task Cancellation_during_inventory_collection_observes_cancellation_and_persists_no_inventory()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(databaseName).Options;
+        var (tenantId, jobId, workerId) = await SeedInventoryJobAsync(options, "cancellation-worker");
+        var adapter = new ControlledInventoryAdapter([new InventoryObservation("10.30.0.5", TargetKind.Network, false, [])]);
+        await using var db = new AppDbContext(options);
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new StubResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance, adapter);
+        using var cancellation = new CancellationTokenSource();
+
+        var running = service.ExecuteAsync(jobId, cancellation.Token, tenantId, workerId);
+        await adapter.Started.Task;
+        cancellation.Cancel();
+        var outcome = await running;
+
+        Assert.True(adapter.CancellationObserved.Task.IsCompletedSuccessfully);
+        Assert.NotEqual(ScanExecutionOutcome.Completed, outcome);
+        await using var verifyDb = new AppDbContext(options);
+        Assert.Empty(await verifyDb.Assets.ToListAsync());
+        Assert.NotEqual(ScanJobStatus.Completed, (await verifyDb.AgentJobs.SingleAsync(x => x.Id == jobId)).Status);
+    }
+
+    [Fact]
+    public async Task Lease_loss_during_inventory_collection_prevents_final_inventory_commit()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(databaseName).Options;
+        var (tenantId, jobId, workerId) = await SeedInventoryJobAsync(options, "lease-worker");
+        var adapter = new ControlledInventoryAdapter([new InventoryObservation("10.31.0.5", TargetKind.Network, false, [])]);
+        await using var db = new AppDbContext(options);
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new StubResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance, adapter);
+        var running = service.ExecuteAsync(jobId, CancellationToken.None, tenantId, workerId);
+        await adapter.Started.Task;
+
+        await using (var takeoverDb = new AppDbContext(options))
+        {
+            var takeover = await takeoverDb.AgentJobs.SingleAsync(x => x.Id == jobId);
+            takeover.ReleaseLeaseForRetry("test lease transfer");
+            Assert.True(takeover.TryAcquireLease("replacement-worker", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+            await takeoverDb.SaveChangesAsync();
+        }
+
+        adapter.Release();
+        var outcome = await running;
+
+        Assert.Equal(ScanExecutionOutcome.ClaimedByAnotherWorker, outcome);
+        await using var verifyDb = new AppDbContext(options);
+        Assert.Empty(await verifyDb.Assets.ToListAsync());
+        Assert.NotEqual(ScanJobStatus.Completed, (await verifyDb.AgentJobs.SingleAsync(x => x.Id == jobId)).Status);
+    }
+
+    [Fact]
+    public async Task Cancellation_between_inventory_observations_leaves_no_partial_records()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(databaseName).Options;
+        var (tenantId, jobId, workerId) = await SeedInventoryJobAsync(options, "multi-observation-worker");
+        using var cancellation = new CancellationTokenSource();
+        var adapter = new CancellationAfterFirstObservationAdapter(cancellation, [
+            new InventoryObservation("10.32.0.5", TargetKind.Network, false, []),
+            new InventoryObservation("10.32.0.6", TargetKind.Network, false, [])]);
+        await using var db = new AppDbContext(options);
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new StubResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance, adapter);
+
+        var outcome = await service.ExecuteAsync(jobId, cancellation.Token, tenantId, workerId);
+
+        Assert.NotEqual(ScanExecutionOutcome.Completed, outcome);
+        await using var verifyDb = new AppDbContext(options);
+        Assert.Empty(await verifyDb.Assets.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Excluded_inventory_target_is_rejected_before_persistence()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var db = new AppDbContext(options);
+        var tenant = new Tenant("excluded-inventory");
+        var user = new User(tenant.Id, "excluded-operator", "Excluded", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "excluded-scope", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.50.0.1")], ["10.50.0.0/30"], [InventoryOperationProfiles.NetworkInventoryPassive], 10, 120, "phase21.1-exclusion", false);
+        var worker = new WorkerRegistration(tenant.Id, "excluded-worker", "test", ["passive-inventory"]);
+        worker.Heartbeat(0, 1);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, InventoryOperationProfiles.NetworkInventoryPassive);
+        db.AddRange(tenant, user, scope, worker, job, new AgentExecution(job.Id, "PassiveNetworkInventoryAdapter"));
+        await db.SaveChangesAsync();
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new StubResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance);
+
+        await Assert.ThrowsAsync<ScopeValidationException>(() => service.ExecuteAsync(job.Id, CancellationToken.None, tenant.Id, worker.Identity));
+
+        Assert.Empty(await db.Assets.ToListAsync());
+        Assert.NotEqual(ScanJobStatus.Completed, (await db.AgentJobs.SingleAsync(x => x.Id == job.Id)).Status);
+    }
+
+    [Fact]
     public void Cancellation_before_execution_prevents_a_worker_claim()
     {
         var job = new AgentJob(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "mock-passive");
@@ -279,5 +373,58 @@ public sealed class ScanLifecycleTests
     private sealed class EmptyResolver : IHostAddressResolver
     {
         public Task<IReadOnlyCollection<System.Net.IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<System.Net.IPAddress>>([]);
+    }
+
+    private static async Task<(Guid TenantId, Guid JobId, string WorkerId)> SeedInventoryJobAsync(DbContextOptions<AppDbContext> options, string workerId)
+    {
+        await using var db = new AppDbContext(options);
+        var tenant = new Tenant($"inventory-{Guid.NewGuid():N}");
+        var user = new User(tenant.Id, $"inventory-{Guid.NewGuid():N}", "Inventory", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "private-inventory", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], [], [InventoryOperationProfiles.NetworkInventoryPassive], 10, 120, "phase21.1-test", false);
+        var worker = new WorkerRegistration(tenant.Id, workerId, "test", ["passive-inventory"]);
+        worker.Heartbeat(0, 1);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, InventoryOperationProfiles.NetworkInventoryPassive);
+        db.AddRange(tenant, user, scope, worker, job, new AgentExecution(job.Id, "ControlledInventoryAdapter"));
+        await db.SaveChangesAsync();
+        return (tenant.Id, job.Id, workerId);
+    }
+
+    private sealed class ControlledInventoryAdapter(IReadOnlyCollection<InventoryObservation> observations) : IPassiveInventoryAdapter
+    {
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<IReadOnlyCollection<InventoryObservation>> CollectAsync(IReadOnlyCollection<AuthorizedInventoryTarget> targets, int requestsPerMinute, CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            try { await release.Task.WaitAsync(cancellationToken); }
+            catch (OperationCanceledException) { CancellationObserved.TrySetResult(); throw; }
+            return observations;
+        }
+
+        public void Release() => release.TrySetResult();
+    }
+
+    private sealed class CancellationAfterFirstObservationAdapter(CancellationTokenSource cancellation, IReadOnlyCollection<InventoryObservation> observations) : IPassiveInventoryAdapter
+    {
+        public Task<IReadOnlyCollection<InventoryObservation>> CollectAsync(IReadOnlyCollection<AuthorizedInventoryTarget> targets, int requestsPerMinute, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyCollection<InventoryObservation>>(new CancellingCollection(cancellation, observations));
+    }
+
+    private sealed class CancellingCollection(CancellationTokenSource cancellation, IReadOnlyCollection<InventoryObservation> observations) : IReadOnlyCollection<InventoryObservation>
+    {
+        public int Count => observations.Count;
+        public IEnumerator<InventoryObservation> GetEnumerator()
+        {
+            var index = 0;
+            foreach (var observation in observations)
+            {
+                if (index++ == 1) cancellation.Cancel();
+                yield return observation;
+            }
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }

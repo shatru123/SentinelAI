@@ -225,6 +225,8 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.HasIndex("TenantId", "Address")
                         .IsUnique();
 
+                    b.HasAlternateKey("TenantId", "Id");
+
                     b.ToTable("Assets");
                 });
 
@@ -687,6 +689,15 @@ namespace SentinelAI.Infrastructure.Migrations
                         .IsUnique();
 
                     b.ToTable("Workers");
+                });
+            modelBuilder.Entity("SentinelAI.Domain.AssetService", b =>
+                {
+                    b.HasOne("SentinelAI.Domain.Asset", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AssetId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

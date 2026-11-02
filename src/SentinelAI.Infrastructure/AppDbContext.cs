@@ -89,7 +89,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AgentJob>().HasIndex(x => new { x.TenantId, x.Status, x.CreatedAt });
         modelBuilder.Entity<AgentJob>().HasIndex(x => new { x.Status, x.LeaseExpiresAt });
         modelBuilder.Entity<Asset>().HasIndex(x => new { x.TenantId, x.Address }).IsUnique();
+        modelBuilder.Entity<Asset>().HasAlternateKey(x => new { x.TenantId, x.Id });
         modelBuilder.Entity<AssetService>().HasIndex(x => new { x.TenantId, x.AssetId, x.Protocol, x.Port }).IsUnique();
+        modelBuilder.Entity<AssetService>().HasOne<Asset>().WithMany().HasForeignKey(x => new { x.TenantId, x.AssetId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.Severity });
         modelBuilder.Entity<AuditEvent>().HasIndex(x => new { x.TenantId, x.OccurredAt });
         modelBuilder.Entity<WorkerRegistration>().HasIndex(x => new { x.TenantId, x.Identity }).IsUnique();

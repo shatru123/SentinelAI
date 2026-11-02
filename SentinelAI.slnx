@@ -1,0 +1,27 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SentinelAI.Agent.Code/SentinelAI.Agent.Code.csproj" />
+    <Project Path="src/SentinelAI.Agent.Monitoring/SentinelAI.Agent.Monitoring.csproj" />
+    <Project Path="src/SentinelAI.Agent.Network/SentinelAI.Agent.Network.csproj" />
+    <Project Path="src/SentinelAI.Agent.Orchestrator/SentinelAI.Agent.Orchestrator.csproj" />
+    <Project Path="src/SentinelAI.Agent.Vulnerability/SentinelAI.Agent.Vulnerability.csproj" />
+    <Project Path="src/SentinelAI.AI.Abstractions/SentinelAI.AI.Abstractions.csproj" />
+    <Project Path="src/SentinelAI.AI.Anthropic/SentinelAI.AI.Anthropic.csproj" />
+    <Project Path="src/SentinelAI.AI.Ollama/SentinelAI.AI.Ollama.csproj" />
+    <Project Path="src/SentinelAI.AI.OpenAI/SentinelAI.AI.OpenAI.csproj" />
+    <Project Path="src/SentinelAI.Api/SentinelAI.Api.csproj" />
+    <Project Path="src/SentinelAI.Application/SentinelAI.Application.csproj" />
+    <Project Path="src/SentinelAI.Contracts/SentinelAI.Contracts.csproj" />
+    <Project Path="src/SentinelAI.Domain/SentinelAI.Domain.csproj" />
+    <Project Path="src/SentinelAI.Infrastructure/SentinelAI.Infrastructure.csproj" />
+    <Project Path="src/SentinelAI.Security.Policy/SentinelAI.Security.Policy.csproj" />
+    <Project Path="src/SentinelAI.Web/SentinelAI.Web.csproj" />
+    <Project Path="src/SentinelAI.Worker/SentinelAI.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SentinelAI.ArchitectureTests/SentinelAI.ArchitectureTests.csproj" />
+    <Project Path="tests/SentinelAI.IntegrationTests/SentinelAI.IntegrationTests.csproj" />
+    <Project Path="tests/SentinelAI.SecurityTests/SentinelAI.SecurityTests.csproj" />
+    <Project Path="tests/SentinelAI.UnitTests/SentinelAI.UnitTests.csproj" />
+  </Folder>
+</Solution>

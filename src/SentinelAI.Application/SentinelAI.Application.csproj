@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SentinelAI.Contracts\SentinelAI.Contracts.csproj" />
+    <ProjectReference Include="..\SentinelAI.Domain\SentinelAI.Domain.csproj" />
+    <ProjectReference Include="..\SentinelAI.Security.Policy\SentinelAI.Security.Policy.csproj" />
+  </ItemGroup>
+
+</Project>

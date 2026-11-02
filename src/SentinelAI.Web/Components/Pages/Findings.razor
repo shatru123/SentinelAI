@@ -1,0 +1,8 @@
+@page "/findings"
+@using System.Net.Http.Json
+@using SentinelAI.Contracts
+@inject IHttpClientFactory HttpClientFactory
+<PageTitle>Vulnerabilities · SentinelAI</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Risk / evidence-backed</p><h1>Vulnerabilities</h1><p class="muted">Findings become available when deterministic checks produce evidence.</p></div></div>
+<section class="panel"><div class="panel-heading"><h2>Findings queue</h2><span class="status-pill healthy">NO ACTIVE SCANS</span></div>@if (loading) { <p class="muted">Loading persisted findings…</p> } else if (error is not null) { <p class="error-text">@error</p> } else if (findings.Count == 0) { <div class="empty-state"><span class="empty-icon">◌</span><strong>No findings yet</strong><p>Phase 1 does not perform active probing or vulnerability exploitation.</p></div> } else { <table><thead><tr><th>Title</th><th>Severity</th><th>Asset</th><th>Created</th></tr></thead><tbody>@foreach (var finding in findings) { <tr><td>@finding.Title</td><td>@finding.Severity</td><td>@finding.AssetId</td><td>@finding.CreatedAt.ToLocalTime()</td></tr>}</tbody></table> }</section>
+@code { private List<FindingResponse> findings = []; private bool loading = true; private string? error; protected override async Task OnInitializedAsync() { try { var result = await HttpClientFactory.CreateClient("SentinelApi").GetFromJsonAsync<PagedResponse<FindingResponse>>("/api/v1/findings"); findings = result?.Items.ToList() ?? []; } catch (HttpRequestException) { error = "API is not connected."; } finally { loading = false; } } }

@@ -1,0 +1,38 @@
+@page "/"
+@using System.Net.Http.Json
+@using SentinelAI.Contracts
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>Overview · SentinelAI</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Security operations / overview</p><h1>Good morning, operator.</h1><p class="muted">Your defensive posture at a glance.</p></div><button class="primary-button">+ New assessment</button></div>
+<div class="metric-grid">
+    <div class="metric-card"><span>Assets discovered</span><strong>@AssetCount</strong><small>Phase 1 inventory</small></div>
+    <div class="metric-card"><span>Online assets</span><strong>—</strong><small>Mock adapter only</small></div>
+    <div class="metric-card"><span>Exposed services</span><strong>—</strong><small>Active probing disabled</small></div>
+    <div class="metric-card"><span>Critical findings</span><strong>@FindingCount</strong><small>No findings yet</small></div>
+</div>
+<div class="content-grid">
+    <section class="panel posture-panel"><div class="panel-heading"><div><p class="eyebrow">Security posture</p><h2>Baseline readiness</h2></div><span class="status-pill healthy">FOUNDATION</span></div><div class="posture-score"><span>Phase 1</span><strong>Authorization<br />controls</strong><div class="ring"><span>SAFE</span></div></div><p class="muted">Deterministic scope validation is authoritative. AI remains advisory and no active network probing is enabled.</p></section>
+    <section class="panel activity-panel"><div class="panel-heading"><div><p class="eyebrow">Recent activity</p><h2>Audit stream</h2></div><a href="monitoring">View all</a></div>@if (Loading) { <p class="muted">Loading persisted activity…</p> } else if (!string.IsNullOrWhiteSpace(Error)) { <p class="error-text">@Error</p> } else { <div class="empty-state"><span class="empty-icon">⌁</span><strong>No activity yet</strong><p>Create an authorized scope to begin.</p></div> }</section>
+</div>
+
+@code {
+    private int AssetCount;
+    private int FindingCount;
+    private bool Loading = true;
+    private string? Error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var client = HttpClientFactory.CreateClient("SentinelApi");
+            var assets = await client.GetFromJsonAsync<PagedResponse<AssetResponse>>("/api/v1/assets");
+            var findings = await client.GetFromJsonAsync<PagedResponse<FindingResponse>>("/api/v1/findings");
+            AssetCount = assets?.TotalCount ?? 0; FindingCount = findings?.TotalCount ?? 0;
+        }
+        catch (HttpRequestException) { Error = "API is not connected. Start the control plane to load live metrics."; }
+        catch (InvalidOperationException) { Error = "API response could not be read."; }
+        finally { Loading = false; }
+    }
+}

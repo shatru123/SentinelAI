@@ -10,9 +10,9 @@ SentinelAI is designed to discover and inventory explicitly authorized assets, e
 
 | Milestone | Status |
 |---|---|
-| Repository foundation and architecture | In progress |
-| Phase 1 solution foundation | Planned |
-| Mock worker lifecycle | Planned |
+| Repository foundation and architecture | Complete |
+| Phase 1 solution foundation | Complete |
+| Mock worker lifecycle | Complete |
 | Authorized network discovery | Planned |
 | Vulnerability correlation | Planned |
 | OpenAI, Claude and Ollama providers | Planned |
@@ -91,7 +91,24 @@ Read [SECURITY.md](SECURITY.md) before operating the platform.
 
 ## Development
 
-The [Phase 1 implementation prompt](docs/implementation-prompt.md) defines the first coding milestone and its acceptance criteria. The exact build/run commands will be added alongside the executable .NET solution rather than documented before they exist.
+The Phase 1 control plane defaults to an EF Core in-memory database in Development, so no cloud service is required for the API smoke path. The worker and API use the bounded mock adapter; active network probing is disabled.
+
+```bash
+dotnet restore SentinelAI.slnx
+dotnet build SentinelAI.slnx
+dotnet test SentinelAI.slnx
+dotnet run --project src/SentinelAI.Api
+dotnet run --project src/SentinelAI.Web
+```
+
+For PostgreSQL, RabbitMQ, the worker, Grafana and the OpenTelemetry Collector:
+
+```bash
+cp .env.example .env
+docker compose --env-file .env -f deploy/docker/docker-compose.yml up --build
+```
+
+Compose applies the checked-in EF migration on API startup when `Database__ApplyMigrations=true`. See [development](docs/development.md) and [deployment](docs/deployment.md) for boundaries and limitations.
 
 ## Contributing
 

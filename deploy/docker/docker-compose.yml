@@ -1,0 +1,109 @@
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__SentinelAI: Host=postgres;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      Database__Provider: Postgres
+      Database__ApplyMigrations: "true"
+      Authentication__UseDevelopmentHeaders: "false"
+      AI__DefaultProvider: ${AI_PROVIDER:-ollama}
+      AI__OpenAI__ApiKey: ${OPENAI_API_KEY:-}
+      AI__Anthropic__ApiKey: ${ANTHROPIC_API_KEY:-}
+      AI__Ollama__Endpoint: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    ports: ["127.0.0.1:5080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      control:
+        aliases: [api]
+    deploy:
+      resources: { limits: { cpus: "1.0", memory: 512M } }
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.web
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      Api__BaseUrl: http://api:8080
+    ports: ["127.0.0.1:5081:8080"]
+    depends_on: { api: { condition: service_healthy } }
+    networks:
+      control:
+        aliases: [web]
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Database__Provider: Postgres
+      ConnectionStrings__SentinelAI: Host=postgres;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+    depends_on: { postgres: { condition: service_healthy } }
+    networks:
+      control:
+        aliases: [worker]
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [sentinelai-postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      control:
+        aliases: [postgres]
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes: [sentinelai-rabbitmq:/var/lib/rabbitmq]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      control:
+        aliases: [rabbitmq]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.141.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes: [../observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro]
+    networks: [control]
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    ports: ["127.0.0.1:3000:3000"]
+    volumes: [sentinelai-grafana:/var/lib/grafana]
+    depends_on: [otel-collector]
+    networks: [control]
+
+volumes:
+  sentinelai-postgres:
+  sentinelai-rabbitmq:
+  sentinelai-grafana:
+
+networks:
+  control:
+    driver: bridge

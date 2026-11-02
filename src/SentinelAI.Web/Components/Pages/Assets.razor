@@ -1,0 +1,8 @@
+@page "/assets"
+@using System.Net.Http.Json
+@using SentinelAI.Contracts
+@inject IHttpClientFactory HttpClientFactory
+<PageTitle>Assets · SentinelAI</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Inventory / authorized scope</p><h1>Assets</h1><p class="muted">Persisted assets from the Phase 1 mock adapter.</p></div></div>
+<section class="panel"><div class="panel-heading"><h2>Asset inventory</h2><span class="status-pill healthy">PASSIVE ONLY</span></div>@if (loading) { <p class="muted">Loading persisted assets…</p> } else if (error is not null) { <p class="error-text">@error</p> } else if (assets.Count == 0) { <div class="empty-state"><span class="empty-icon">⌁</span><strong>No assets discovered</strong><p>Register an authorized scope and submit a mock assessment.</p></div> } else { <table><thead><tr><th>Address</th><th>Type</th><th>Status</th><th>Last seen</th></tr></thead><tbody>@foreach (var asset in assets) { <tr><td>@asset.Address</td><td>@asset.Kind</td><td>@(asset.IsOnline ? "Online" : "Not probed")</td><td>@asset.LastSeenAt.ToLocalTime()</td></tr>}</tbody></table> }</section>
+@code { private List<AssetResponse> assets = []; private bool loading = true; private string? error; protected override async Task OnInitializedAsync() { try { var result = await HttpClientFactory.CreateClient("SentinelApi").GetFromJsonAsync<PagedResponse<AssetResponse>>("/api/v1/assets"); assets = result?.Items.ToList() ?? []; } catch (HttpRequestException) { error = "API is not connected."; } finally { loading = false; } } }

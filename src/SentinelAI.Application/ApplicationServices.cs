@@ -21,7 +21,15 @@ public interface IAppDbContext
     DbSet<AIAnalysis> AIAnalyses { get; }
     DbSet<Notification> Notifications { get; }
     DbSet<WorkerRegistration> Workers { get; }
+    DbSet<PublicTargetAuthorization> PublicTargetAuthorizations { get; }
+    DbSet<OutboxMessage> OutboxMessages { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
+    Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IAppDbTransaction : IAsyncDisposable
+{
+    Task CommitAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed record PrincipalContext(Guid TenantId, Guid UserId, string Subject, UserRole Role)
@@ -34,12 +42,16 @@ public sealed record PrincipalContext(Guid TenantId, Guid UserId, string Subject
 public interface IScanJobQueue
 {
     ValueTask EnqueueAsync(Guid jobId, CancellationToken cancellationToken = default);
-    IAsyncEnumerable<ScanJobDelivery> ReadAllAsync(CancellationToken cancellationToken = default);
+    ValueTask EnqueueAsync(Guid jobId, Guid tenantId, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<ScanJobDelivery> ReadAllAsync(Guid? tenantId = null, string? workerIdentity = null, CancellationToken cancellationToken = default);
     ValueTask RequestCancellationAsync(Guid jobId, CancellationToken cancellationToken = default);
-    IAsyncEnumerable<Guid> ReadCancellationsAsync(CancellationToken cancellationToken = default);
+    ValueTask RequestCancellationAsync(Guid jobId, Guid tenantId, string workerIdentity, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<Guid> ReadCancellationsAsync(string workerIdentity, CancellationToken cancellationToken = default);
 }
 
-public sealed record ScanJobDelivery(Guid JobId, int Attempt,
+public interface IImmediateScanJobQueue { }
+
+public sealed record ScanJobDelivery(Guid JobId, Guid TenantId, int Attempt,
     Func<CancellationToken, ValueTask> AcknowledgeAsync,
     Func<bool, CancellationToken, ValueTask> RejectAsync);
 
@@ -56,16 +68,41 @@ public interface IScanService
     Task<bool> CancelAsync(PrincipalContext principal, Guid id, CancellationToken cancellationToken);
 }
 
+public interface IPublicTargetAuthorizationService
+{
+    Task<PublicTargetAuthorizationResponse> RequestAsync(PrincipalContext principal, PublicTargetAuthorizationRequest request, CancellationToken cancellationToken);
+    Task<PublicTargetAuthorizationResponse?> ApproveAsync(PrincipalContext principal, Guid id, PublicTargetAuthorizationApprovalRequest request, CancellationToken cancellationToken);
+    Task<bool> RevokeAsync(PrincipalContext principal, Guid id, CancellationToken cancellationToken);
+}
+
 public sealed class ScopeService(IAppDbContext db, ITargetScopeValidator validator) : IScopeService
 {
     public async Task<ScopeResponse> CreateAsync(PrincipalContext principal, CreateScopeRequest request, CancellationToken cancellationToken)
     {
         if (!principal.CanOperate) throw new UnauthorizedAccessException("The current role cannot create scopes.");
+        if (request is null) throw new ScopeValidationException(["A scope request is required."]);
+        if (string.IsNullOrWhiteSpace(request.Name)) throw new ScopeValidationException(["A scope name is required."]);
+        if (request.Targets is null || request.Targets.Count == 0) throw new ScopeValidationException(["At least one target is required."]);
+        if (request.ApprovedOperationProfiles is null || request.ApprovedOperationProfiles.Count == 0) throw new ScopeValidationException(["At least one operation profile is required."]);
+        if (string.IsNullOrWhiteSpace(request.AuthorizationEvidence)) throw new ScopeValidationException(["Authorization evidence is required."]);
         var scope = new TargetScope(principal.TenantId, request.Name.Trim(), principal.UserId, request.ExpiresAt);
         scope.Configure(request.Targets, request.Exclusions ?? [], request.ApprovedOperationProfiles, request.RequestsPerMinute,
             request.MaxExecutionSeconds, request.AuthorizationEvidence.Trim(), false);
-        scope.ConfigureVerifications((request.PublicTargetAuthorizations ?? []).Select(x =>
-            new PublicTargetVerification(x.Target, x.Evidence, x.Verifier, x.Method, x.VerifiedAt)).ToArray());
+        var authorizationIds = request.PublicTargetAuthorizationIds ?? [];
+        if (authorizationIds.Count > 0)
+        {
+            var authorizations = await db.PublicTargetAuthorizations
+                .Where(x => x.TenantId == principal.TenantId && authorizationIds.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+            if (authorizations.Count != authorizationIds.Count) throw new ScopeValidationException(["One or more public target authorizations were not found in this tenant."]);
+            var verifications = new List<PublicTargetVerification>();
+            foreach (var authorization in authorizations)
+            {
+                try { verifications.Add(authorization.ToVerification()); }
+                catch (InvalidOperationException exception) { throw new ScopeValidationException([exception.Message]); }
+            }
+            scope.ConfigureVerifications(verifications);
+        }
         var validation = validator.ValidateDefinition(scope, principal.TenantId, DateTimeOffset.UtcNow);
         if (!validation.IsValid) throw new ScopeValidationException(validation.Errors);
         db.TargetScopes.Add(scope);
@@ -101,8 +138,14 @@ public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validato
         db.AgentJobs.Add(job);
         db.AgentExecutions.Add(new AgentExecution(job.Id, "MockNetworkDiscoveryAgent"));
         db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "scan.created", nameof(AgentJob), job.Id, "Phase 1 mock assessment queued."));
-        await db.SaveChangesAsync(cancellationToken);
-        await queue.EnqueueAsync(job.Id, cancellationToken);
+        db.OutboxMessages.Add(new OutboxMessage(principal.TenantId, OutboxMessageTypes.ScanJob,
+            OutboxMessagePayload.Serialize(new OutboxJobEnvelope(job.Id, principal.TenantId))));
+        await using (var transaction = await db.BeginTransactionAsync(cancellationToken))
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        if (queue is IImmediateScanJobQueue) await queue.EnqueueAsync(job.Id, principal.TenantId, cancellationToken);
         return ToResponse(job);
     }
 
@@ -119,12 +162,76 @@ public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validato
         if (job is null) return false;
         job.Cancel();
         db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "scan.cancelled", nameof(AgentJob), job.Id, "Cancellation requested by operator."));
-        await db.SaveChangesAsync(cancellationToken);
-        await queue.RequestCancellationAsync(job.Id, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(job.AssignedWorkerIdentity))
+            db.OutboxMessages.Add(new OutboxMessage(principal.TenantId, OutboxMessageTypes.Cancellation,
+                OutboxMessagePayload.Serialize(new OutboxCancellationEnvelope(job.Id, principal.TenantId, job.AssignedWorkerIdentity!))));
+        await using (var transaction = await db.BeginTransactionAsync(cancellationToken))
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        if (queue is IImmediateScanJobQueue && !string.IsNullOrWhiteSpace(job.AssignedWorkerIdentity))
+            await queue.RequestCancellationAsync(job.Id, principal.TenantId, job.AssignedWorkerIdentity!, cancellationToken);
         return true;
     }
 
     private static ScanResponse ToResponse(AgentJob job) => new(job.Id, job.ScopeId, job.Status, job.CreatedAt, job.ExpiresAt, job.OperationProfile);
+}
+
+public static class OutboxMessageTypes
+{
+    public const string ScanJob = "scan-job";
+    public const string Cancellation = "cancellation";
+}
+
+public sealed record OutboxJobEnvelope(Guid JobId, Guid TenantId);
+public sealed record OutboxCancellationEnvelope(Guid JobId, Guid TenantId, string WorkerIdentity);
+
+public static class OutboxMessagePayload
+{
+    public static string Serialize<T>(T value) => System.Text.Json.JsonSerializer.Serialize(value);
+    public static T Deserialize<T>(string value) => System.Text.Json.JsonSerializer.Deserialize<T>(value) ?? throw new InvalidOperationException("Outbox payload is invalid.");
+}
+
+public sealed class PublicTargetAuthorizationService(IAppDbContext db) : IPublicTargetAuthorizationService
+{
+    public async Task<PublicTargetAuthorizationResponse> RequestAsync(PrincipalContext principal, PublicTargetAuthorizationRequest request, CancellationToken cancellationToken)
+    {
+        if (!principal.CanOperate) throw new UnauthorizedAccessException("The current role cannot request authorization.");
+        if (string.IsNullOrWhiteSpace(request.Target) || string.IsNullOrWhiteSpace(request.Reason)) throw new ScopeValidationException(["Target and reason are required."]);
+        var authorization = new PublicTargetAuthorization(principal.TenantId, request.Target, principal.UserId, request.Reason);
+        db.PublicTargetAuthorizations.Add(authorization);
+        db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "public-target.authorization.requested", nameof(PublicTargetAuthorization), authorization.Id, "Public target authorization requested."));
+        await db.SaveChangesAsync(cancellationToken);
+        return ToResponse(authorization);
+    }
+
+    public async Task<PublicTargetAuthorizationResponse?> ApproveAsync(PrincipalContext principal, Guid id, PublicTargetAuthorizationApprovalRequest request, CancellationToken cancellationToken)
+    {
+        if (principal.Role != UserRole.Admin) throw new UnauthorizedAccessException("Only administrators may approve public target authorization.");
+        var authorization = await db.PublicTargetAuthorizations.SingleOrDefaultAsync(x => x.Id == id && x.TenantId == principal.TenantId, cancellationToken);
+        if (authorization is null) return null;
+        authorization.Approve(principal.UserId, request.Evidence, request.Method, request.ExpiresAt);
+        db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "public-target.authorization.approved", nameof(PublicTargetAuthorization), id, "Public target authorization approved by an administrator."));
+        await db.SaveChangesAsync(cancellationToken);
+        return ToResponse(authorization);
+    }
+
+    public async Task<bool> RevokeAsync(PrincipalContext principal, Guid id, CancellationToken cancellationToken)
+    {
+        if (principal.Role != UserRole.Admin) throw new UnauthorizedAccessException("Only administrators may revoke public target authorization.");
+        var authorization = await db.PublicTargetAuthorizations.SingleOrDefaultAsync(x => x.Id == id && x.TenantId == principal.TenantId, cancellationToken);
+        if (authorization is null) return false;
+        authorization.Revoke();
+        var scopes = await db.TargetScopes.Where(x => x.TenantId == principal.TenantId).ToListAsync(cancellationToken);
+        foreach (var scope in scopes) scope.RevokePublicAuthorization(id);
+        db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "public-target.authorization.revoked", nameof(PublicTargetAuthorization), id, "Public target authorization revoked."));
+        await db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    private static PublicTargetAuthorizationResponse ToResponse(PublicTargetAuthorization authorization)
+        => new(authorization.Id, authorization.Target, authorization.Status, authorization.RequestedBy, authorization.ApprovedBy, authorization.CreatedAt, authorization.ApprovedAt, authorization.ExpiresAt);
 }
 
 public sealed class ScopeValidationException(IReadOnlyList<string> errors) : Exception(string.Join(" ", errors))

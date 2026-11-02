@@ -7,6 +7,19 @@ permissions:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:4-management-alpine
+        ports:
+          - 5672:5672
+        env:
+          RABBITMQ_DEFAULT_USER: sentinelai
+          RABBITMQ_DEFAULT_PASS: sentinelai
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -15,3 +28,15 @@ jobs:
       - run: dotnet restore SentinelAI.slnx
       - run: dotnet build SentinelAI.slnx --no-restore --configuration Release
       - run: dotnet test SentinelAI.slnx --no-build --configuration Release --logger trx
+        env:
+          SENTINELAI_RABBITMQ_TEST: "true"
+          RABBITMQ_TEST_HOST: localhost
+          RABBITMQ_TEST_PORT: "5672"
+          RABBITMQ_TEST_USER: sentinelai
+          RABBITMQ_TEST_PASSWORD: sentinelai
+      - run: docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: "**/*.trx"

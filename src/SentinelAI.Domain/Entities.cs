@@ -14,6 +14,8 @@ public enum AgentExecutionStatus { Pending, Running, Completed, Failed, Cancelle
 public enum UserRole { Admin, SecurityAnalyst, Viewer, Worker }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum WorkerStatus { Registered, Healthy, Unhealthy, Disabled }
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum PublicTargetAuthorizationStatus { Requested, Approved, Revoked, Expired }
 
 public sealed class Tenant
 {
@@ -75,10 +77,13 @@ public sealed class TargetScope
         // Kept for migration/source compatibility only. The policy engine never trusts this flag.
         PublicTargetOwnershipVerified = false;
     }
+
+    public void RevokePublicAuthorization(Guid authorizationId)
+        => PublicTargetVerifications = PublicTargetVerifications.Where(x => x.AuthorizationId != authorizationId).ToList();
 }
 
 public sealed record TargetDefinition(TargetKind Kind, string Value);
-public sealed record PublicTargetVerification(string Target, string Evidence, string Verifier, string Method, DateTimeOffset VerifiedAt);
+public sealed record PublicTargetVerification(string Target, string Evidence, string Verifier, string Method, DateTimeOffset VerifiedAt, DateTimeOffset? ExpiresAt = null, Guid? AuthorizationId = null);
 
 public sealed class ScanPolicy
 {
@@ -107,15 +112,25 @@ public sealed class AgentJob
     public DateTimeOffset? StartedAt { get; private set; }
     public DateTimeOffset? CompletedAt { get; private set; }
     public DateTimeOffset ExpiresAt { get; private set; }
+    public string? AssignedWorkerIdentity { get; private set; }
+    public DateTimeOffset? CancellationRequestedAt { get; private set; }
     public string? FailureReason { get; private set; }
     public byte[] RowVersion { get; private set; } = Guid.NewGuid().ToByteArray();
-    public void Start() { if (Status != ScanJobStatus.Queued) throw new InvalidOperationException("Only queued jobs can start."); Status = ScanJobStatus.Running; StartedAt = DateTimeOffset.UtcNow; }
+    public bool IsCancellationRequested => CancellationRequestedAt is not null || Status == ScanJobStatus.Cancelled;
+    public void Start() { if (Status != ScanJobStatus.Queued) throw new InvalidOperationException("Only queued jobs can start."); Status = ScanJobStatus.Running; StartedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); }
     public bool TryStart() { if (Status != ScanJobStatus.Queued) return false; Start(); return true; }
-    public void Complete() { if (Status != ScanJobStatus.Running) throw new InvalidOperationException("Only running jobs can complete."); Status = ScanJobStatus.Completed; CompletedAt = DateTimeOffset.UtcNow; }
-    public void Fail(string reason) { if (Status is ScanJobStatus.Completed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return; Status = ScanJobStatus.Failed; FailureReason = reason; CompletedAt = DateTimeOffset.UtcNow; }
-    public void Cancel() { if (Status is ScanJobStatus.Completed or ScanJobStatus.Failed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return; Status = ScanJobStatus.Cancelled; FailureReason = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; }
-    public void Expire() { if (Status is ScanJobStatus.Queued or ScanJobStatus.Running) { Status = ScanJobStatus.Expired; CompletedAt = DateTimeOffset.UtcNow; } }
-    public void RecoverInterrupted() { if (Status == ScanJobStatus.Running) { Status = ScanJobStatus.Queued; StartedAt = null; FailureReason = "Recovered after worker interruption."; } }
+    public bool TryClaim(string workerIdentity)
+    {
+        if (string.IsNullOrWhiteSpace(workerIdentity) || Status != ScanJobStatus.Queued || IsCancellationRequested) return false;
+        if (AssignedWorkerIdentity is not null && !AssignedWorkerIdentity.Equals(workerIdentity.Trim(), StringComparison.Ordinal)) return false;
+        AssignedWorkerIdentity ??= workerIdentity.Trim(); RowVersion = Guid.NewGuid().ToByteArray();
+        return true;
+    }
+    public void Complete() { if (Status != ScanJobStatus.Running) throw new InvalidOperationException("Only running jobs can complete."); Status = ScanJobStatus.Completed; CompletedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); }
+    public void Fail(string reason) { if (Status is ScanJobStatus.Completed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return; Status = ScanJobStatus.Failed; FailureReason = reason; CompletedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); }
+    public void Cancel() { if (Status is ScanJobStatus.Completed or ScanJobStatus.Failed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return; CancellationRequestedAt ??= DateTimeOffset.UtcNow; Status = ScanJobStatus.Cancelled; FailureReason = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); }
+    public void Expire() { if (Status is ScanJobStatus.Queued or ScanJobStatus.Running) { Status = ScanJobStatus.Expired; CompletedAt = DateTimeOffset.UtcNow; RowVersion = Guid.NewGuid().ToByteArray(); } }
+    public void RecoverInterrupted() { if (Status == ScanJobStatus.Running) { Status = ScanJobStatus.Queued; StartedAt = null; AssignedWorkerIdentity = null; FailureReason = "Recovered after worker interruption."; RowVersion = Guid.NewGuid().ToByteArray(); } }
 }
 
 public sealed class AgentExecution
@@ -134,6 +149,7 @@ public sealed class AgentExecution
     public void Complete() { if (Status != AgentExecutionStatus.Running) throw new InvalidOperationException("Only running executions can complete."); Status = AgentExecutionStatus.Completed; CompletedAt = DateTimeOffset.UtcNow; }
     public void Fail(string error) { if (Status is AgentExecutionStatus.Completed or AgentExecutionStatus.Cancelled) return; Status = AgentExecutionStatus.Failed; Error = error; CompletedAt = DateTimeOffset.UtcNow; }
     public void Cancel() { if (Status is AgentExecutionStatus.Completed or AgentExecutionStatus.Cancelled) return; Status = AgentExecutionStatus.Cancelled; Error = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; }
+    public void ResetForRetry() { if (Status == AgentExecutionStatus.Completed) return; Status = AgentExecutionStatus.Pending; StartedAt = null; CompletedAt = null; Error = "Recovered for retry."; }
 }
 
 public sealed class WorkerRegistration
@@ -157,6 +173,73 @@ public sealed class WorkerRegistration
     public void Heartbeat() { LastHeartbeatAt = DateTimeOffset.UtcNow; Status = WorkerStatus.Healthy; }
     public void MarkJob() { LastJobAt = DateTimeOffset.UtcNow; Heartbeat(); }
     public void MarkUnhealthy() { Status = WorkerStatus.Unhealthy; }
+}
+
+public sealed class PublicTargetAuthorization
+{
+    private PublicTargetAuthorization() { }
+    public PublicTargetAuthorization(Guid tenantId, string target, Guid requestedBy, string reason)
+    {
+        Id = Guid.NewGuid(); TenantId = tenantId; Target = target.Trim(); RequestedBy = requestedBy;
+        Reason = reason.Trim(); Status = PublicTargetAuthorizationStatus.Requested; CreatedAt = DateTimeOffset.UtcNow;
+    }
+    public Guid Id { get; private set; }
+    public Guid TenantId { get; private set; }
+    public string Target { get; private set; } = string.Empty;
+    public Guid RequestedBy { get; private set; }
+    public string Reason { get; private set; } = string.Empty;
+    public PublicTargetAuthorizationStatus Status { get; private set; }
+    public string? Evidence { get; private set; }
+    public string? VerificationMethod { get; private set; }
+    public Guid? ApprovedBy { get; private set; }
+    public DateTimeOffset CreatedAt { get; private set; }
+    public DateTimeOffset? ApprovedAt { get; private set; }
+    public DateTimeOffset? ExpiresAt { get; private set; }
+    public DateTimeOffset? RevokedAt { get; private set; }
+
+    public void Approve(Guid approver, string evidence, string method, DateTimeOffset expiresAt)
+    {
+        if (approver == RequestedBy) throw new InvalidOperationException("The requester cannot approve their own authorization.");
+        if (Status != PublicTargetAuthorizationStatus.Requested) throw new InvalidOperationException("Only requested authorizations can be approved.");
+        if (string.IsNullOrWhiteSpace(evidence) || string.IsNullOrWhiteSpace(method)) throw new InvalidOperationException("Evidence and verification method are required.");
+        if (expiresAt <= DateTimeOffset.UtcNow) throw new InvalidOperationException("Authorization expiry must be in the future.");
+        ApprovedBy = approver; Evidence = evidence.Trim(); VerificationMethod = method.Trim(); ApprovedAt = DateTimeOffset.UtcNow;
+        ExpiresAt = expiresAt; Status = PublicTargetAuthorizationStatus.Approved;
+    }
+
+    public void Revoke()
+    {
+        if (Status == PublicTargetAuthorizationStatus.Revoked) return;
+        Status = PublicTargetAuthorizationStatus.Revoked; RevokedAt = DateTimeOffset.UtcNow;
+    }
+
+    public PublicTargetVerification ToVerification()
+    {
+        if (Status != PublicTargetAuthorizationStatus.Approved || ApprovedBy is null || ApprovedAt is null || ExpiresAt is null)
+            throw new InvalidOperationException("Authorization is not currently approved.");
+        if (ExpiresAt <= DateTimeOffset.UtcNow) { Status = PublicTargetAuthorizationStatus.Expired; throw new InvalidOperationException("Authorization has expired."); }
+        return new PublicTargetVerification(Target, Evidence!, ApprovedBy.Value.ToString(), VerificationMethod!, ApprovedAt.Value, ExpiresAt, Id);
+    }
+}
+
+public sealed class OutboxMessage
+{
+    private OutboxMessage() { }
+    public OutboxMessage(Guid tenantId, string messageType, string payload)
+    {
+        Id = Guid.NewGuid(); TenantId = tenantId; MessageType = messageType; Payload = payload; CreatedAt = DateTimeOffset.UtcNow;
+    }
+    public Guid Id { get; private set; }
+    public Guid TenantId { get; private set; }
+    public string MessageType { get; private set; } = string.Empty;
+    public string Payload { get; private set; } = string.Empty;
+    public int AttemptCount { get; private set; }
+    public DateTimeOffset CreatedAt { get; private set; }
+    public DateTimeOffset? DispatchedAt { get; private set; }
+    public DateTimeOffset? LastAttemptAt { get; private set; }
+    public string? LastError { get; private set; }
+    public void MarkDispatched() { DispatchedAt = DateTimeOffset.UtcNow; LastError = null; }
+    public void RecordFailure(string error) { AttemptCount++; LastAttemptAt = DateTimeOffset.UtcNow; LastError = error[..Math.Min(error.Length, 2000)]; }
 }
 
 public sealed class Asset

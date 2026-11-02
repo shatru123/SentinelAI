@@ -12,7 +12,8 @@ public sealed record CreateScopeRequest(
     string AuthorizationEvidence,
     DateTimeOffset ExpiresAt,
     bool PublicTargetOwnershipVerified = false,
-    IReadOnlyCollection<PublicTargetVerificationRequest>? PublicTargetAuthorizations = null);
+    IReadOnlyCollection<PublicTargetVerificationRequest>? PublicTargetAuthorizations = null,
+    IReadOnlyCollection<Guid>? PublicTargetAuthorizationIds = null);
 
 public sealed record PublicTargetVerificationRequest(string Target, string Evidence, string Verifier, string Method, DateTimeOffset VerifiedAt);
 
@@ -27,6 +28,9 @@ public sealed record AgentResponse(Guid Id, string Name, string Status, DateTime
 public sealed record WorkerRegistrationRequest(string Identity, string Version, IReadOnlyCollection<string> Capabilities);
 public sealed record WorkerHeartbeatRequest(string Identity, int ActiveJobs, int Capacity);
 public sealed record WorkerResponse(Guid Id, string Identity, string Version, WorkerStatus Status, IReadOnlyCollection<string> Capabilities, DateTimeOffset LastHeartbeatAt);
+public sealed record PublicTargetAuthorizationRequest(string Target, string Reason);
+public sealed record PublicTargetAuthorizationApprovalRequest(string Evidence, string Method, DateTimeOffset ExpiresAt);
+public sealed record PublicTargetAuthorizationResponse(Guid Id, string Target, PublicTargetAuthorizationStatus Status, Guid RequestedBy, Guid? ApprovedBy, DateTimeOffset CreatedAt, DateTimeOffset? ApprovedAt, DateTimeOffset? ExpiresAt);
 public sealed record PagedResponse<T>(IReadOnlyCollection<T> Items, int Page, int PageSize, int TotalCount);
 
 public sealed record CurrentUserResponse(string Subject, Guid TenantId, Guid UserId, string Role);

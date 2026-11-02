@@ -71,6 +71,31 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task Public_target_requires_separate_administrator_approval()
+    {
+        using var client = factory.CreateClient();
+        var requester = Guid.NewGuid();
+        client.DefaultRequestHeaders.Add("X-Tenant-Id", tenantId.ToString());
+        client.DefaultRequestHeaders.Add("X-User-Id", requester.ToString());
+        client.DefaultRequestHeaders.Add("X-Role", "SecurityAnalyst");
+        var requested = await client.PostAsJsonAsync("/api/v1/public-target-authorizations", new PublicTargetAuthorizationRequest("https://example.com", "Approved lab engagement"));
+        Assert.Equal(HttpStatusCode.Created, requested.StatusCode);
+        var authorization = await requested.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(authorization);
+
+        client.DefaultRequestHeaders.Remove("X-User-Id");
+        client.DefaultRequestHeaders.Add("X-User-Id", Guid.NewGuid().ToString());
+        client.DefaultRequestHeaders.Remove("X-Role");
+        client.DefaultRequestHeaders.Add("X-Role", "Admin");
+        var approved = await client.PostAsJsonAsync($"/api/v1/public-target-authorizations/{authorization!.Id}/approve", new PublicTargetAuthorizationApprovalRequest("ticket-123", "security-review", DateTimeOffset.UtcNow.AddHours(1)));
+        Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
+
+        var scope = new CreateScopeRequest("approved-public", [new TargetDefinition(TargetKind.Web, "https://example.com")], [], ["web-passive"], 30, 300, "ticket-123", DateTimeOffset.UtcNow.AddHours(1), false, null, [authorization.Id]);
+        var createdScope = await client.PostAsJsonAsync("/api/v1/scopes", scope);
+        Assert.Equal(HttpStatusCode.Created, createdScope.StatusCode);
+    }
+
+    [Fact]
     public async Task Worker_can_register_and_heartbeat_through_authenticated_endpoint()
     {
         using var client = factory.CreateClient();

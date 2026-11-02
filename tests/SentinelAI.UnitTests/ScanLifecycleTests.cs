@@ -28,6 +28,7 @@ public sealed class ScanLifecycleTests
 
         Assert.Equal(ScanJobStatus.Queued, result.Status);
         Assert.Single(await db.AgentJobs.ToListAsync());
+        Assert.Single(await db.OutboxMessages.ToListAsync());
         Assert.Equal(result.Id, (await queue.ReadAllAsync().FirstAsync()).JobId);
     }
 
@@ -62,6 +63,23 @@ public sealed class ScanLifecycleTests
     }
 
     [Fact]
+    public void Cancellation_before_execution_prevents_a_worker_claim()
+    {
+        var job = new AgentJob(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "mock-passive");
+        job.Cancel();
+        Assert.False(job.TryClaim("worker-a"));
+        Assert.Equal(ScanJobStatus.Cancelled, job.Status);
+    }
+
+    [Fact]
+    public void A_worker_cannot_claim_a_job_already_bound_to_another_worker()
+    {
+        var job = new AgentJob(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "mock-passive");
+        Assert.True(job.TryClaim("worker-a"));
+        Assert.False(job.TryClaim("worker-b"));
+    }
+
+    [Fact]
     public async Task Running_jobs_are_requeued_after_worker_restart()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
@@ -77,7 +95,7 @@ public sealed class ScanLifecycleTests
         await service.RecoverInterruptedJobsAsync(CancellationToken.None, tenant.Id);
         await db.Entry(job).ReloadAsync();
         Assert.Equal(ScanJobStatus.Queued, job.Status);
-        Assert.Equal(AgentExecutionStatus.Cancelled, (await db.AgentExecutions.SingleAsync()).Status);
+        Assert.Equal(AgentExecutionStatus.Pending, (await db.AgentExecutions.SingleAsync()).Status);
     }
 
     private sealed class StubResolver : IHostAddressResolver

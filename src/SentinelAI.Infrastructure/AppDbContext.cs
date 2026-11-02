@@ -23,6 +23,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AIAnalysis> AIAnalyses => Set<AIAnalysis>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<WorkerRegistration> Workers => Set<WorkerRegistration>();
+    public DbSet<PublicTargetAuthorization> PublicTargetAuthorizations => Set<PublicTargetAuthorization>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+
+    public async Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
+    {
+        if (Database.ProviderName?.Contains("InMemory", StringComparison.OrdinalIgnoreCase) == true)
+            return new NoopAppDbTransaction();
+        return new EfAppDbTransaction(await Database.BeginTransactionAsync(cancellationToken));
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -41,6 +50,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AIAnalysis>().HasKey(x => x.Id);
         modelBuilder.Entity<Notification>().HasKey(x => x.Id);
         modelBuilder.Entity<WorkerRegistration>().HasKey(x => x.Id);
+        modelBuilder.Entity<PublicTargetAuthorization>().HasKey(x => x.Id);
+        modelBuilder.Entity<OutboxMessage>().HasKey(x => x.Id);
 
         ConfigureTenant(modelBuilder.Entity<User>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<TargetScope>().Property(x => x.TenantId));
@@ -54,6 +65,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<AIAnalysis>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<Notification>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<WorkerRegistration>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<PublicTargetAuthorization>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<OutboxMessage>().Property(x => x.TenantId));
 
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var targetComparer = new ValueComparer<List<TargetDefinition>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList());
@@ -75,7 +88,21 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.Severity });
         modelBuilder.Entity<AuditEvent>().HasIndex(x => new { x.TenantId, x.OccurredAt });
         modelBuilder.Entity<WorkerRegistration>().HasIndex(x => new { x.TenantId, x.Identity }).IsUnique();
+        modelBuilder.Entity<PublicTargetAuthorization>().HasIndex(x => new { x.TenantId, x.Target, x.Status });
+        modelBuilder.Entity<OutboxMessage>().HasIndex(x => new { x.DispatchedAt, x.CreatedAt });
     }
 
     private static void ConfigureTenant(PropertyBuilder<Guid> property) => property.IsRequired();
+
+    private sealed class NoopAppDbTransaction : IAppDbTransaction
+    {
+        public Task CommitAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class EfAppDbTransaction(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction) : IAppDbTransaction
+    {
+        public Task CommitAsync(CancellationToken cancellationToken = default) => transaction.CommitAsync(cancellationToken);
+        public ValueTask DisposeAsync() => transaction.DisposeAsync();
+    }
 }

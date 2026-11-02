@@ -30,12 +30,15 @@ public static class InfrastructureServices
         services.AddScoped<ITargetScopeValidator, TargetScopeValidator>();
         services.AddScoped<ScanExecutionService>();
         services.AddSingleton<WorkerCancellationRegistry>();
+        services.AddSingleton<WorkerActivityTracker>();
 
         var messagingMode = configuration["Messaging:Mode"] ?? (environment.IsDevelopment() ? "InMemory" : "RabbitMq");
         if (messagingMode.Equals("RabbitMq", StringComparison.OrdinalIgnoreCase))
         {
             services.AddSingleton<RabbitMqConnectionProvider>();
-            services.AddSingleton<IScanJobQueue, RabbitMqScanJobQueue>();
+            services.AddSingleton<RabbitMqScanJobQueue>();
+            services.AddSingleton<IScanJobQueue>(sp => sp.GetRequiredService<RabbitMqScanJobQueue>());
+            if (configuration.GetValue("Messaging:RunOutboxDispatcher", false)) services.AddHostedService<OutboxDispatcher>();
         }
         else
         {
@@ -46,19 +49,26 @@ public static class InfrastructureServices
     }
 }
 
-public sealed class InMemoryScanJobQueue : IScanJobQueue
+public sealed class InMemoryScanJobQueue : IScanJobQueue, IImmediateScanJobQueue
 {
-    private readonly Channel<Guid> jobs = Channel.CreateUnbounded<Guid>();
+    private readonly Channel<ScanJobMessage> jobs = Channel.CreateUnbounded<ScanJobMessage>();
     private readonly Channel<Guid> cancellations = Channel.CreateUnbounded<Guid>();
-    public ValueTask EnqueueAsync(Guid jobId, CancellationToken cancellationToken = default) => jobs.Writer.WriteAsync(jobId, cancellationToken);
-    public async IAsyncEnumerable<ScanJobDelivery> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public ValueTask EnqueueAsync(Guid jobId, CancellationToken cancellationToken = default) => EnqueueAsync(jobId, Guid.Empty, cancellationToken);
+    public ValueTask EnqueueAsync(Guid jobId, Guid tenantId, CancellationToken cancellationToken = default) => jobs.Writer.WriteAsync(new ScanJobMessage(jobId, tenantId, null, 0), cancellationToken);
+    public async IAsyncEnumerable<ScanJobDelivery> ReadAllAsync(Guid? tenantId = null, string? workerIdentity = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await foreach (var jobId in jobs.Reader.ReadAllAsync(cancellationToken))
-            yield return new ScanJobDelivery(jobId, 0, static _ => ValueTask.CompletedTask, static (_, _) => ValueTask.CompletedTask);
+        await foreach (var message in jobs.Reader.ReadAllAsync(cancellationToken))
+        {
+            if (tenantId is not null && message.TenantId != tenantId.Value) { await jobs.Writer.WriteAsync(message, cancellationToken); continue; }
+            yield return new ScanJobDelivery(message.JobId, message.TenantId, message.Attempt, static _ => ValueTask.CompletedTask, static (_, _) => ValueTask.CompletedTask);
+        }
     }
     public ValueTask RequestCancellationAsync(Guid jobId, CancellationToken cancellationToken = default) => cancellations.Writer.WriteAsync(jobId, cancellationToken);
-    public IAsyncEnumerable<Guid> ReadCancellationsAsync(CancellationToken cancellationToken = default) => cancellations.Reader.ReadAllAsync(cancellationToken);
+    public ValueTask RequestCancellationAsync(Guid jobId, Guid tenantId, string workerIdentity, CancellationToken cancellationToken = default) => cancellations.Writer.WriteAsync(jobId, cancellationToken);
+    public IAsyncEnumerable<Guid> ReadCancellationsAsync(string workerIdentity, CancellationToken cancellationToken = default) => cancellations.Reader.ReadAllAsync(cancellationToken);
 }
+
+public sealed record ScanJobMessage(Guid JobId, Guid TenantId, string? WorkerIdentity, int Attempt);
 
 public sealed class WorkerCancellationRegistry
 {
@@ -74,6 +84,16 @@ public sealed class WorkerCancellationRegistry
     public void Remove(Guid jobId) { if (tokens.TryRemove(jobId, out var source)) source.Dispose(); }
 }
 
+public sealed class WorkerActivityTracker
+{
+    private int activeJobs;
+    public int ActiveJobs => Volatile.Read(ref activeJobs);
+    public void Increment() => Interlocked.Increment(ref activeJobs);
+    public void Decrement() => Interlocked.Decrement(ref activeJobs);
+}
+
+public enum ScanExecutionOutcome { Completed, Cancelled, Expired, AlreadyHandled, Missing, Unauthorized }
+
 public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator validator, IConfiguration configuration, ILogger<ScanExecutionService> logger)
 {
     private static readonly ActivitySource ActivitySource = new("SentinelAI.Worker");
@@ -88,19 +108,29 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         {
             job.RecoverInterrupted();
             var execution = await db.AgentExecutions.SingleOrDefaultAsync(x => x.AgentJobId == job.Id, cancellationToken);
-            if (execution?.Status == AgentExecutionStatus.Running) execution.Cancel();
+            execution?.ResetForRetry();
         }
         if (jobs.Count > 0) await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task ExecuteAsync(Guid jobId, CancellationToken cancellationToken, Guid? authorizedTenantId = null)
+    public async Task<ScanExecutionOutcome> ExecuteAsync(Guid jobId, CancellationToken cancellationToken, Guid? authorizedTenantId = null, string? workerIdentity = null)
     {
         using var activity = ActivitySource.StartActivity("sentinelai.job.execute");
         activity?.SetTag("sentinelai.job.id", jobId);
-        var job = await db.AgentJobs.SingleOrDefaultAsync(x => x.Id == jobId && (authorizedTenantId == null || x.TenantId == authorizedTenantId.Value), cancellationToken);
-        if (job is null || job.Status is ScanJobStatus.Completed or ScanJobStatus.Failed or ScanJobStatus.Cancelled or ScanJobStatus.Expired) return;
-        if (job.ExpiresAt <= DateTimeOffset.UtcNow) { job.Expire(); await db.SaveChangesAsync(cancellationToken); return; }
-        if (!job.TryStart()) return;
+        var job = await db.AgentJobs.SingleOrDefaultAsync(x => x.Id == jobId, cancellationToken);
+        if (job is null) return ScanExecutionOutcome.Missing;
+        if (authorizedTenantId is not null && job.TenantId != authorizedTenantId.Value) return ScanExecutionOutcome.Unauthorized;
+        if (job.Status is ScanJobStatus.Completed or ScanJobStatus.Failed) return ScanExecutionOutcome.AlreadyHandled;
+        if (job.Status == ScanJobStatus.Cancelled) return ScanExecutionOutcome.Cancelled;
+        if (job.Status == ScanJobStatus.Expired) return ScanExecutionOutcome.Expired;
+        if (job.ExpiresAt <= DateTimeOffset.UtcNow) { job.Expire(); await db.SaveChangesAsync(cancellationToken); return ScanExecutionOutcome.Expired; }
+        if (workerIdentity is not null)
+        {
+            var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Identity == workerIdentity, cancellationToken);
+            if (worker is null || worker.Status == WorkerStatus.Disabled || !worker.Capabilities.Contains("passive-mock", StringComparer.OrdinalIgnoreCase)) return ScanExecutionOutcome.Unauthorized;
+        }
+        if (workerIdentity is not null && !job.TryClaim(workerIdentity)) return ScanExecutionOutcome.Unauthorized;
+        if (!job.TryStart()) return job.Status == ScanJobStatus.Cancelled ? ScanExecutionOutcome.Cancelled : ScanExecutionOutcome.AlreadyHandled;
 
         var execution = await db.AgentExecutions.SingleAsync(x => x.AgentJobId == job.Id, cancellationToken);
         execution.Start();
@@ -114,36 +144,49 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             foreach (var target in scopeDefinition.Targets)
             {
                 timeout.Token.ThrowIfCancellationRequested();
+                var persistedState = await db.AgentJobs.AsNoTracking().Where(x => x.Id == job.Id).Select(x => new { x.Status, x.CancellationRequestedAt, x.ExpiresAt }).SingleAsync(timeout.Token);
+                if (persistedState.CancellationRequestedAt is not null || persistedState.Status == ScanJobStatus.Cancelled)
+                {
+                    job.Cancel(); execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Cancelled;
+                }
+                if (persistedState.ExpiresAt <= DateTimeOffset.UtcNow)
+                {
+                    job.Expire(); execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Expired;
+                }
                 var validation = await validator.ValidateExecutionAsync(scopeDefinition, job.TenantId, target.Kind, target.Value, job.OperationProfile, timeout.Token);
                 if (!validation.IsValid) throw new ScopeValidationException(validation.Errors);
                 if (executionDelayMs > 0) await Task.Delay(executionDelayMs, timeout.Token);
-                var asset = await db.Assets.SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.ScopeId == scopeDefinition.Id && x.Address == target.Value, timeout.Token);
+                var asset = await db.Assets.SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Address == target.Value, timeout.Token);
                 if (asset is null) { asset = new Asset(job.TenantId, scopeDefinition.Id, target.Value, target.Kind); db.Assets.Add(asset); }
                 asset.MarkSeen(false);
             }
 
             await db.Entry(job).ReloadAsync(timeout.Token);
-            if (job.Status == ScanJobStatus.Cancelled) { execution.Cancel(); await db.SaveChangesAsync(timeout.Token); return; }
-            if (job.ExpiresAt <= DateTimeOffset.UtcNow) { job.Expire(); execution.Cancel(); await db.SaveChangesAsync(timeout.Token); return; }
+            if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled) { execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Cancelled; }
+            if (job.ExpiresAt <= DateTimeOffset.UtcNow) { job.Expire(); execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Expired; }
             execution.Complete(); job.Complete();
             db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.completed", nameof(AgentJob), job.Id, "Passive assessment completed; no active network probing was performed."));
             await db.SaveChangesAsync(timeout.Token);
+            return ScanExecutionOutcome.Completed;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
             await db.Entry(job).ReloadAsync(CancellationToken.None);
+            if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled)
+            {
+                execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Cancelled;
+            }
+            if (cancellationToken.IsCancellationRequested && DateTimeOffset.UtcNow < job.ExpiresAt)
+            {
+                job.RecoverInterrupted(); execution.ResetForRetry(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.AlreadyHandled;
+            }
             if (job.Status is ScanJobStatus.Queued or ScanJobStatus.Running)
             {
-                job.Expire();
-                execution.Cancel();
-                db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.expired", nameof(AgentJob), job.Id, "Execution duration or worker cancellation limit was reached."));
-                await db.SaveChangesAsync(CancellationToken.None);
+                job.Expire(); execution.Cancel();
+                db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.expired", nameof(AgentJob), job.Id, "Execution duration limit was reached."));
+                await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Expired;
             }
-            else if (job.Status == ScanJobStatus.Cancelled)
-            {
-                execution.Cancel();
-                await db.SaveChangesAsync(CancellationToken.None);
-            }
+            return ScanExecutionOutcome.AlreadyHandled;
         }
         catch (Exception exception)
         {
@@ -164,7 +207,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         else
         {
             job.RecoverInterrupted();
-            if (execution?.Status == AgentExecutionStatus.Running) execution.Cancel();
+            execution?.ResetForRetry();
         }
         await db.SaveChangesAsync(cancellationToken);
     }
@@ -174,10 +217,10 @@ public sealed class ScanJobProcessor(IServiceScopeFactory scopeFactory, IScanJob
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var job in queue.ReadAllAsync(stoppingToken))
+        await foreach (var job in queue.ReadAllAsync(cancellationToken: stoppingToken))
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            var cancellationTask = Task.Run(async () => { await foreach (var id in queue.ReadCancellationsAsync(linked.Token)) if (id == job.JobId) linked.Cancel(); }, linked.Token);
+            var cancellationTask = Task.Run(async () => { await foreach (var id in queue.ReadCancellationsAsync("in-process", linked.Token)) if (id == job.JobId) linked.Cancel(); }, linked.Token);
             try
             {
                 cancellations.Register(job.JobId, linked.Token);
@@ -241,31 +284,56 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
     private int MaxAttempts => Math.Clamp(configuration.GetValue("RabbitMQ:MaxAttempts", 3), 1, 20);
     private ushort Prefetch => (ushort)Math.Clamp(configuration.GetValue("Worker:Concurrency", 2), 1, 32);
 
-    public async ValueTask EnqueueAsync(Guid jobId, CancellationToken cancellationToken = default)
-        => await PublishAsync(MainQueue, jobId, 0, cancellationToken);
+    public ValueTask EnqueueAsync(Guid jobId, CancellationToken cancellationToken = default) => EnqueueAsync(jobId, Guid.Empty, cancellationToken);
+    public ValueTask EnqueueAsync(Guid jobId, Guid tenantId, CancellationToken cancellationToken = default)
+        => PublishAsync(MainQueueFor(tenantId), new ScanJobMessage(jobId, tenantId, null, 0), 0, cancellationToken);
 
-    public async ValueTask RequestCancellationAsync(Guid jobId, CancellationToken cancellationToken = default)
-        => await PublishAsync(CancellationQueue, jobId, 0, cancellationToken);
+    public ValueTask RequestCancellationAsync(Guid jobId, CancellationToken cancellationToken = default)
+        => PublishAsync(CancellationQueue, new ScanJobMessage(jobId, Guid.Empty, null, 0), 0, cancellationToken);
+    public ValueTask RequestCancellationAsync(Guid jobId, Guid tenantId, string workerIdentity, CancellationToken cancellationToken = default)
+        => PublishAsync(CancellationQueueFor(workerIdentity), new ScanJobMessage(jobId, tenantId, workerIdentity, 0), 0, cancellationToken);
 
-    public async IAsyncEnumerable<ScanJobDelivery> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<ScanJobDelivery> ReadAllAsync(Guid? tenantId = null, string? workerIdentity = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await foreach (var delivery in ReadQueueAsync(MainQueue, cancellationToken)) yield return delivery;
+        if (tenantId is null && string.IsNullOrWhiteSpace(workerIdentity))
+        {
+            await foreach (var delivery in ReadQueueAsync(MainQueue, null, cancellationToken)) yield return delivery;
+            yield break;
+        }
+        if (tenantId is null) throw new InvalidOperationException("A tenant must be provided for worker job consumption.");
+        await foreach (var delivery in ReadQueueAsync(MainQueueFor(tenantId.Value), tenantId, cancellationToken)) yield return delivery;
     }
 
-    public async IAsyncEnumerable<Guid> ReadCancellationsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<Guid> ReadCancellationsAsync(string workerIdentity, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await foreach (var delivery in ReadQueueAsync(CancellationQueue, cancellationToken))
+        if (string.IsNullOrWhiteSpace(workerIdentity)) throw new InvalidOperationException("A worker identity is required for cancellation consumption.");
+        await foreach (var delivery in ReadQueueAsync(CancellationQueueFor(workerIdentity), null, cancellationToken))
         {
             await delivery.AcknowledgeAsync(cancellationToken);
             yield return delivery.JobId;
         }
     }
 
-    private async IAsyncEnumerable<ScanJobDelivery> ReadQueueAsync(string queue, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    public async Task PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken)
+    {
+        if (message.MessageType.Equals(OutboxMessageTypes.ScanJob, StringComparison.Ordinal))
+        {
+            var envelope = OutboxMessagePayload.Deserialize<OutboxJobEnvelope>(message.Payload);
+            await PublishAsync(MainQueueFor(envelope.TenantId), new ScanJobMessage(envelope.JobId, envelope.TenantId, null, 0), 0, cancellationToken);
+        }
+        else if (message.MessageType.Equals(OutboxMessageTypes.Cancellation, StringComparison.Ordinal))
+        {
+            var envelope = OutboxMessagePayload.Deserialize<OutboxCancellationEnvelope>(message.Payload);
+            await PublishAsync(CancellationQueueFor(envelope.WorkerIdentity), new ScanJobMessage(envelope.JobId, envelope.TenantId, envelope.WorkerIdentity, 0), 0, cancellationToken);
+        }
+        else throw new InvalidOperationException($"Unknown outbox message type '{message.MessageType}'.");
+    }
+
+    private async IAsyncEnumerable<ScanJobDelivery> ReadQueueAsync(string queue, Guid? expectedTenant, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var connection = await provider.GetConnectionAsync(cancellationToken);
         await using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
-        await DeclareTopologyAsync(channel, cancellationToken);
+        await DeclareTopologyAsync(channel, queue, cancellationToken);
         await channel.BasicQosAsync(0, Prefetch, false, cancellationToken);
         var deliveries = Channel.CreateUnbounded<BasicDeliverEventArgs>();
         var consumer = new AsyncEventingBasicConsumer(channel);
@@ -277,9 +345,12 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
             await foreach (var args in deliveries.Reader.ReadAllAsync(cancellationToken))
             {
                 var attempt = ReadAttempt(args.BasicProperties.Headers);
-                yield return new ScanJobDelivery(ParseJobId(args.Body.Span), attempt,
+                var message = ParseMessage(args.Body.Span);
+                if (expectedTenant is not null && message.TenantId != expectedTenant.Value)
+                    logger.LogError("Rejected message {JobId} with tenant {MessageTenant}; expected {ExpectedTenant}.", message.JobId, message.TenantId, expectedTenant.Value);
+                yield return new ScanJobDelivery(message.JobId, message.TenantId, attempt,
                     ct => AcknowledgeAsync(channel, channelGate, args.DeliveryTag, ct),
-                    (retry, ct) => RejectAsync(channel, channelGate, args.DeliveryTag, ParseJobId(args.Body.Span), attempt, retry, ct));
+                    (retry, ct) => RejectAsync(channel, channelGate, args.DeliveryTag, message, attempt, retry, ct));
             }
         }
         finally
@@ -297,9 +368,10 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
         finally { gate.Release(); }
     }
 
-    private async ValueTask RejectAsync(IChannel channel, SemaphoreSlim gate, ulong deliveryTag, Guid jobId, int attempt, bool retry, CancellationToken cancellationToken)
+    private async ValueTask RejectAsync(IChannel channel, SemaphoreSlim gate, ulong deliveryTag, ScanJobMessage message, int attempt, bool retry, CancellationToken cancellationToken)
     {
-        if (retry && attempt < MaxAttempts) await PublishAsync(RetryQueue, jobId, attempt + 1, cancellationToken);
+        if (retry && attempt < MaxAttempts)
+            await PublishAsync(RetryQueueFor(message.TenantId), message with { Attempt = attempt + 1 }, attempt + 1, cancellationToken);
         await gate.WaitAsync(cancellationToken);
         try
         {
@@ -309,33 +381,90 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
         finally { gate.Release(); }
     }
 
-    private async ValueTask PublishAsync(string queue, Guid jobId, int attempt, CancellationToken cancellationToken)
+    private async ValueTask PublishAsync(string queue, ScanJobMessage message, int attempt, CancellationToken cancellationToken)
     {
         using var activity = ActivitySource.StartActivity("rabbitmq.publish");
         activity?.SetTag("messaging.destination.name", queue);
         var connection = await provider.GetConnectionAsync(cancellationToken);
-        await using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
-        await DeclareTopologyAsync(channel, cancellationToken);
-        var properties = new BasicProperties { Persistent = true, ContentType = "application/json", MessageId = jobId.ToString(), Headers = new Dictionary<string, object?> { ["x-attempt"] = attempt } };
-        await channel.BasicPublishAsync(Exchange, queue, true, properties, JsonSerializer.SerializeToUtf8Bytes(jobId), cancellationToken);
+        var options = new CreateChannelOptions(true, true);
+        await using var channel = await connection.CreateChannelAsync(options, cancellationToken);
+        await DeclareTopologyAsync(channel, queue, cancellationToken);
+        var properties = new BasicProperties { Persistent = true, ContentType = "application/json", MessageId = message.JobId.ToString(), Headers = new Dictionary<string, object?> { ["x-attempt"] = attempt, ["x-tenant-id"] = message.TenantId.ToString() } };
+        await channel.BasicPublishAsync(Exchange, queue, true, properties, JsonSerializer.SerializeToUtf8Bytes(message), cancellationToken);
     }
 
-    private async Task DeclareTopologyAsync(IChannel channel, CancellationToken cancellationToken)
+    private async Task DeclareTopologyAsync(IChannel channel, string requestedQueue, CancellationToken cancellationToken)
     {
         await channel.ExchangeDeclareAsync(DeadExchange, ExchangeType.Direct, true, false, cancellationToken: cancellationToken);
-        await channel.QueueDeclareAsync(DeadQueue, true, false, false, cancellationToken: cancellationToken);
-        await channel.QueueBindAsync(DeadQueue, DeadExchange, DeadQueue, cancellationToken: cancellationToken);
-        var mainArguments = new Dictionary<string, object?> { ["x-dead-letter-exchange"] = DeadExchange, ["x-dead-letter-routing-key"] = DeadQueue };
-        await channel.QueueDeclareAsync(MainQueue, true, false, false, mainArguments, cancellationToken: cancellationToken);
-        var retryArguments = new Dictionary<string, object?> { ["x-message-ttl"] = RetryDelayMs, ["x-dead-letter-exchange"] = Exchange, ["x-dead-letter-routing-key"] = MainQueue };
-        await channel.QueueDeclareAsync(RetryQueue, true, false, false, retryArguments, cancellationToken: cancellationToken);
-        await channel.QueueDeclareAsync(CancellationQueue, true, false, false, cancellationToken: cancellationToken);
+        var tenantSuffix = requestedQueue.Contains('.', StringComparison.Ordinal) ? requestedQueue[(requestedQueue.LastIndexOf('.') + 1)..] : string.Empty;
+        var deadQueue = string.IsNullOrWhiteSpace(tenantSuffix) ? DeadQueue : $"{DeadQueue}.{tenantSuffix}";
+        await channel.QueueDeclareAsync(deadQueue, true, false, false, cancellationToken: cancellationToken);
+        await channel.QueueBindAsync(deadQueue, DeadExchange, deadQueue, cancellationToken: cancellationToken);
+        if (requestedQueue.StartsWith(RetryQueue, StringComparison.Ordinal))
+        {
+            var mainQueue = requestedQueue[RetryQueue.Length..] is var suffix && !string.IsNullOrEmpty(suffix) ? MainQueue + suffix : MainQueue;
+            var retryArguments = new Dictionary<string, object?> { ["x-message-ttl"] = RetryDelayMs, ["x-dead-letter-exchange"] = Exchange, ["x-dead-letter-routing-key"] = mainQueue };
+            await channel.QueueDeclareAsync(requestedQueue, true, false, false, retryArguments, cancellationToken: cancellationToken);
+        }
+        else if (requestedQueue.StartsWith(MainQueue, StringComparison.Ordinal))
+        {
+            var mainArguments = new Dictionary<string, object?> { ["x-dead-letter-exchange"] = DeadExchange, ["x-dead-letter-routing-key"] = deadQueue };
+            await channel.QueueDeclareAsync(requestedQueue, true, false, false, mainArguments, cancellationToken: cancellationToken);
+        }
+        else await channel.QueueDeclareAsync(requestedQueue, true, false, false, cancellationToken: cancellationToken);
     }
 
-    private static Guid ParseJobId(ReadOnlySpan<byte> body) => JsonSerializer.Deserialize<Guid>(body) is var id && id != Guid.Empty ? id : throw new InvalidOperationException("RabbitMQ message did not contain a valid job id.");
+    private static string MainQueueFor(Guid tenantId) => tenantId == Guid.Empty ? MainQueue : $"{MainQueue}.{tenantId:N}";
+    private static string RetryQueueFor(Guid tenantId) => tenantId == Guid.Empty ? RetryQueue : $"{RetryQueue}.{tenantId:N}";
+    private static string CancellationQueueFor(string workerIdentity) => $"{CancellationQueue}.{Sanitize(workerIdentity)}";
+    private static string Sanitize(string value) => new(value.Trim().Where(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.').ToArray());
+    private static ScanJobMessage ParseMessage(ReadOnlySpan<byte> body)
+    {
+        try
+        {
+            var message = JsonSerializer.Deserialize<ScanJobMessage>(body);
+            if (message is not null && message.JobId != Guid.Empty) return message;
+        }
+        catch { }
+        var id = JsonSerializer.Deserialize<Guid>(body);
+        return new ScanJobMessage(id, Guid.Empty, null, 0);
+    }
     private static int ReadAttempt(IDictionary<string, object?>? headers)
     {
         if (headers is null || !headers.TryGetValue("x-attempt", out var value)) return 0;
         return value switch { int integer => integer, long longValue => (int)longValue, byte byteValue => byteValue, byte[] bytes when int.TryParse(System.Text.Encoding.UTF8.GetString(bytes), out var parsed) => parsed, _ => 0 };
+    }
+}
+
+public sealed class OutboxDispatcher(IServiceScopeFactory scopeFactory, RabbitMqScanJobQueue queue, ILogger<OutboxDispatcher> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await using var scope = scopeFactory.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var pending = await db.OutboxMessages.Where(x => x.DispatchedAt == null).OrderBy(x => x.CreatedAt).Take(50).ToListAsync(stoppingToken);
+                foreach (var message in pending)
+                {
+                    try
+                    {
+                        await queue.PublishOutboxAsync(message, stoppingToken);
+                        message.MarkDispatched();
+                    }
+                    catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        message.RecordFailure(exception.Message);
+                        logger.LogWarning(exception, "Outbox message {MessageId} failed on attempt {Attempt}.", message.Id, message.AttemptCount);
+                    }
+                    await db.SaveChangesAsync(stoppingToken);
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+            catch (Exception exception) { logger.LogError(exception, "Outbox dispatcher cycle failed."); }
+            await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken);
+        }
     }
 }

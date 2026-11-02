@@ -49,8 +49,8 @@ sequenceDiagram
   Analyst->>API: Request assessment
   API->>Policy: Validate principal, scope, policy and expiry
   Policy-->>API: Allow or deny
-  API->>Store: Persist job and audit event
-  API->>Queue: Publish approved job
+  API->>Store: Persist job, audit event and outbox message in one transaction
+  API->>Queue: Outbox dispatcher publishes with publisher confirmation
   Queue->>Worker: Deliver job
   Worker->>Policy: Revalidate scope before execution
   Policy-->>Worker: Bounded authorization
@@ -64,6 +64,11 @@ sequenceDiagram
 - Use typed scanner adapters; do not expose a generic command-execution API.
 - Model AI as an advisory planner and analyst, not an authority.
 - Use idempotency keys, bounded retries, cancellation and explicit job state transitions.
+- Route jobs through tenant-specific durable queues. Multiple workers may share a tenant queue, but a worker is authenticated and assigned to exactly one tenant.
+- Route cancellation messages to the worker identity persisted on the running job; workers also poll persisted cancellation state between target operations.
+- Use a transactional outbox so a committed job is eventually published after broker recovery. Duplicate deliveries are safe because execution claims and terminal state are persisted.
+- Public target authorization is a separate request/administrator approval workflow and is never created from caller-supplied evidence fields.
+- DNS validation produces a `ValidatedExecutionTarget` containing the approved addresses and expiry; future network adapters must connect only to those addresses while preserving the original hostname for protocol headers/SNI.
 - A local worker enables private-network visibility without requiring inbound access.
 - Keep AI providers behind a common interface; support model selection and fallback through configuration.
 

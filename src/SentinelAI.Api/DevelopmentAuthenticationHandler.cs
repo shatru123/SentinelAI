@@ -14,13 +14,15 @@ public sealed class DevelopmentAuthenticationHandler(IOptionsMonitor<Authenticat
             return Task.FromResult(AuthenticateResult.NoResult());
         var role = Request.Headers["X-Role"].FirstOrDefault() ?? "Viewer";
         if (!Enum.TryParse<SentinelAI.Domain.UserRole>(role, true, out _)) return Task.FromResult(AuthenticateResult.Fail("Invalid development role."));
-        var claims = new[]
+        var claims = new List<Claim>
         {
             new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
             new Claim(ClaimTypes.Name, Request.Headers["X-User-Name"].FirstOrDefault() ?? userId.ToString()),
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.Role, role)
         };
+        if (role.Equals("Worker", StringComparison.OrdinalIgnoreCase))
+            claims.Add(new Claim("worker_id", Request.Headers["X-Worker-Id"].FirstOrDefault() ?? string.Empty));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name)), Scheme.Name)));
     }
 }

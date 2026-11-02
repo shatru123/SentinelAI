@@ -4,21 +4,23 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__SentinelAI: Host=postgres;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       Database__Provider: Postgres
       Database__ApplyMigrations: "true"
       Messaging__Mode: RabbitMq
+      Messaging__RunOutboxDispatcher: "true"
       RabbitMQ__Host: rabbitmq
       RabbitMQ__Username: ${RABBITMQ_USER}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD}
       Authentication__WorkerToken: ${WORKER_CONTROL_PLANE_TOKEN:-local-worker-token-change-me}
       Authentication__WorkerTenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
+      Authentication__WorkerCredentials__compose-worker: ${WORKER_CONTROL_PLANE_TOKEN:-local-worker-token-change-me}
+      Authentication__WorkerTenants__compose-worker: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       # Local Compose uses an explicit, server-configured development identity for the dashboard.
       # Replace this with OIDC/JWT configuration before any shared deployment.
-      Authentication__UseDevelopmentHeaders: "true"
       AI__DefaultProvider: ${AI_PROVIDER:-ollama}
       AI__OpenAI__ApiKey: ${OPENAI_API_KEY:-}
       AI__Anthropic__ApiKey: ${ANTHROPIC_API_KEY:-}
@@ -43,6 +45,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.web
     environment:
+      ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       Api__BaseUrl: http://api:8080
       Api__UseDevelopmentHeaders: "true"
@@ -72,6 +75,7 @@ services:
       Worker__ControlPlaneUrl: http://api:8080
       Worker__ControlPlaneToken: ${WORKER_CONTROL_PLANE_TOKEN:-local-worker-token-change-me}
       Worker__TenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
+      Worker__Identity: compose-worker
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       postgres: { condition: service_healthy }
@@ -99,6 +103,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
+    ports: ["127.0.0.1:5672:5672", "127.0.0.1:15672:15672"]
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
@@ -136,6 +141,9 @@ services:
 
   grafana:
     image: grafana/grafana:12.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
     ports: ["127.0.0.1:3000:3000"]
     depends_on: [otel-collector, prometheus, tempo]
     volumes:

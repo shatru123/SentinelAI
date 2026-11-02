@@ -40,21 +40,21 @@ public sealed class WorkerControlPlaneClient(HttpClient httpClient, WorkerOption
     }
 }
 
-public sealed class WorkerHeartbeatService(WorkerControlPlaneClient controlPlane, ILogger<WorkerHeartbeatService> logger) : BackgroundService
+public sealed class WorkerHeartbeatService(WorkerControlPlaneClient controlPlane, WorkerActivityTracker activity, ILogger<WorkerHeartbeatService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!controlPlane.Enabled) { logger.LogInformation("Worker control-plane registration is disabled; broker authentication remains required in production."); return; }
         while (!stoppingToken.IsCancellationRequested)
         {
-            try { await controlPlane.HeartbeatAsync(0, stoppingToken); }
+            try { await controlPlane.HeartbeatAsync(activity.ActiveJobs, stoppingToken); }
             catch (Exception exception) when (!stoppingToken.IsCancellationRequested) { logger.LogWarning(exception, "Worker heartbeat failed; retrying after recovery interval."); }
             await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
         }
     }
 }
 
-public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IServiceScopeFactory scopeFactory, WorkerCancellationRegistry cancellationRegistry, WorkerControlPlaneClient controlPlane, WorkerOptions options) : BackgroundService
+public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IServiceScopeFactory scopeFactory, WorkerCancellationRegistry cancellationRegistry, WorkerActivityTracker activity, WorkerControlPlaneClient controlPlane, WorkerOptions options) : BackgroundService
 {
     private static readonly Meter Meter = new("SentinelAI.Jobs");
     private static readonly Counter<long> CompletedJobs = Meter.CreateCounter<long>("sentinelai.jobs.completed");
@@ -68,11 +68,12 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
         await using (var recoveryScope = scopeFactory.CreateAsyncScope())
             await recoveryScope.ServiceProvider.GetRequiredService<ScanExecutionService>().RecoverInterruptedJobsAsync(stoppingToken, options.TenantId);
 
-        var cancellationListener = ListenForCancellationsAsync(stoppingToken);
+        if (options.TenantId is null) throw new InvalidOperationException("A worker tenant assignment is required in production.");
+        var cancellationListener = ListenForCancellationsAsync(options.Identity, stoppingToken);
         var gate = new SemaphoreSlim(options.Concurrency, options.Concurrency);
         try
         {
-            await foreach (var delivery in queue.ReadAllAsync(stoppingToken))
+            await foreach (var delivery in queue.ReadAllAsync(options.TenantId, options.Identity, stoppingToken))
             {
                 await gate.WaitAsync(stoppingToken);
                 var task = ProcessDeliveryAsync(delivery, gate, stoppingToken);
@@ -89,9 +90,9 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
         }
     }
 
-    private async Task ListenForCancellationsAsync(CancellationToken cancellationToken)
+    private async Task ListenForCancellationsAsync(string workerIdentity, CancellationToken cancellationToken)
     {
-        await foreach (var jobId in queue.ReadCancellationsAsync(cancellationToken))
+        await foreach (var jobId in queue.ReadCancellationsAsync(workerIdentity, cancellationToken))
         {
             logger.LogInformation("Cancellation signal received for job {JobId}.", jobId);
             cancellationRegistry.Cancel(jobId);
@@ -100,13 +101,22 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
 
     private async Task ProcessDeliveryAsync(ScanJobDelivery delivery, SemaphoreSlim gate, CancellationToken stoppingToken)
     {
+        var tracked = false;
         try
         {
+            if (delivery.TenantId != options.TenantId) { logger.LogError("Worker {Identity} received a cross-tenant job {JobId}; dead-lettering without acknowledgement.", options.Identity, delivery.JobId); await delivery.RejectAsync(false, CancellationToken.None); return; }
             var jobToken = cancellationRegistry.Register(delivery.JobId, stoppingToken);
+            activity.Increment(); tracked = true;
             await using var scope = scopeFactory.CreateAsyncScope();
-            await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().ExecuteAsync(delivery.JobId, jobToken, options.TenantId);
+            var outcome = await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().ExecuteAsync(delivery.JobId, jobToken, options.TenantId, options.Identity);
+            if (outcome is ScanExecutionOutcome.Missing or ScanExecutionOutcome.Unauthorized)
+            {
+                logger.LogError("Worker {Identity} could not authorize job {JobId} ({Outcome}); dead-lettering without acknowledgement.", options.Identity, delivery.JobId, outcome);
+                await delivery.RejectAsync(false, CancellationToken.None);
+                return;
+            }
             await delivery.AcknowledgeAsync(stoppingToken);
-            CompletedJobs.Add(1);
+            if (outcome == ScanExecutionOutcome.Completed) CompletedJobs.Add(1);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -127,6 +137,7 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
         finally
         {
             cancellationRegistry.Remove(delivery.JobId);
+            if (tracked) activity.Decrement();
             gate.Release();
         }
     }
@@ -134,7 +145,7 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
 
 public sealed class WorkerOptions
 {
-    public string Identity { get; } = Environment.GetEnvironmentVariable("HOSTNAME") ?? $"worker-{Guid.NewGuid():N}";
+    public string Identity { get; }
     public string Version { get; } = typeof(Worker).Assembly.GetName().Version?.ToString() ?? "1.1";
     public IReadOnlyCollection<string> Capabilities { get; } = ["scope-validation", "passive-mock", "cancellation", "bounded-concurrency"];
     public string? ControlPlaneUrl { get; }
@@ -144,6 +155,7 @@ public sealed class WorkerOptions
     public WorkerOptions(IConfiguration configuration)
     {
         var url = configuration["Worker:ControlPlaneUrl"];
+        Identity = configuration["Worker:Identity"]?.Trim() ?? Environment.GetEnvironmentVariable("HOSTNAME") ?? $"worker-{Guid.NewGuid():N}";
         ControlPlaneUrl = string.IsNullOrWhiteSpace(url) ? null : url.TrimEnd('/');
         Concurrency = Math.Clamp(configuration.GetValue("Worker:Concurrency", 2), 1, 32);
         MaxAttempts = Math.Clamp(configuration.GetValue("RabbitMQ:MaxAttempts", 3), 1, 20);

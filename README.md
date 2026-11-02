@@ -110,7 +110,9 @@ docker compose --env-file .env -f deploy/docker/docker-compose.yml up --build
 
 Compose applies the checked-in EF migration on API startup when `Database__ApplyMigrations=true`. See [development](docs/development.md) and [deployment](docs/deployment.md) for boundaries and limitations.
 
-The Compose API publishes durable persistent jobs to `sentinelai.scan.jobs`; `SentinelAI.Worker` consumes them with manual acknowledgements, bounded concurrency, retry/dead-letter handling, cancellation signals, and restart recovery. Worker registration and heartbeats are persisted in PostgreSQL and shown through the authenticated API. Set `WORKER_CONTROL_PLANE_TOKEN` and `WORKER_TENANT_ID` in `.env` before a shared deployment.
+The Compose API writes jobs and RabbitMQ outbox messages transactionally. The outbox dispatcher publishes publisher-confirmed, durable messages to tenant-specific queues; `SentinelAI.Worker` consumes them with manual acknowledgements, bounded concurrency, retry/dead-letter handling, per-worker cancellation signals, and restart recovery. Worker credentials are bound to worker identity and tenant assignment, while worker registration and heartbeats are persisted in PostgreSQL and shown through the authenticated API. Public target authorization is a separate operator-request/administrator-approval workflow with evidence and expiry. Set `WORKER_CONTROL_PLANE_TOKEN` and `WORKER_TENANT_ID` in `.env` before a shared deployment; never deploy the Compose Development authentication settings to a shared environment.
+
+Worker credential rotation is supported by configuring a worker credential as `old-token|new-token` during a rollout, then removing the old value or listing it under `Authentication:RevokedWorkerTokens`. Production deployments should store these settings in a secret manager and use JWT/OIDC and/or mTLS at the control-plane edge.
 
 ## Contributing
 

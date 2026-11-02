@@ -4,9 +4,12 @@ using SentinelAI.Domain;
 
 namespace SentinelAI.Security.Policy;
 
-public sealed record ScopeValidationResult(bool IsValid, IReadOnlyList<string> Errors)
+public sealed record ValidatedExecutionTarget(string OriginalHostname, IReadOnlyCollection<IPAddress> ApprovedAddresses,
+    DateTimeOffset ResolvedAt, Guid ScopeId, Guid TenantId, DateTimeOffset ExpiresAt, string OperationProfile);
+
+public sealed record ScopeValidationResult(bool IsValid, IReadOnlyList<string> Errors, ValidatedExecutionTarget? ValidatedTarget = null)
 {
-    public static ScopeValidationResult Valid() => new(true, []);
+    public static ScopeValidationResult Valid(ValidatedExecutionTarget? target = null) => new(true, [], target);
     public static ScopeValidationResult Invalid(params string[] errors) => new(false, errors);
 }
 
@@ -70,9 +73,9 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         if (IsExcluded(scope.Exclusions, target)) return ScopeValidationResult.Invalid("Target is explicitly excluded.");
         return kind switch
         {
-            TargetKind.Network => await ValidateNetworkExecutionAsync(scope, target, cancellationToken),
-            TargetKind.Web => await ValidateWebExecutionAsync(scope, target, cancellationToken),
-            TargetKind.Code => ValidateCodeExecution(scope, target),
+            TargetKind.Network => await ValidateNetworkExecutionAsync(scope, target, operationProfile, cancellationToken),
+            TargetKind.Web => await ValidateWebExecutionAsync(scope, target, operationProfile, cancellationToken),
+            TargetKind.Code => ValidateCodeExecution(scope, target, operationProfile),
             _ => ScopeValidationResult.Invalid("Target kind is not supported.")
         };
     }
@@ -84,18 +87,18 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         return ValidateExecutionAsync(scope, tenantId, TargetKind.Web, redirect.ToString(), operationProfile, cancellationToken);
     }
 
-    private async ValueTask<ScopeValidationResult> ValidateNetworkExecutionAsync(TargetScope scope, string target, CancellationToken cancellationToken)
+    private async ValueTask<ScopeValidationResult> ValidateNetworkExecutionAsync(TargetScope scope, string target, string operationProfile, CancellationToken cancellationToken)
     {
         if (TryParseCidr(target.Trim(), out var networkAddress, out var targetPrefix))
         {
             return scope.Targets.Where(x => x.Kind == TargetKind.Network).Any(x => TryParseCidr(x.Value, out _, out var authorizedPrefix) && authorizedPrefix <= targetPrefix && IsWithinNetwork(networkAddress, x.Value))
-                ? ScopeValidationResult.Valid() : ScopeValidationResult.Invalid("Target is outside the authorized scope.");
+                ? ScopeValidationResult.Valid(new ValidatedExecutionTarget(target, [networkAddress], DateTimeOffset.UtcNow, scope.Id, scope.TenantId, scope.ExpiresAt, operationProfile)) : ScopeValidationResult.Invalid("Target is outside the authorized scope.");
         }
         if (IPAddress.TryParse(target.Trim(), out var address))
         {
             if (IsDisallowedAddress(address)) return ScopeValidationResult.Invalid("Target resolves to a reserved or special-purpose address.");
             return scope.Targets.Any(x => x.Kind == TargetKind.Network && IsWithinNetwork(address, x.Value))
-                ? ScopeValidationResult.Valid() : ScopeValidationResult.Invalid("Target is outside the authorized scope.");
+                ? ScopeValidationResult.Valid(new ValidatedExecutionTarget(target, [NormalizeAddress(address)], DateTimeOffset.UtcNow, scope.Id, scope.TenantId, scope.ExpiresAt, operationProfile)) : ScopeValidationResult.Invalid("Target is outside the authorized scope.");
         }
         var hostname = target.Trim().TrimEnd('.');
         if (!IsValidHostname(hostname)) return ScopeValidationResult.Invalid("Target is not a valid hostname or IP address.");
@@ -107,14 +110,14 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         {
             if (IPAddress.TryParse(authorized.Value.Split('/')[0], out _))
             {
-                if (resolved.All(ip => IsWithinNetwork(ip, authorized.Value))) return ScopeValidationResult.Valid();
+                if (resolved.All(ip => IsWithinNetwork(ip, authorized.Value))) return ScopeValidationResult.Valid(CreateValidatedTarget(hostname, resolved, scope, operationProfile));
             }
-            else if (DomainMatches(hostname, authorized.Value) && resolved.All(ip => !IsPrivateAddress(ip))) return ScopeValidationResult.Valid();
+            else if (DomainMatches(hostname, authorized.Value) && resolved.All(ip => !IsPrivateAddress(ip))) return ScopeValidationResult.Valid(CreateValidatedTarget(hostname, resolved, scope, operationProfile));
         }
         return ScopeValidationResult.Invalid("Target is outside the authorized scope.");
     }
 
-    private async ValueTask<ScopeValidationResult> ValidateWebExecutionAsync(TargetScope scope, string target, CancellationToken cancellationToken)
+    private async ValueTask<ScopeValidationResult> ValidateWebExecutionAsync(TargetScope scope, string target, string operationProfile, CancellationToken cancellationToken)
     {
         if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || !IsValidHostname(uri.Host) || uri.UserInfo.Length > 0)
             return ScopeValidationResult.Invalid("Web target must be an absolute HTTP(S) URL without credentials.");
@@ -126,17 +129,17 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         {
             if (!Uri.TryCreate(authorized.Value, UriKind.Absolute, out var baseUri)) continue;
             if (baseUri.Scheme.Equals(uri.Scheme, StringComparison.OrdinalIgnoreCase) && DomainMatches(uri.Host, baseUri.Host) && IsPathWithin(baseUri.AbsolutePath, uri.AbsolutePath))
-                return ScopeValidationResult.Valid();
+                return ScopeValidationResult.Valid(CreateValidatedTarget(uri.Host, resolved, scope, operationProfile));
         }
         return ScopeValidationResult.Invalid("Web target or redirect is outside the authorized scope.");
     }
 
-    private static ScopeValidationResult ValidateCodeExecution(TargetScope scope, string target)
+    private static ScopeValidationResult ValidateCodeExecution(TargetScope scope, string target, string operationProfile)
     {
         if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
             return ScopeValidationResult.Invalid("Code target must be an authorized GitHub repository URL.");
         return scope.Targets.Where(x => x.Kind == TargetKind.Code).Any(x => Uri.TryCreate(x.Value, UriKind.Absolute, out var allowed) && allowed.Host.Equals(uri.Host, StringComparison.OrdinalIgnoreCase) && string.Equals(NormalizeRepositoryPath(allowed.AbsolutePath), NormalizeRepositoryPath(uri.AbsolutePath), StringComparison.OrdinalIgnoreCase))
-            ? ScopeValidationResult.Valid() : ScopeValidationResult.Invalid("Code target is outside the authorized repository scope.");
+            ? ScopeValidationResult.Valid(new ValidatedExecutionTarget(uri.Host, [], DateTimeOffset.UtcNow, scope.Id, scope.TenantId, scope.ExpiresAt, operationProfile)) : ScopeValidationResult.Invalid("Code target is outside the authorized repository scope.");
     }
 
     private static bool TryValidateTarget(TargetDefinition target, out string? error, out bool requiresPublicAuthorization)
@@ -197,7 +200,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     }
 
     private static bool HasValidPublicAuthorization(TargetScope scope, TargetDefinition target, DateTimeOffset now)
-        => scope.PublicTargetVerifications.Any(x => x.VerifiedAt <= now && !string.IsNullOrWhiteSpace(x.Evidence) && !string.IsNullOrWhiteSpace(x.Verifier) && !string.IsNullOrWhiteSpace(x.Method) && VerificationMatches(x.Target, target.Value));
+        => scope.PublicTargetVerifications.Any(x => x.VerifiedAt <= now && (x.ExpiresAt is null || x.ExpiresAt > now) && !string.IsNullOrWhiteSpace(x.Evidence) && !string.IsNullOrWhiteSpace(x.Verifier) && !string.IsNullOrWhiteSpace(x.Method) && VerificationMatches(x.Target, target.Value));
 
     private static bool VerificationMatches(string verified, string target)
     {
@@ -214,7 +217,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         var parts = value.Split('/', StringSplitOptions.None);
         if (parts.Length > 2 || parts.Any(string.IsNullOrWhiteSpace) || parts[0].Contains('%')) return false;
         if (!IPAddress.TryParse(parts[0], out var parsed) || parsed is null) return false;
-        address = parsed;
+        address = NormalizeAddress(parsed);
         var max = address.AddressFamily == AddressFamily.InterNetwork ? 32 : 128;
         if (parts.Length == 1) { prefix = max; return true; }
         if (!int.TryParse(parts[1], out prefix) || prefix < 0 || prefix > max) return false;
@@ -245,23 +248,35 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     private static string NormalizeRepositoryPath(string path) => path.Trim('/').TrimEnd('/').Replace(".git", string.Empty, StringComparison.OrdinalIgnoreCase);
 
     internal static bool IsPrivateAddress(IPAddress address)
-        => IsWithinNetwork(address, "10.0.0.0/8") || IsWithinNetwork(address, "172.16.0.0/12") || IsWithinNetwork(address, "192.168.0.0/16") || IsWithinNetwork(address, "fc00::/7");
+    {
+        address = NormalizeAddress(address);
+        return IsWithinNetwork(address, "10.0.0.0/8") || IsWithinNetwork(address, "172.16.0.0/12") || IsWithinNetwork(address, "192.168.0.0/16") || IsWithinNetwork(address, "fc00::/7");
+    }
 
     internal static bool IsDisallowedAddress(IPAddress address)
-        => address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any) || IPAddress.IsLoopback(address) ||
+    {
+        address = NormalizeAddress(address);
+        return address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any) || IPAddress.IsLoopback(address) ||
            IsWithinNetwork(address, "0.0.0.0/8") || IsWithinNetwork(address, "100.64.0.0/10") || IsWithinNetwork(address, "127.0.0.0/8") ||
            IsWithinNetwork(address, "169.254.0.0/16") || IsWithinNetwork(address, "192.0.0.0/24") || IsWithinNetwork(address, "192.0.2.0/24") ||
            IsWithinNetwork(address, "198.18.0.0/15") || IsWithinNetwork(address, "198.51.100.0/24") || IsWithinNetwork(address, "203.0.113.0/24") ||
            IsWithinNetwork(address, "224.0.0.0/4") || IsWithinNetwork(address, "240.0.0.0/4") ||
            IsWithinNetwork(address, "::/128") || IsWithinNetwork(address, "::1/128") || IsWithinNetwork(address, "fe80::/10") ||
            IsWithinNetwork(address, "ff00::/8") || IsWithinNetwork(address, "2001:db8::/32");
+    }
 
     internal static bool IsWithinNetwork(IPAddress address, string definition)
     {
+        address = NormalizeAddress(address);
         if (!TryParseCidr(definition, out var network, out var prefix) || network.AddressFamily != address.AddressFamily) return false;
         var networkBytes = network.GetAddressBytes(); var addressBytes = address.GetAddressBytes();
         var fullBytes = prefix / 8; var remainingBits = prefix % 8;
         for (var i = 0; i < fullBytes; i++) if (networkBytes[i] != addressBytes[i]) return false;
         return remainingBits == 0 || (networkBytes[fullBytes] & (byte)(0xFF << (8 - remainingBits))) == (addressBytes[fullBytes] & (byte)(0xFF << (8 - remainingBits)));
     }
+
+    private static ValidatedExecutionTarget CreateValidatedTarget(string hostname, IReadOnlyCollection<IPAddress> addresses, TargetScope scope, string operationProfile)
+        => new(hostname, addresses.Select(NormalizeAddress).Distinct().ToArray(), DateTimeOffset.UtcNow, scope.Id, scope.TenantId, scope.ExpiresAt, operationProfile);
+
+    private static IPAddress NormalizeAddress(IPAddress address) => address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 }

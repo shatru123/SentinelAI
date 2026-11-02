@@ -118,6 +118,7 @@ public sealed class ScanLifecycleTests
         Assert.NotEqual(ScanExecutionOutcome.Completed, outcome);
         await using var verifyDb = new AppDbContext(options);
         Assert.Empty(await verifyDb.Assets.ToListAsync());
+        Assert.Empty(await verifyDb.AssetServices.ToListAsync());
         Assert.NotEqual(ScanJobStatus.Completed, (await verifyDb.AgentJobs.SingleAsync(x => x.Id == jobId)).Status);
     }
 
@@ -147,6 +148,7 @@ public sealed class ScanLifecycleTests
         Assert.Equal(ScanExecutionOutcome.ClaimedByAnotherWorker, outcome);
         await using var verifyDb = new AppDbContext(options);
         Assert.Empty(await verifyDb.Assets.ToListAsync());
+        Assert.Empty(await verifyDb.AssetServices.ToListAsync());
         Assert.NotEqual(ScanJobStatus.Completed, (await verifyDb.AgentJobs.SingleAsync(x => x.Id == jobId)).Status);
     }
 
@@ -168,6 +170,7 @@ public sealed class ScanLifecycleTests
         Assert.NotEqual(ScanExecutionOutcome.Completed, outcome);
         await using var verifyDb = new AppDbContext(options);
         Assert.Empty(await verifyDb.Assets.ToListAsync());
+        Assert.Empty(await verifyDb.AssetServices.ToListAsync());
     }
 
     [Fact]

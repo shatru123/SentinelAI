@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using SentinelAI.Application;
 using SentinelAI.Domain;
 using SentinelAI.Infrastructure;
@@ -169,51 +170,53 @@ public sealed class PostgresReliabilityTests
     [Fact]
     public async Task Postgres_backfills_reachability_history_without_overwriting_observation_or_existing_values()
     {
-        var connection = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION")
-            ?? "Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=replace-with-local-dev-password";
-        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options;
-        await using var db = new AppDbContext(options);
-        await db.Database.MigrateAsync();
-        Assert.Contains("20261102170000_Phase211ReachabilityHistoryBackfill", await db.Database.GetAppliedMigrationsAsync());
-
-        var tenant = new Tenant($"history-{Guid.NewGuid():N}");
-        var scope = new TargetScope(tenant.Id, "history", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
-        var online = new Asset(tenant.Id, scope.Id, "10.61.0.5", TargetKind.Network);
-        online.RecordReachabilityConfirmation();
-        var expectedObservedAt = online.LastObservedAt;
-        var offline = new Asset(tenant.Id, scope.Id, "10.61.0.6", TargetKind.Network);
-        var existingOnline = new Asset(tenant.Id, scope.Id, "10.61.0.7", TargetKind.Network);
-        existingOnline.RecordReachabilityConfirmation();
-        var existingReachability = existingOnline.LastSuccessfulReachabilityAt;
-        db.AddRange(tenant, scope, online, offline, existingOnline);
-        await db.SaveChangesAsync();
-
+        var connection = PostgreSqlConnection();
+        var schema = $"migration_{Guid.NewGuid():N}";
+        await CreateSchemaAsync(connection, schema);
         try
         {
-            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE \"Assets\" SET \"LastSuccessfulReachabilityAt\" = NULL WHERE \"Id\" = {online.Id}");
-            await db.Database.ExecuteSqlRawAsync("""
-                UPDATE "Assets"
-                SET "LastSuccessfulReachabilityAt" = "LastObservedAt"
-                WHERE "IsOnline" = TRUE
-                  AND "LastSuccessfulReachabilityAt" IS NULL;
-                """);
+            var isolatedConnection = new NpgsqlConnectionStringBuilder(connection) { SearchPath = schema }.ConnectionString;
+            var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(isolatedConnection).Options;
+            var tenantId = Guid.NewGuid();
+            var scopeId = Guid.NewGuid();
+            var onlineId = Guid.NewGuid();
+            var offlineId = Guid.NewGuid();
+            var existingOnlineId = Guid.NewGuid();
+            var observedAt = NormalizePostgreSqlTimestamp(DateTimeOffset.UtcNow.AddHours(-2));
+            var existingObservedAt = NormalizePostgreSqlTimestamp(DateTimeOffset.UtcNow.AddHours(-3));
+            var existingReachability = NormalizePostgreSqlTimestamp(DateTimeOffset.UtcNow.AddHours(-4));
 
-            var persistedOnline = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == online.Id);
-            var persistedOffline = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == offline.Id);
-            var persistedExisting = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == existingOnline.Id);
-            Assert.Equal(online.Id, persistedOnline.Id);
-            Assert.Equal(tenant.Id, persistedOnline.TenantId);
-            Assert.Equal(expectedObservedAt, persistedOnline.LastObservedAt);
-            Assert.Equal(expectedObservedAt, persistedOnline.LastSuccessfulReachabilityAt);
-            Assert.Equal(offline.Id, persistedOffline.Id);
-            Assert.Null(persistedOffline.LastSuccessfulReachabilityAt);
-            Assert.Equal(existingReachability, persistedExisting.LastSuccessfulReachabilityAt);
+            await using (var db = new AppDbContext(options))
+            {
+                await db.Database.MigrateAsync("20261102160000_Phase21AssetObservationSemantics");
+                await db.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO "Assets" ("Id", "TenantId", "ScopeId", "Address", "Kind", "IsOnline", "LastObservedAt", "LastSuccessfulReachabilityAt")
+                    VALUES ({onlineId}, {tenantId}, {scopeId}, {"10.61.0.5"}, {(int)TargetKind.Network}, {true}, {observedAt}, {null});
+                    INSERT INTO "Assets" ("Id", "TenantId", "ScopeId", "Address", "Kind", "IsOnline", "LastObservedAt", "LastSuccessfulReachabilityAt")
+                    VALUES ({offlineId}, {tenantId}, {scopeId}, {"10.61.0.6"}, {(int)TargetKind.Network}, {false}, {observedAt}, {null});
+                    INSERT INTO "Assets" ("Id", "TenantId", "ScopeId", "Address", "Kind", "IsOnline", "LastObservedAt", "LastSuccessfulReachabilityAt")
+                    VALUES ({existingOnlineId}, {tenantId}, {scopeId}, {"10.61.0.7"}, {(int)TargetKind.Network}, {(true)}, {existingObservedAt}, {existingReachability});
+                    """);
+
+                await db.Database.MigrateAsync();
+                Assert.Contains("20261102170000_Phase211ReachabilityHistoryBackfill", await db.Database.GetAppliedMigrationsAsync());
+
+                var persistedOnline = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == onlineId);
+                var persistedOffline = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == offlineId);
+                var persistedExisting = await db.Assets.AsNoTracking().SingleAsync(x => x.Id == existingOnlineId);
+                Assert.Equal(tenantId, persistedOnline.TenantId);
+                Assert.Equal(observedAt, persistedOnline.LastObservedAt);
+                Assert.Equal(observedAt, persistedOnline.LastSuccessfulReachabilityAt);
+                Assert.Equal(offlineId, persistedOffline.Id);
+                Assert.Equal(observedAt, persistedOffline.LastObservedAt);
+                Assert.Null(persistedOffline.LastSuccessfulReachabilityAt);
+                Assert.Equal(existingObservedAt, persistedExisting.LastObservedAt);
+                Assert.Equal(existingReachability, persistedExisting.LastSuccessfulReachabilityAt);
+            }
         }
         finally
         {
-            await db.Assets.Where(x => x.TenantId == tenant.Id).ExecuteDeleteAsync();
-            await db.TargetScopes.Where(x => x.TenantId == tenant.Id).ExecuteDeleteAsync();
-            await db.Tenants.Where(x => x.Id == tenant.Id).ExecuteDeleteAsync();
+            await DropSchemaAsync(connection, schema);
         }
     }
 
@@ -241,7 +244,11 @@ public sealed class PostgresReliabilityTests
             Assert.NotEqual(ScanExecutionOutcome.Completed, outcome);
             await using var verifyDb = new AppDbContext(options);
             Assert.Empty(await verifyDb.Assets.Where(x => x.TenantId == seed.TenantId).ToListAsync());
-            Assert.NotEqual(ScanJobStatus.Completed, (await verifyDb.AgentJobs.SingleAsync(x => x.Id == seed.JobId)).Status);
+            Assert.Empty(await verifyDb.AssetServices.Where(x => x.TenantId == seed.TenantId).ToListAsync());
+            var persistedJob = await verifyDb.AgentJobs.SingleAsync(x => x.Id == seed.JobId);
+            Assert.NotEqual(ScanJobStatus.Completed, persistedJob.Status);
+            Assert.Equal(AgentExecutionStatus.Pending, (await verifyDb.AgentExecutions.SingleAsync(x => x.AgentJobId == seed.JobId)).Status);
+            Assert.Empty(await verifyDb.AuditEvents.Where(x => x.ResourceId == seed.JobId && x.Action == "scan.completed").ToListAsync());
         }
         finally
         {
@@ -279,9 +286,12 @@ public sealed class PostgresReliabilityTests
             Assert.Equal(ScanExecutionOutcome.ClaimedByAnotherWorker, outcome);
             await using var verifyDb = new AppDbContext(options);
             Assert.Empty(await verifyDb.Assets.Where(x => x.TenantId == seed.TenantId).ToListAsync());
+            Assert.Empty(await verifyDb.AssetServices.Where(x => x.TenantId == seed.TenantId).ToListAsync());
             var persistedJob = await verifyDb.AgentJobs.SingleAsync(x => x.Id == seed.JobId);
             Assert.NotEqual(ScanJobStatus.Completed, persistedJob.Status);
             Assert.Equal("replacement-worker", persistedJob.LeaseOwnerWorkerId);
+            Assert.NotEqual(AgentExecutionStatus.Completed, (await verifyDb.AgentExecutions.SingleAsync(x => x.AgentJobId == seed.JobId)).Status);
+            Assert.Empty(await verifyDb.AuditEvents.Where(x => x.ResourceId == seed.JobId && x.Action == "scan.completed").ToListAsync());
         }
         finally
         {
@@ -313,6 +323,32 @@ public sealed class PostgresReliabilityTests
         await db.Workers.Where(x => x.TenantId == tenantId && x.Identity == workerIdentity).ExecuteDeleteAsync();
         await db.Users.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync();
         await db.Tenants.Where(x => x.Id == tenantId).ExecuteDeleteAsync();
+    }
+
+    private static string PostgreSqlConnection()
+        => Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION")
+            ?? "Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=replace-with-local-dev-password";
+
+    private static DateTimeOffset NormalizePostgreSqlTimestamp(DateTimeOffset value)
+    {
+        var utc = value.ToUniversalTime();
+        return new DateTimeOffset(utc.Ticks - utc.Ticks % 10, TimeSpan.Zero);
+    }
+
+    private static async Task CreateSchemaAsync(string connection, string schema)
+    {
+        await using var database = new NpgsqlConnection(connection);
+        await database.OpenAsync();
+        await using var command = new NpgsqlCommand($"CREATE SCHEMA \"{schema}\"", database);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task DropSchemaAsync(string connection, string schema)
+    {
+        await using var database = new NpgsqlConnection(connection);
+        await database.OpenAsync();
+        await using var command = new NpgsqlCommand($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", database);
+        await command.ExecuteNonQueryAsync();
     }
 
     private sealed record InventoryExecutionSeed(Guid TenantId, Guid ScopeId, Guid JobId, string WorkerIdentity);

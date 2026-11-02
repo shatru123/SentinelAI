@@ -140,6 +140,16 @@ api.MapGet("/findings", async (HttpContext context, IAppDbContext db, int page =
     return Results.Ok(new PagedResponse<FindingResponse>(findings, page, pageSize, total));
 }).RequireAuthorization("Reader");
 
+api.MapGet("/assets/{id:guid}/services", async (HttpContext context, Guid id, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var assetExists = await db.Assets.AsNoTracking().AnyAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
+    if (!assetExists) return Results.NotFound();
+    var services = await db.AssetServices.AsNoTracking().Where(x => x.AssetId == id && x.TenantId == tenantId).OrderBy(x => x.Port).ThenBy(x => x.Protocol)
+        .Select(x => new AssetServiceResponse(x.Id, x.AssetId, x.Protocol, x.Port, x.Name, x.Version, x.ObservedAt)).ToListAsync(cancellationToken);
+    return Results.Ok(services);
+}).RequireAuthorization("Reader");
+
 api.MapGet("/agents", () => Results.Ok(Array.Empty<AgentResponse>())).RequireAuthorization("Reader");
 api.MapGet("/ai/providers", (IConfiguration configuration) => Results.Ok(new { configured = configuration["AI:DefaultProvider"] ?? "none", providers = new[] { "openai", "anthropic", "ollama" } })).RequireAuthorization("Reader");
 api.MapGet("/ai/health", (IConfiguration configuration) => Results.Ok(new { status = "advisory-only", defaultProvider = configuration["AI:DefaultProvider"] ?? "none" })).RequireAuthorization("Reader");
@@ -155,7 +165,7 @@ workers.MapPost("/register", async (HttpContext context, WorkerRegistrationReque
 {
     var principal = ToPrincipal(context);
     var identity = request.Identity.Trim();
-    if (identity.Length is 0 or > 128 || request.Capabilities is null || request.Capabilities.Count is 0 or > 32 || request.Capacity is < 1 or > 256 || !request.Capabilities.Contains("passive-mock", StringComparer.OrdinalIgnoreCase)) return Results.BadRequest("Invalid worker identity, capacity or capabilities.");
+    if (identity.Length is 0 or > 128 || request.Capabilities is null || request.Capabilities.Count is 0 or > 32 || request.Capacity is < 1 or > 256 || !request.Capabilities.Any(capability => capability.Equals("passive-mock", StringComparison.OrdinalIgnoreCase) || capability.Equals("passive-inventory", StringComparison.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker identity, capacity or capabilities.");
     if (!identity.Equals(context.User.FindFirstValue("worker_id"), StringComparison.Ordinal)) return Results.Unauthorized();
     var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == identity, cancellationToken);
     if (worker is null) { worker = new WorkerRegistration(principal.TenantId, identity, request.Version.Trim(), request.Capabilities); db.Workers.Add(worker); }

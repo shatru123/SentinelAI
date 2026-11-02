@@ -13,7 +13,7 @@ SentinelAI is designed to discover and inventory explicitly authorized assets, e
 | Repository foundation and architecture | Complete |
 | Phase 1 solution foundation | Complete |
 | Phase 1.1 broker-backed worker and security remediation | Complete |
-| Authorized network discovery | Planned |
+| Authorized network inventory (passive foundation) | In progress |
 | Vulnerability correlation | Planned |
 | OpenAI, Claude and Ollama providers | Planned |
 | Dashboard and monitoring | Planned |
@@ -114,7 +114,7 @@ The Compose API writes jobs and RabbitMQ outbox messages transactionally. The ou
 
 Worker credential rotation is supported by configuring a worker credential as `old-token|new-token` during a rollout, then removing the old value or listing it under `Authentication:RevokedWorkerTokens`. Production deployments should store these settings in a secret manager and use JWT/OIDC and/or mTLS at the control-plane edge.
 
-Phase 1.2.2 adds lease-loss cancellation, tenant-and-exact-worker cancellation routing, concurrency-safe legacy job recovery, and heartbeat health admission that does not trust stale capacity counters. Phase 1.2.1 also adds worker-owned expiring leases, PostgreSQL `SKIP LOCKED` outbox claims with backoff, complete-range CIDR validation, DNS exclusion checks for all resolved addresses, and explicit web subdomain authorization. Active network probing remains disabled.
+Phase 1.2.2 adds lease-loss cancellation, tenant-and-exact-worker cancellation routing, concurrency-safe legacy job recovery, and heartbeat health admission that does not trust stale capacity counters. Phase 1.2.1 also adds worker-owned expiring leases, PostgreSQL `SKIP LOCKED` outbox claims with backoff, complete-range CIDR validation, DNS exclusion checks for all resolved addresses, and explicit web subdomain authorization. The Phase 2 passive inventory foundation records only execution-time validated scope declarations and optional tenant-scoped service observations; it performs no DNS, socket, port or command activity. Active network probing remains disabled.
 
 ## Contributing
 

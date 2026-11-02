@@ -31,4 +31,10 @@ To exercise the broker path, start Compose and inspect `docker compose ... logs 
 
 Phase 1.2.2 integration tests require reachable PostgreSQL and RabbitMQ. Compose publishes them on `127.0.0.1:5432` and `127.0.0.1:5672`; CI provisions both services. The PostgreSQL tests verify migration state, legacy Running-job recovery, persisted heartbeat capacity, concurrent recovery, and database concurrency protection for worker leases. RabbitMQ tests verify manual acknowledgement/retry and cancellation isolation for identical worker identities in different tenants.
 
+## Phase 2 passive inventory foundation
+
+The `network-inventory-passive` profile is authorized like every other operation profile and is available to workers advertising `passive-inventory`. Its fixed adapter revalidates every scope target at execution time, applies the scope request-rate limit, and records an offline/passive observation. It does not resolve DNS, open sockets, probe ports, execute commands, or claim reachability. Asset services are tenant-scoped and can be retrieved from `/api/v1/assets/{id}/services`.
+
+The existing `mock-passive` profile remains available for compatibility. Do not enable active discovery by configuration alone; an active adapter requires a new security review, explicit egress controls, cancellation tests and authorization acceptance evidence.
+
 Integration tests require RabbitMQ. CI provisions it as a service; locally use the Compose RabbitMQ service or set `RABBITMQ_TEST_HOST`, `RABBITMQ_TEST_PORT`, `RABBITMQ_TEST_USER` and `RABBITMQ_TEST_PASSWORD` before running `dotnet test`. Required broker tests do not silently pass when RabbitMQ is unavailable.

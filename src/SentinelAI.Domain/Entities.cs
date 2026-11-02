@@ -348,6 +348,24 @@ public sealed class Asset
     public void MarkSeen(bool online) { IsOnline = online; LastSeenAt = DateTimeOffset.UtcNow; }
 }
 
+public sealed class AssetService
+{
+    private AssetService() { }
+    public AssetService(Guid tenantId, Guid assetId, string protocol, int port, string? name, string? version)
+    {
+        Id = Guid.NewGuid(); TenantId = tenantId; AssetId = assetId; Protocol = protocol.Trim().ToLowerInvariant(); Port = port;
+        Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim(); Version = string.IsNullOrWhiteSpace(version) ? null : version.Trim(); ObservedAt = DateTimeOffset.UtcNow;
+    }
+    public Guid Id { get; private set; }
+    public Guid TenantId { get; private set; }
+    public Guid AssetId { get; private set; }
+    public string Protocol { get; private set; } = string.Empty;
+    public int Port { get; private set; }
+    public string? Name { get; private set; }
+    public string? Version { get; private set; }
+    public DateTimeOffset ObservedAt { get; private set; }
+}
+
 public sealed class Finding
 {
     private Finding() { }

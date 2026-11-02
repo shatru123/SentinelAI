@@ -8,7 +8,7 @@
 <div class="page-heading"><div><p class="eyebrow">Assessments / controlled execution</p><h1>Security scans</h1><p class="muted">Every assessment is bound to a validated authorization scope.</p></div></div>
 <AuthorizeView Roles="Admin,SecurityAnalyst"><Authorized>
 <section class="panel assessment-form"><div class="panel-heading"><div><p class="eyebrow">Authorized workflow</p><h2>New passive assessment</h2></div><span class="status-pill healthy">NO ACTIVE PROBING</span></div>
-<div class="form-grid"><label>Assessment name<input @bind="name" maxlength="80" /></label><label>Private target or CIDR<input @bind="target" maxlength="253" /></label><label>Operation profile<select @bind="profile"><option value="mock-passive">mock-passive</option></select></label><label>Expires in hours<input type="number" min="1" max="720" @bind="expiryHours" /></label></div>
+<div class="form-grid"><label>Assessment name<input @bind="name" maxlength="80" /></label><label>Private target or CIDR<input @bind="target" maxlength="253" /></label><label>Operation profile<select @bind="profile"><option value="network-inventory-passive">network-inventory-passive</option><option value="mock-passive">mock-passive</option></select></label><label>Expires in hours<input type="number" min="1" max="720" @bind="expiryHours" /></label></div>
 <label>Authorization evidence<input @bind="evidence" maxlength="200" /></label><button class="primary-button" @onclick="CreateAssessment" disabled="@submitting">@(submitting ? "Submitting…" : "+ Create authorized assessment")</button>
 @if (!string.IsNullOrWhiteSpace(message)) { <p class="@(failed ? "error-text" : "muted")">@message</p> }</section>
 </Authorized><NotAuthorized><section class="panel"><p class="muted">Your role can view assessments but cannot create them.</p></section></NotAuthorized></AuthorizeView>
@@ -17,7 +17,7 @@
 @code {
     private string name = "private-lab-assessment";
     private string target = "10.20.0.0/16";
-    private string profile = "mock-passive";
+    private string profile = "network-inventory-passive";
     private string evidence = "operator-approved-lab";
     private int expiryHours = 24;
     private bool submitting;

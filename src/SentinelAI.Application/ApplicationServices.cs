@@ -14,6 +14,7 @@ public interface IAppDbContext
     DbSet<AgentJob> AgentJobs { get; }
     DbSet<AgentExecution> AgentExecutions { get; }
     DbSet<Asset> Assets { get; }
+    DbSet<AssetService> AssetServices { get; }
     DbSet<Finding> Findings { get; }
     DbSet<Evidence> Evidence { get; }
     DbSet<ApprovalRequest> ApprovalRequests { get; }
@@ -37,6 +38,24 @@ public sealed record PrincipalContext(Guid TenantId, Guid UserId, string Subject
     public bool CanRead => Role is UserRole.Admin or UserRole.SecurityAnalyst or UserRole.Viewer;
     public bool CanOperate => Role is UserRole.Admin or UserRole.SecurityAnalyst;
     public CurrentUserResponse ToResponse() => new(Subject, TenantId, UserId, Role.ToString());
+}
+
+public sealed record AuthorizedInventoryTarget(TargetDefinition Definition, ValidatedExecutionTarget Validation);
+public sealed record InventoryServiceObservation(string Protocol, int Port, string? Name = null, string? Version = null);
+public sealed record InventoryObservation(string Address, TargetKind Kind, bool IsOnline, IReadOnlyCollection<InventoryServiceObservation> Services);
+
+public interface IPassiveInventoryAdapter
+{
+    Task<IReadOnlyCollection<InventoryObservation>> CollectAsync(
+        IReadOnlyCollection<AuthorizedInventoryTarget> targets,
+        int requestsPerMinute,
+        CancellationToken cancellationToken = default);
+}
+
+public static class InventoryOperationProfiles
+{
+    public const string MockPassive = "mock-passive";
+    public const string NetworkInventoryPassive = "network-inventory-passive";
 }
 
 public interface IScanJobQueue

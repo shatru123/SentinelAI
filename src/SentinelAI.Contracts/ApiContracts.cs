@@ -24,6 +24,7 @@ public sealed record ScopeResponse(Guid Id, string Name, Guid TenantId, IReadOnl
 public sealed record CreateScanRequest(Guid ScopeId, string OperationProfile);
 public sealed record ScanResponse(Guid Id, Guid ScopeId, ScanJobStatus Status, DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, string OperationProfile);
 public sealed record AssetResponse(Guid Id, string Address, TargetKind Kind, bool IsOnline, DateTimeOffset LastSeenAt);
+public sealed record AssetServiceResponse(Guid Id, Guid AssetId, string Protocol, int Port, string? Name, string? Version, DateTimeOffset ObservedAt);
 public sealed record FindingResponse(Guid Id, string Title, FindingSeverity Severity, Guid? AssetId, DateTimeOffset CreatedAt);
 public sealed record AgentResponse(Guid Id, string Name, string Status, DateTimeOffset LastHeartbeatAt);
 public sealed record WorkerRegistrationRequest(string Identity, string Version, IReadOnlyCollection<string> Capabilities, int Capacity = 1);

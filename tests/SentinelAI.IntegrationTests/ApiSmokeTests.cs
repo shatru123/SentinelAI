@@ -105,7 +105,7 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         client.DefaultRequestHeaders.Add("X-User-Id", Guid.NewGuid().ToString());
         client.DefaultRequestHeaders.Add("X-Role", "Worker");
         client.DefaultRequestHeaders.Add("X-Worker-Id", "test-worker");
-        var register = await client.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest("test-worker", "test", ["passive-mock", "cancellation"]));
+        var register = await client.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest("test-worker", "test", ["passive-mock", "passive-inventory", "cancellation"]));
         Assert.Equal(HttpStatusCode.OK, register.StatusCode);
         var worker = await register.Content.ReadFromJsonAsync<WorkerResponse>();
         Assert.NotNull(worker);
@@ -133,6 +133,11 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal("10.10.0.5", assets.Items.Single().Address);
         Assert.Single(findings.Items);
         Assert.Equal("Seeded finding", findings.Items.Single().Title);
+        var services = await client.GetFromJsonAsync<List<AssetServiceResponse>>($"/api/v1/assets/{assets.Items.Single().Id}/services");
+        Assert.NotNull(services);
+        var service = Assert.Single(services);
+        Assert.Equal(443, service.Port);
+        Assert.Equal("https", service.Protocol);
 
         using var otherClient = CreateAuthenticatedClient(otherTenantId, Guid.NewGuid(), UserRole.Viewer);
         var otherAssets = await otherClient.GetFromJsonAsync<PagedResponse<AssetResponse>>("/api/v1/assets");
@@ -142,6 +147,8 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Single(otherAssets.Items);
         Assert.Equal("10.20.0.5", otherAssets.Items.Single().Address);
         Assert.Empty(otherFindings.Items);
+        var foreignServices = await otherClient.GetAsync($"/api/v1/assets/{assets.Items.Single().Id}/services");
+        Assert.Equal(HttpStatusCode.NotFound, foreignServices.StatusCode);
     }
 
     [Fact]
@@ -198,7 +205,7 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         var otherScope = new TargetScope(otherTenant, "other-inventory", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
         var asset = new Asset(tenant, tenantScope.Id, "10.10.0.5", TargetKind.Network);
         asset.MarkSeen(true);
-        db.AddRange(tenantScope, otherScope, asset, new Finding(tenant, asset.Id, "Seeded finding", FindingSeverity.High), new Asset(otherTenant, otherScope.Id, "10.20.0.5", TargetKind.Network));
+        db.AddRange(tenantScope, otherScope, asset, new AssetService(tenant, asset.Id, "https", 443, "test-service", "1.0"), new Finding(tenant, asset.Id, "Seeded finding", FindingSeverity.High), new Asset(otherTenant, otherScope.Id, "10.20.0.5", TargetKind.Network));
         await db.SaveChangesAsync();
     }
 }

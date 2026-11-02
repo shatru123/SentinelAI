@@ -36,6 +36,8 @@ flowchart TD
 | AI abstractions/providers | Common analysis interface for OpenAI, Claude and Ollama |
 | Observability | OpenTelemetry traces, metrics and structured logs |
 
+Phase 2 adds a passive inventory adapter behind the worker’s fixed adapter boundary. It receives only targets that have been revalidated by the scope policy and records offline observations; it does not perform DNS, socket, port or command activity. Asset service observations are persisted with tenant-scoped uniqueness and exposed through authorized reader queries.
+
 ## Execution lifecycle
 
 ```mermaid

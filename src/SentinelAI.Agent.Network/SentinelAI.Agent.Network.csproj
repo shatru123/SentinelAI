@@ -5,6 +5,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="..\SentinelAI.Domain\SentinelAI.Domain.csproj" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SentinelAI.Application\SentinelAI.Application.csproj" />
+    <ProjectReference Include="..\SentinelAI.Domain\SentinelAI.Domain.csproj" />
+  </ItemGroup>
 
 </Project>

@@ -11,6 +11,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using SentinelAI.Agent.Network;
 using SentinelAI.Application;
 using SentinelAI.Domain;
 using SentinelAI.Security.Policy;
@@ -31,6 +32,7 @@ public static class InfrastructureServices
         services.AddSingleton<IHostAddressResolver, SystemHostAddressResolver>();
         services.AddScoped<ITargetScopeValidator, TargetScopeValidator>();
         services.AddScoped<ScanExecutionService>();
+        services.AddSingleton<IPassiveInventoryAdapter, PassiveNetworkInventoryAdapter>();
         services.AddSingleton<WorkerCancellationRegistry>();
         services.AddSingleton<WorkerActivityTracker>();
 
@@ -102,7 +104,7 @@ public sealed class WorkerActivityTracker
 
 public enum ScanExecutionOutcome { Completed, Cancelled, Expired, AlreadyCompleted, AlreadyRunning, ClaimedByAnotherWorker, Unauthorized, Missing }
 
-public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator validator, IConfiguration configuration, ILogger<ScanExecutionService> logger)
+public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator validator, IConfiguration configuration, ILogger<ScanExecutionService> logger, IPassiveInventoryAdapter? inventoryAdapter = null)
 {
     private static readonly ActivitySource ActivitySource = new("SentinelAI.Worker");
     private readonly int executionDelayMs = Math.Clamp(configuration.GetValue("Worker:ExecutionDelayMs", 50), 0, 60_000);
@@ -175,7 +177,9 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         if (workerIdentity is not null)
         {
             var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Identity == workerIdentity, cancellationToken);
-            if (worker is null || !worker.IsHealthyForAdmission(now, WorkerStaleAfter) || !worker.Capabilities.Contains("passive-mock", StringComparer.OrdinalIgnoreCase)) return ScanExecutionOutcome.Unauthorized;
+            var requiredCapability = job.OperationProfile.Equals(InventoryOperationProfiles.NetworkInventoryPassive, StringComparison.OrdinalIgnoreCase)
+                ? "passive-inventory" : "passive-mock";
+            if (worker is null || !worker.IsHealthyForAdmission(now, WorkerStaleAfter) || !worker.Capabilities.Contains(requiredCapability, StringComparer.OrdinalIgnoreCase)) return ScanExecutionOutcome.Unauthorized;
         }
         if (!job.TryAcquireLease(effectiveWorkerIdentity, now, LeaseDuration))
         {
@@ -204,6 +208,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         timeout.CancelAfter(TimeSpan.FromSeconds(scopeDefinition.MaxExecutionSeconds));
         try
         {
+            var authorizedTargets = new List<AuthorizedInventoryTarget>(scopeDefinition.Targets.Count);
             foreach (var target in scopeDefinition.Targets)
             {
                 timeout.Token.ThrowIfCancellationRequested();
@@ -221,14 +226,26 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 var validation = await validator.ValidateExecutionAsync(scopeDefinition, job.TenantId, target.Kind, target.Value, job.OperationProfile, timeout.Token);
                 if (!validation.IsValid) throw new ScopeValidationException(validation.Errors);
                 if (executionDelayMs > 0) await Task.Delay(executionDelayMs, timeout.Token);
-                if (workerIdentity is not null)
+                authorizedTargets.Add(new AuthorizedInventoryTarget(target, validation.ValidatedTarget ?? throw new ScopeValidationException(["Execution validation did not produce a validated target."])));
+            }
+
+            if (workerIdentity is not null && !await HasActiveLeaseAsync(job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+            var observations = await (inventoryAdapter ?? new PassiveNetworkInventoryAdapter()).CollectAsync(authorizedTargets, scopeDefinition.RequestsPerMinute, timeout.Token);
+            if (workerIdentity is not null && !await HasActiveLeaseAsync(job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+            foreach (var observation in observations)
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                if (workerIdentity is not null && !await HasActiveLeaseAsync(job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                var asset = await db.Assets.SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Address == observation.Address, timeout.Token);
+                if (asset is null) { asset = new Asset(job.TenantId, scopeDefinition.Id, observation.Address, observation.Kind); db.Assets.Add(asset); }
+                asset.MarkSeen(observation.IsOnline);
+                foreach (var service in observation.Services)
                 {
-                    var stillOwned = await db.AgentJobs.AsNoTracking().AnyAsync(x => x.Id == job.Id && x.Status == ScanJobStatus.Running && x.LeaseOwnerWorkerId == workerIdentity && x.LeaseExpiresAt > DateTimeOffset.UtcNow, timeout.Token);
-                    if (!stillOwned) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                    if (service.Port is < 1 or > 65_535 || string.IsNullOrWhiteSpace(service.Protocol))
+                        throw new ScopeValidationException(["Inventory service observations must contain a valid protocol and port."]);
+                    var existingService = await db.AssetServices.SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.AssetId == asset.Id && x.Protocol == service.Protocol.Trim().ToLowerInvariant() && x.Port == service.Port, timeout.Token);
+                    if (existingService is null) db.AssetServices.Add(new AssetService(job.TenantId, asset.Id, service.Protocol, service.Port, service.Name, service.Version));
                 }
-                var asset = await db.Assets.SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Address == target.Value, timeout.Token);
-                if (asset is null) { asset = new Asset(job.TenantId, scopeDefinition.Id, target.Value, target.Kind); db.Assets.Add(asset); }
-                asset.MarkSeen(false);
             }
 
             await db.Entry(job).ReloadAsync(timeout.Token);
@@ -267,6 +284,9 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             throw;
         }
     }
+
+    private async Task<bool> HasActiveLeaseAsync(Guid jobId, string workerIdentity, CancellationToken cancellationToken)
+        => await db.AgentJobs.AsNoTracking().AnyAsync(x => x.Id == jobId && x.Status == ScanJobStatus.Running && x.LeaseOwnerWorkerId == workerIdentity && x.LeaseExpiresAt > DateTimeOffset.UtcNow, cancellationToken);
 
     public async Task<bool> RequeueOrFailAsync(Guid jobId, string expectedWorkerIdentity, int attempt, int maxAttempts, string reason, CancellationToken cancellationToken)
     {

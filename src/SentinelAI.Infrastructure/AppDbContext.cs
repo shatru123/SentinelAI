@@ -16,6 +16,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AgentJob> AgentJobs => Set<AgentJob>();
     public DbSet<AgentExecution> AgentExecutions => Set<AgentExecution>();
     public DbSet<Asset> Assets => Set<Asset>();
+    public DbSet<AssetService> AssetServices => Set<AssetService>();
     public DbSet<Finding> Findings => Set<Finding>();
     public DbSet<Evidence> Evidence => Set<Evidence>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
@@ -43,6 +44,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AgentJob>().HasKey(x => x.Id);
         modelBuilder.Entity<AgentExecution>().HasKey(x => x.Id);
         modelBuilder.Entity<Asset>().HasKey(x => x.Id);
+        modelBuilder.Entity<AssetService>().HasKey(x => x.Id);
         modelBuilder.Entity<Finding>().HasKey(x => x.Id);
         modelBuilder.Entity<Evidence>().HasKey(x => x.Id);
         modelBuilder.Entity<ApprovalRequest>().HasKey(x => x.Id);
@@ -58,6 +60,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<ScanPolicy>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<AgentJob>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<Asset>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<AssetService>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<Finding>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<Evidence>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<ApprovalRequest>().Property(x => x.TenantId));
@@ -86,6 +89,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AgentJob>().HasIndex(x => new { x.TenantId, x.Status, x.CreatedAt });
         modelBuilder.Entity<AgentJob>().HasIndex(x => new { x.Status, x.LeaseExpiresAt });
         modelBuilder.Entity<Asset>().HasIndex(x => new { x.TenantId, x.Address }).IsUnique();
+        modelBuilder.Entity<AssetService>().HasIndex(x => new { x.TenantId, x.AssetId, x.Protocol, x.Port }).IsUnique();
         modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.Severity });
         modelBuilder.Entity<AuditEvent>().HasIndex(x => new { x.TenantId, x.OccurredAt });
         modelBuilder.Entity<WorkerRegistration>().HasIndex(x => new { x.TenantId, x.Identity }).IsUnique();

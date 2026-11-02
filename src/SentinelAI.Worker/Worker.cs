@@ -190,7 +190,7 @@ public sealed class WorkerOptions
 {
     public string Identity { get; }
     public string Version { get; } = typeof(Worker).Assembly.GetName().Version?.ToString() ?? "1.1";
-    public IReadOnlyCollection<string> Capabilities { get; } = ["scope-validation", "passive-mock", "cancellation", "bounded-concurrency"];
+    public IReadOnlyCollection<string> Capabilities { get; } = ["scope-validation", "passive-mock", "passive-inventory", "cancellation", "bounded-concurrency"];
     public string? ControlPlaneUrl { get; }
     public int Concurrency { get; }
     public int MaxAttempts { get; }

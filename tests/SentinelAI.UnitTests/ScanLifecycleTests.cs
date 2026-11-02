@@ -12,6 +12,20 @@ namespace SentinelAI.UnitTests;
 public sealed class ScanLifecycleTests
 {
     [Fact]
+    public void Passive_observation_never_claims_reachability_and_preserves_last_successful_timestamp()
+    {
+        var asset = new Asset(Guid.NewGuid(), Guid.NewGuid(), "10.20.0.5", TargetKind.Network);
+        asset.RecordReachabilityConfirmation();
+        var lastReachable = asset.LastSuccessfulReachabilityAt;
+
+        asset.RecordPassiveObservation();
+
+        Assert.False(asset.IsOnline);
+        Assert.NotEqual(default, asset.LastObservedAt);
+        Assert.Equal(lastReachable, asset.LastSuccessfulReachabilityAt);
+    }
+
+    [Fact]
     public async Task Authorized_scan_is_persisted_and_queued()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
@@ -30,6 +44,28 @@ public sealed class ScanLifecycleTests
         Assert.Single(await db.AgentJobs.ToListAsync());
         Assert.Single(await db.OutboxMessages.ToListAsync());
         Assert.Equal(result.Id, (await queue.ReadAllAsync().FirstAsync()).JobId);
+    }
+
+    [Fact]
+    public async Task Worker_without_passive_inventory_capability_cannot_execute_the_profile()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var db = new AppDbContext(options);
+        var tenant = new Tenant("Capability tenant");
+        var user = new User(tenant.Id, "analyst", "Analyst", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "private", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], [], [InventoryOperationProfiles.NetworkInventoryPassive], 10, 120, "ticket", false);
+        var worker = new WorkerRegistration(tenant.Id, "mock-only", "test", ["passive-mock"]);
+        worker.Heartbeat(0, 1);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, InventoryOperationProfiles.NetworkInventoryPassive);
+        db.AddRange(tenant, user, scope, worker, job, new AgentExecution(job.Id, "PassiveNetworkInventoryAdapter"));
+        await db.SaveChangesAsync();
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new EmptyResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance);
+
+        var outcome = await service.ExecuteAsync(job.Id, CancellationToken.None, tenant.Id, worker.Identity);
+
+        Assert.Equal(ScanExecutionOutcome.Unauthorized, outcome);
+        Assert.Empty(await db.Assets.ToListAsync());
     }
 
     [Fact]

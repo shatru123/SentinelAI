@@ -16,11 +16,11 @@
 ## Phase 2 — Authorized network inventory
 - Worker enrollment and mutual authentication
 - CIDR/host scope validation and DNS/IP revalidation
-- Fixed, rate-limited network discovery adapter
+- Fixed passive inventory adapter with policy validation and cancellation
 - Asset and service inventory
 - Safe defaults, explicit exclusions and cancellation
 
-Current implementation status: the passive foundation is implemented. Workers can advertise the `passive-inventory` capability, the fixed adapter is rate-limited and records only validated scope declarations, and asset-service persistence is tenant isolated. Active network discovery remains intentionally disabled until a separately reviewed adapter, egress policy and security test suite are approved.
+Current implementation status: the passive foundation is implemented. Workers can advertise the `passive-inventory` capability, the fixed adapter records only execution-time validated scope declarations without artificial network-request delays, and asset-service persistence is tenant isolated. Asset observation and reachability timestamps are distinct. Active network discovery remains intentionally disabled until a separately reviewed adapter, egress policy and security test suite are approved.
 
 ## Phase 3 — Vulnerability intelligence
 - CVE/CPE correlation and source attribution

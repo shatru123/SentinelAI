@@ -138,6 +138,8 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         var service = Assert.Single(services);
         Assert.Equal(443, service.Port);
         Assert.Equal("https", service.Protocol);
+        Assert.True(assets.Items.Single().IsOnline);
+        Assert.NotNull(assets.Items.Single().LastSuccessfulReachabilityAt);
 
         using var otherClient = CreateAuthenticatedClient(otherTenantId, Guid.NewGuid(), UserRole.Viewer);
         var otherAssets = await otherClient.GetFromJsonAsync<PagedResponse<AssetResponse>>("/api/v1/assets");
@@ -204,7 +206,7 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         var tenantScope = new TargetScope(tenant, "seeded-inventory", userId, DateTimeOffset.UtcNow.AddHours(1));
         var otherScope = new TargetScope(otherTenant, "other-inventory", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
         var asset = new Asset(tenant, tenantScope.Id, "10.10.0.5", TargetKind.Network);
-        asset.MarkSeen(true);
+        asset.RecordReachabilityConfirmation();
         db.AddRange(tenantScope, otherScope, asset, new AssetService(tenant, asset.Id, "https", 443, "test-service", "1.0"), new Finding(tenant, asset.Id, "Seeded finding", FindingSeverity.High), new Asset(otherTenant, otherScope.Id, "10.20.0.5", TargetKind.Network));
         await db.SaveChangesAsync();
     }

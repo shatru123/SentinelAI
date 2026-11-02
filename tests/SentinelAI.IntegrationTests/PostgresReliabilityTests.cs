@@ -109,6 +109,48 @@ public sealed class PostgresReliabilityTests
         }
     }
 
+    [Fact]
+    public async Task Postgres_enforces_tenant_scoped_asset_and_service_uniqueness()
+    {
+        var connection = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION")
+            ?? "Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=replace-with-local-dev-password";
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+
+        var tenant = new Tenant($"inventory-unique-{Guid.NewGuid():N}");
+        var otherTenant = new Tenant($"inventory-other-{Guid.NewGuid():N}");
+        var scope = new TargetScope(tenant.Id, "private", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        var otherScope = new TargetScope(otherTenant.Id, "private", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        var asset = new Asset(tenant.Id, scope.Id, "10.60.0.5", TargetKind.Network);
+        db.AddRange(tenant, otherTenant, scope, otherScope, asset);
+        await db.SaveChangesAsync();
+
+        try
+        {
+            var sameTenantDuplicate = new Asset(tenant.Id, scope.Id, asset.Address, TargetKind.Network);
+            db.Add(sameTenantDuplicate);
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+            db.ChangeTracker.Clear();
+
+            var otherTenantAsset = new Asset(otherTenant.Id, otherScope.Id, asset.Address, TargetKind.Network);
+            db.Add(otherTenantAsset);
+            await db.SaveChangesAsync();
+
+            db.Add(new AssetService(tenant.Id, asset.Id, "https", 443, "web", "1"));
+            await db.SaveChangesAsync();
+            db.Add(new AssetService(tenant.Id, asset.Id, "https", 443, "web", "1"));
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+        finally
+        {
+            await db.AssetServices.Where(x => x.TenantId == tenant.Id || x.TenantId == otherTenant.Id).ExecuteDeleteAsync();
+            await db.Assets.Where(x => x.TenantId == tenant.Id || x.TenantId == otherTenant.Id).ExecuteDeleteAsync();
+            await db.TargetScopes.Where(x => x.TenantId == tenant.Id || x.TenantId == otherTenant.Id).ExecuteDeleteAsync();
+            await db.Tenants.Where(x => x.Id == tenant.Id || x.Id == otherTenant.Id).ExecuteDeleteAsync();
+        }
+    }
+
     private sealed class EmptyResolver : IHostAddressResolver
     {
         public Task<IReadOnlyCollection<System.Net.IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken)

@@ -238,7 +238,8 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 if (workerIdentity is not null && !await HasActiveLeaseAsync(job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
                 var asset = await db.Assets.SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Address == observation.Address, timeout.Token);
                 if (asset is null) { asset = new Asset(job.TenantId, scopeDefinition.Id, observation.Address, observation.Kind); db.Assets.Add(asset); }
-                asset.MarkSeen(observation.IsOnline);
+                if (observation.IsOnline && observation.ReachabilityConfirmed) asset.RecordReachabilityConfirmation();
+                else asset.RecordPassiveObservation();
                 foreach (var service in observation.Services)
                 {
                     if (service.Port is < 1 or > 65_535 || string.IsNullOrWhiteSpace(service.Protocol))

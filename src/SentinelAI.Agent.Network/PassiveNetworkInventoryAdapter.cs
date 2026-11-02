@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using SentinelAI.Application;
 
 namespace SentinelAI.Agent.Network;
@@ -10,9 +9,7 @@ namespace SentinelAI.Agent.Network;
 /// </summary>
 public sealed class PassiveNetworkInventoryAdapter : IPassiveInventoryAdapter
 {
-    private readonly ConcurrentDictionary<int, Window> windows = new();
-
-    public async Task<IReadOnlyCollection<InventoryObservation>> CollectAsync(
+    public Task<IReadOnlyCollection<InventoryObservation>> CollectAsync(
         IReadOnlyCollection<AuthorizedInventoryTarget> targets,
         int requestsPerMinute,
         CancellationToken cancellationToken = default)
@@ -23,39 +20,11 @@ public sealed class PassiveNetworkInventoryAdapter : IPassiveInventoryAdapter
         foreach (var target in targets)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await WaitForRateLimitAsync(requestsPerMinute, cancellationToken);
 
             // The value is already validated by TargetScopeValidator. It is recorded as an
             // offline/passive observation because no active reachability claim is made here.
             observations.Add(new InventoryObservation(target.Definition.Value, target.Definition.Kind, false, []));
         }
-        return observations;
-    }
-
-    private async Task WaitForRateLimitAsync(int requestsPerMinute, CancellationToken cancellationToken)
-    {
-        var window = windows.GetOrAdd(requestsPerMinute, _ => new Window());
-        while (true)
-        {
-            TimeSpan delay;
-            lock (window.SyncRoot)
-            {
-                var now = DateTimeOffset.UtcNow;
-                while (window.Requests.Count > 0 && window.Requests.Peek() <= now.AddMinutes(-1)) window.Requests.Dequeue();
-                if (window.Requests.Count < requestsPerMinute)
-                {
-                    window.Requests.Enqueue(now);
-                    return;
-                }
-                delay = window.Requests.Peek().AddMinutes(1) - now;
-            }
-            await Task.Delay(delay, cancellationToken);
-        }
-    }
-
-    private sealed class Window
-    {
-        public object SyncRoot { get; } = new();
-        public Queue<DateTimeOffset> Requests { get; } = new();
+        return Task.FromResult<IReadOnlyCollection<InventoryObservation>>(observations);
     }
 }

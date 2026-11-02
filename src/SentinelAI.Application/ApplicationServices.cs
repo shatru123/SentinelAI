@@ -42,7 +42,7 @@ public sealed record PrincipalContext(Guid TenantId, Guid UserId, string Subject
 
 public sealed record AuthorizedInventoryTarget(TargetDefinition Definition, ValidatedExecutionTarget Validation);
 public sealed record InventoryServiceObservation(string Protocol, int Port, string? Name = null, string? Version = null);
-public sealed record InventoryObservation(string Address, TargetKind Kind, bool IsOnline, IReadOnlyCollection<InventoryServiceObservation> Services);
+public sealed record InventoryObservation(string Address, TargetKind Kind, bool IsOnline, IReadOnlyCollection<InventoryServiceObservation> Services, bool ReachabilityConfirmed = false);
 
 public interface IPassiveInventoryAdapter
 {

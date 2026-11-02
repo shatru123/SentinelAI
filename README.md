@@ -91,7 +91,7 @@ Read [SECURITY.md](SECURITY.md) before operating the platform.
 
 ## Development
 
-Development defaults to an EF Core in-memory database and an in-memory queue only when explicitly configured in `appsettings.Development.json`; the production and Compose paths use PostgreSQL, RabbitMQ, and the standalone worker. The only execution adapter is the bounded passive mock adapter; active network probing is disabled.
+Development defaults to an EF Core in-memory database and an in-memory queue only when explicitly configured in `appsettings.Development.json`; the production and Compose paths use PostgreSQL, RabbitMQ, and the standalone worker. The available execution adapters are bounded passive declaration adapters; active network probing is disabled.
 
 ```bash
 dotnet restore SentinelAI.slnx
@@ -114,7 +114,7 @@ The Compose API writes jobs and RabbitMQ outbox messages transactionally. The ou
 
 Worker credential rotation is supported by configuring a worker credential as `old-token|new-token` during a rollout, then removing the old value or listing it under `Authentication:RevokedWorkerTokens`. Production deployments should store these settings in a secret manager and use JWT/OIDC and/or mTLS at the control-plane edge.
 
-Phase 1.2.2 adds lease-loss cancellation, tenant-and-exact-worker cancellation routing, concurrency-safe legacy job recovery, and heartbeat health admission that does not trust stale capacity counters. Phase 1.2.1 also adds worker-owned expiring leases, PostgreSQL `SKIP LOCKED` outbox claims with backoff, complete-range CIDR validation, DNS exclusion checks for all resolved addresses, and explicit web subdomain authorization. The Phase 2 passive inventory foundation records only execution-time validated scope declarations and optional tenant-scoped service observations; it performs no DNS, socket, port or command activity. Active network probing remains disabled.
+Phase 1.2.2 adds lease-loss cancellation, tenant-and-exact-worker cancellation routing, concurrency-safe legacy job recovery, and heartbeat health admission that does not trust stale capacity counters. Phase 1.2.1 also adds worker-owned expiring leases, PostgreSQL `SKIP LOCKED` outbox claims with backoff, complete-range CIDR validation, DNS exclusion checks for all resolved addresses, and explicit web subdomain authorization. Phase 2.1 hardens the passive inventory workflow end to end through the standalone RabbitMQ worker, separates observation and reachability timestamps, removes declaration-only pacing delays, and verifies tenant-scoped persistence. The passive foundation records only execution-time validated scope declarations and optional tenant-scoped service observations; it performs no DNS, socket, port or command activity. Active network probing remains disabled.
 
 ## Contributing
 

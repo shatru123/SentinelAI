@@ -337,15 +337,35 @@ public sealed class OutboxMessage
 public sealed class Asset
 {
     private Asset() { }
-    public Asset(Guid tenantId, Guid scopeId, string address, TargetKind kind) { Id = Guid.NewGuid(); TenantId = tenantId; ScopeId = scopeId; Address = address; Kind = kind; LastSeenAt = DateTimeOffset.UtcNow; }
+    public Asset(Guid tenantId, Guid scopeId, string address, TargetKind kind) { Id = Guid.NewGuid(); TenantId = tenantId; ScopeId = scopeId; Address = address; Kind = kind; LastObservedAt = DateTimeOffset.UtcNow; }
     public Guid Id { get; private set; }
     public Guid TenantId { get; private set; }
     public Guid ScopeId { get; private set; }
     public string Address { get; private set; } = string.Empty;
     public TargetKind Kind { get; private set; }
     public bool IsOnline { get; private set; }
-    public DateTimeOffset LastSeenAt { get; private set; }
-    public void MarkSeen(bool online) { IsOnline = online; LastSeenAt = DateTimeOffset.UtcNow; }
+    public DateTimeOffset LastObservedAt { get; private set; }
+    public DateTimeOffset? LastSuccessfulReachabilityAt { get; private set; }
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    [Obsolete("Use LastObservedAt or LastSuccessfulReachabilityAt.")]
+    public DateTimeOffset LastSeenAt => LastObservedAt;
+    public void RecordPassiveObservation()
+    {
+        IsOnline = false;
+        LastObservedAt = DateTimeOffset.UtcNow;
+    }
+    public void RecordReachabilityConfirmation()
+    {
+        IsOnline = true;
+        LastObservedAt = DateTimeOffset.UtcNow;
+        LastSuccessfulReachabilityAt = LastObservedAt;
+    }
+    [Obsolete("Use RecordPassiveObservation or RecordReachabilityConfirmation.")]
+    public void MarkSeen(bool online)
+    {
+        if (online) RecordReachabilityConfirmation();
+        else RecordPassiveObservation();
+    }
 }
 
 public sealed class AssetService

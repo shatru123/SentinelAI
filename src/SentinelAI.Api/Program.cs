@@ -124,9 +124,9 @@ api.MapGet("/assets", async (HttpContext context, IAppDbContext db, int page = 1
 {
     (page, pageSize) = NormalizePage(page, pageSize);
     var tenantId = ToPrincipal(context).TenantId;
-    var query = db.Assets.AsNoTracking().Where(x => x.TenantId == tenantId).OrderByDescending(x => x.LastSeenAt);
+    var query = db.Assets.AsNoTracking().Where(x => x.TenantId == tenantId).OrderByDescending(x => x.LastObservedAt);
     var total = await query.CountAsync(cancellationToken);
-    var assets = await query.Skip((page - 1) * pageSize).Take(pageSize).Select(x => new AssetResponse(x.Id, x.Address, x.Kind, x.IsOnline, x.LastSeenAt)).ToListAsync(cancellationToken);
+    var assets = await query.Skip((page - 1) * pageSize).Take(pageSize).Select(x => new AssetResponse(x.Id, x.Address, x.Kind, x.IsOnline, x.LastObservedAt, x.LastSuccessfulReachabilityAt)).ToListAsync(cancellationToken);
     return Results.Ok(new PagedResponse<AssetResponse>(assets, page, pageSize, total));
 }).RequireAuthorization("Reader");
 

@@ -33,8 +33,10 @@ Phase 1.2.2 integration tests require reachable PostgreSQL and RabbitMQ. Compose
 
 ## Phase 2 passive inventory foundation
 
-The `network-inventory-passive` profile is authorized like every other operation profile and is available to workers advertising `passive-inventory`. Its fixed adapter revalidates every scope target at execution time, applies the scope request-rate limit, and records an offline/passive observation. It does not resolve DNS, open sockets, probe ports, execute commands, or claim reachability. Asset services are tenant-scoped and can be retrieved from `/api/v1/assets/{id}/services`.
+The `network-inventory-passive` profile is authorized like every other operation profile and is available to workers advertising `passive-inventory`. Its fixed adapter revalidates every scope target at execution time, validates the configured request-rate policy, and records an offline/passive observation without adding artificial delays to declaration-only processing. It does not resolve DNS, open sockets, probe ports, execute commands, or claim reachability. `LastObservedAt` records the passive observation time; `LastSuccessfulReachabilityAt` remains nullable and is only populated by an explicitly validated reachability source. Asset services are tenant-scoped and can be retrieved from `/api/v1/assets/{id}/services`.
 
 The existing `mock-passive` profile remains available for compatibility. Do not enable active discovery by configuration alone; an active adapter requires a new security review, explicit egress controls, cancellation tests and authorization acceptance evidence.
+
+The Phase 2.1 workflow test starts the API, outbox dispatcher and RabbitMQ-backed standalone worker against PostgreSQL. It verifies worker capability admission, execution-time scope validation, passive asset persistence, tenant isolation and audit completion. Run it with the normal integration suite while PostgreSQL and RabbitMQ are available.
 
 Integration tests require RabbitMQ. CI provisions it as a service; locally use the Compose RabbitMQ service or set `RABBITMQ_TEST_HOST`, `RABBITMQ_TEST_PORT`, `RABBITMQ_TEST_USER` and `RABBITMQ_TEST_PASSWORD` before running `dotnet test`. Required broker tests do not silently pass when RabbitMQ is unavailable.

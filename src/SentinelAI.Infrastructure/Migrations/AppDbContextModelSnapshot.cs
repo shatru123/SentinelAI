@@ -208,7 +208,10 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<int>("Kind")
                         .HasColumnType("integer");
 
-                    b.Property<DateTimeOffset>("LastSeenAt")
+                    b.Property<DateTimeOffset>("LastObservedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSuccessfulReachabilityAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("ScopeId")

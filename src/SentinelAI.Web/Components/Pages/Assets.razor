@@ -4,7 +4,7 @@
 @inject SentinelApiClient ApiClient
 <PageTitle>Assets · SentinelAI</PageTitle>
 
-<div class="page-heading"><div><p class="eyebrow">Inventory / authorized scope</p><h1>Assets</h1><p class="muted">Persisted assets from the Phase 1 mock adapter.</p></div></div>
+<div class="page-heading"><div><p class="eyebrow">Inventory / authorized scope</p><h1>Assets</h1><p class="muted">Persisted passive observations from authorized scopes.</p></div></div>
 <section class="panel">
     <div class="panel-heading"><h2>Asset inventory</h2><span class="status-pill healthy">PASSIVE ONLY</span></div>
     @if (loading)
@@ -21,10 +21,10 @@
     }
     else
     {
-        <table><thead><tr><th>Address</th><th>Type</th><th>Status</th><th>Last seen</th></tr></thead><tbody>
+        <table><thead><tr><th>Address</th><th>Type</th><th>Status</th><th>Last observed</th><th>Last reachable</th></tr></thead><tbody>
         @foreach (var asset in assets)
         {
-            <tr><td>@DisplayAddress(asset)</td><td>@asset.Kind</td><td>@(asset.IsOnline ? "Online" : "Not probed")</td><td>@DisplayTime(asset.LastSeenAt)</td></tr>
+            <tr><td>@DisplayAddress(asset)</td><td>@asset.Kind</td><td>@(asset.IsOnline ? "Online" : "Not confirmed")</td><td>@DisplayTime(asset.LastObservedAt)</td><td>@DisplayTime(asset.LastSuccessfulReachabilityAt)</td></tr>
         }
         </tbody></table>
     }
@@ -67,5 +67,5 @@
     private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadPageAsync(); } }
     private async Task NextPageAsync() { if (HasNextPage) { page++; await LoadPageAsync(); } }
     private static string DisplayAddress(AssetResponse asset) => string.IsNullOrWhiteSpace(asset.Address) ? "Address unavailable" : asset.Address;
-    private static string DisplayTime(DateTimeOffset value) => value == default ? "Not available" : value.ToLocalTime().ToString("g");
+    private static string DisplayTime(DateTimeOffset? value) => value is null || value == default ? "Not available" : value.Value.ToLocalTime().ToString("g");
 }

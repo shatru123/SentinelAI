@@ -2,6 +2,7 @@ using SentinelAI.Agent.Network;
 using SentinelAI.Application;
 using SentinelAI.Domain;
 using SentinelAI.Security.Policy;
+using System.Diagnostics;
 
 namespace SentinelAI.UnitTests;
 
@@ -22,6 +23,26 @@ public sealed class PassiveNetworkInventoryAdapterTests
         Assert.Equal(target.Value, observation.Address);
         Assert.False(observation.IsOnline);
         Assert.Empty(observation.Services);
+    }
+
+    [Fact]
+    public async Task Declaration_processing_does_not_apply_network_request_delays()
+    {
+        var targets = Enumerable.Range(1, 2).Select(index =>
+        {
+            var value = $"10.20.0.{index}";
+            var definition = new TargetDefinition(TargetKind.Network, value);
+            var validation = new ValidatedExecutionTarget(value, [System.Net.IPAddress.Parse(value)], DateTimeOffset.UtcNow, Guid.NewGuid(), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5), "network-inventory-passive");
+            return new AuthorizedInventoryTarget(definition, validation);
+        }).ToArray();
+        var adapter = new PassiveNetworkInventoryAdapter();
+        var stopwatch = Stopwatch.StartNew();
+
+        var result = await adapter.CollectAsync(targets, 1, CancellationToken.None);
+
+        stopwatch.Stop();
+        Assert.Equal(2, result.Count);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1), $"Declaration-only processing took {stopwatch.Elapsed}.");
     }
 
     [Fact]

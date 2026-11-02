@@ -180,8 +180,9 @@ public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validato
             db.WebAssessments.Add(new WebAssessment(job.TenantId, job.Id, scope.Id, webTarget, request.OperationProfile, scope.WebHostingMode ?? WebHostingMode.Public));
         }
         db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "scan.created", nameof(AgentJob), job.Id, "Phase 1 mock assessment queued."));
+        var workerRoute = scope.WebHostingMode == WebHostingMode.Private ? scope.PrivateWorkerIdentity : null;
         db.OutboxMessages.Add(new OutboxMessage(principal.TenantId, OutboxMessageTypes.ScanJob,
-            OutboxMessagePayload.Serialize(new OutboxJobEnvelope(job.Id, principal.TenantId))));
+            OutboxMessagePayload.Serialize(new OutboxJobEnvelope(job.Id, principal.TenantId, workerRoute))));
         await using (var transaction = await db.BeginTransactionAsync(cancellationToken))
         {
             await db.SaveChangesAsync(cancellationToken);
@@ -264,7 +265,7 @@ public static class OutboxMessageTypes
     public const string Cancellation = "cancellation";
 }
 
-public sealed record OutboxJobEnvelope(Guid JobId, Guid TenantId);
+public sealed record OutboxJobEnvelope(Guid JobId, Guid TenantId, string? WorkerIdentity = null);
 public sealed record OutboxCancellationEnvelope(Guid JobId, Guid TenantId, string WorkerIdentity);
 
 public static class OutboxMessagePayload

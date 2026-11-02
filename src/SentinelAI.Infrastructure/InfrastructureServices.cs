@@ -186,6 +186,13 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         {
             var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Identity == workerIdentity, cancellationToken);
             workerCapabilities = worker?.Capabilities ?? [];
+            if (WebAssessmentOperationProfiles.IsWeb(job.OperationProfile))
+            {
+                var routeScope = await db.TargetScopes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == job.ScopeId && x.TenantId == job.TenantId, cancellationToken);
+                if (routeScope?.WebHostingMode == WebHostingMode.Private &&
+                    (!string.Equals(routeScope.PrivateWorkerIdentity, workerIdentity, StringComparison.Ordinal) || !workerCapabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase)))
+                    return ScanExecutionOutcome.Unauthorized;
+            }
             var requiredCapability = WebAssessmentOperationProfiles.IsWeb(job.OperationProfile)
                 ? "web-assessment"
                 : job.OperationProfile.Equals(InventoryOperationProfiles.NetworkInventoryPassive, StringComparison.OrdinalIgnoreCase) ? "passive-inventory" : "passive-mock";
@@ -449,7 +456,28 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
             yield break;
         }
         if (tenantId is null) throw new InvalidOperationException("A tenant must be provided for worker job consumption.");
-        await foreach (var delivery in ReadQueueAsync(MainQueueFor(tenantId.Value), tenantId, cancellationToken: cancellationToken)) yield return delivery;
+        if (string.IsNullOrWhiteSpace(workerIdentity))
+        {
+            await foreach (var delivery in ReadQueueAsync(MainQueueFor(tenantId.Value), tenantId, cancellationToken: cancellationToken)) yield return delivery;
+            yield break;
+        }
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var merged = Channel.CreateUnbounded<ScanJobDelivery>();
+        var readers = new[]
+        {
+            ReadQueueToChannelAsync(MainQueueFor(tenantId.Value), tenantId.Value, null, merged.Writer, linked.Token),
+            ReadQueueToChannelAsync(MainQueueForWorker(tenantId.Value, workerIdentity!), tenantId.Value, workerIdentity, merged.Writer, linked.Token)
+        };
+        try
+        {
+            await foreach (var delivery in merged.Reader.ReadAllAsync(linked.Token)) yield return delivery;
+        }
+        finally
+        {
+            linked.Cancel();
+            merged.Writer.TryComplete();
+            try { await Task.WhenAll(readers); } catch (OperationCanceledException) { }
+        }
     }
 
     public async IAsyncEnumerable<Guid> ReadCancellationsAsync(Guid tenantId, string workerIdentity, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -467,7 +495,8 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
         if (message.MessageType.Equals(OutboxMessageTypes.ScanJob, StringComparison.Ordinal))
         {
             var envelope = OutboxMessagePayload.Deserialize<OutboxJobEnvelope>(message.Payload);
-            await PublishAsync(MainQueueFor(envelope.TenantId), new ScanJobMessage(envelope.JobId, envelope.TenantId, null, 0), 0, cancellationToken);
+            var queue = string.IsNullOrWhiteSpace(envelope.WorkerIdentity) ? MainQueueFor(envelope.TenantId) : MainQueueForWorker(envelope.TenantId, envelope.WorkerIdentity!);
+            await PublishAsync(queue, new ScanJobMessage(envelope.JobId, envelope.TenantId, envelope.WorkerIdentity, 0), 0, cancellationToken);
         }
         else if (message.MessageType.Equals(OutboxMessageTypes.Cancellation, StringComparison.Ordinal))
         {
@@ -513,6 +542,11 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
             try { await channel.BasicCancelAsync(consumerTag, cancellationToken: CancellationToken.None); } catch (Exception exception) { logger.LogDebug(exception, "RabbitMQ consumer cancellation failed during shutdown."); }
             channelGate.Dispose();
         }
+    }
+
+    private async Task ReadQueueToChannelAsync(string queue, Guid tenantId, string? workerIdentity, ChannelWriter<ScanJobDelivery> writer, CancellationToken cancellationToken)
+    {
+        await foreach (var delivery in ReadQueueAsync(queue, tenantId, workerIdentity, cancellationToken)) await writer.WriteAsync(delivery, cancellationToken);
     }
 
     private async ValueTask AcknowledgeAsync(IChannel channel, SemaphoreSlim gate, ulong deliveryTag, CancellationToken cancellationToken)
@@ -569,6 +603,8 @@ public sealed class RabbitMqScanJobQueue(RabbitMqConnectionProvider provider, IC
     }
 
     private static string MainQueueFor(Guid tenantId) => tenantId == Guid.Empty ? MainQueue : $"{MainQueue}.{tenantId:N}";
+    private static string MainQueueForWorker(Guid tenantId, string workerIdentity)
+        => $"{MainQueue}.{tenantId:N}.worker.{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(workerIdentity.Trim()))).ToLowerInvariant()}";
     private static string RetryQueueFor(Guid tenantId) => tenantId == Guid.Empty ? RetryQueue : $"{RetryQueue}.{tenantId:N}";
     private static string CancellationQueueFor(Guid tenantId, string workerIdentity)
     {

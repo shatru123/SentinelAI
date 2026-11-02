@@ -6,8 +6,12 @@ RUN dotnet publish src/SentinelAI.Worker/SentinelAI.Worker.csproj -c Release -o 
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 nodejs \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/publish .
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright \
+    && node /app/.playwright/package/cli.js install --with-deps chromium \
+    && chown -R $APP_UID:$APP_UID /ms-playwright
 USER $APP_UID
 ENTRYPOINT ["dotnet", "SentinelAI.Worker.dll"]

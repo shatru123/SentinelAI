@@ -14,7 +14,8 @@ SentinelAI is designed to discover and inventory explicitly authorized assets, e
 | Phase 1 solution foundation | Complete |
 | Phase 1.1 broker-backed worker and security remediation | Complete |
 | Authorized network inventory (passive foundation) | In progress |
-| Vulnerability correlation | Planned |
+| Authorized web application assessment (Phase 3.1) | Implemented with bounded coverage |
+| Vulnerability intelligence / CVE correlation | Planned separately |
 | OpenAI, Claude and Ollama providers | Planned |
 | Dashboard and monitoring | Planned |
 | Cloud/local deployment | Planned |
@@ -115,6 +116,8 @@ The Compose API writes jobs and RabbitMQ outbox messages transactionally. The ou
 Worker credential rotation is supported by configuring a worker credential as `old-token|new-token` during a rollout, then removing the old value or listing it under `Authentication:RevokedWorkerTokens`. Production deployments should store these settings in a secret manager and use JWT/OIDC and/or mTLS at the control-plane edge.
 
 Phase 1.2.2 adds lease-loss cancellation, tenant-and-exact-worker cancellation routing, concurrency-safe legacy job recovery, and heartbeat health admission that does not trust stale capacity counters. Phase 1.2.1 also adds worker-owned expiring leases, PostgreSQL `SKIP LOCKED` outbox claims with backoff, complete-range CIDR validation, DNS exclusion checks for all resolved addresses, and explicit web subdomain authorization. Phase 2.1 hardens the passive inventory workflow end to end through the standalone RabbitMQ worker, separates observation and reachability timestamps, removes declaration-only pacing delays, and verifies tenant-scoped persistence. Phase 2.1.1 serializes PostgreSQL migration tests, backfills legacy reachability history, enforces tenant-consistent asset services at the database level, and prevents cancellation or lease loss from committing pending inventory. Phase 2.1.2 verifies the upgrade path against a temporary PostgreSQL schema and normalizes timestamptz precision in migration assertions. The passive foundation records only execution-time validated scope declarations and optional tenant-scoped service observations; it performs no DNS, socket, port or command activity. Active network probing remains disabled.
+
+Phase 3.1 adds the separate authorized web assessment engine. Public targets reuse the administrator-approved authorization workflow; private targets require a tenant-enrolled worker with an exact identity and `private-web-assessment` capability. The engine performs bounded same-origin discovery, documented passive checks and safe non-destructive checks, then stores redacted evidence, Playwright screenshots and an offline HTML report. It does not perform destructive exploitation, credential attacks, arbitrary form submissions, active network discovery or CVE correlation. See [web assessment development notes](docs/development.md#phase-31-authorized-web-assessment).
 
 ## Contributing
 

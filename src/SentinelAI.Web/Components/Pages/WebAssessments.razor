@@ -1,0 +1,64 @@
+@page "/web-assessments"
+@attribute [Authorize]
+@using SentinelAI.Contracts
+@using SentinelAI.Domain
+@inject SentinelApiClient ApiClient
+@inject IJSRuntime JS
+<PageTitle>Web assessments · SentinelAI</PageTitle>
+
+<div class="page-heading"><div><p class="eyebrow">Application security / authorized execution</p><h1>Web assessments</h1><p class="muted">Bounded, evidence-backed web checks. Authorization and DNS scope are revalidated before every request.</p></div></div>
+<AuthorizeView Roles="Admin,SecurityAnalyst"><Authorized>
+<section class="panel assessment-form"><div class="panel-heading"><div><p class="eyebrow">Register and assess</p><h2>New web assessment</h2></div><span class="status-pill healthy">NO DESTRUCTIVE TESTS</span></div>
+<div class="form-grid"><label>Assessment name<input @bind="name" maxlength="80" /></label><label>Application URL<input @bind="targetUrl" maxlength="512" /></label><label>Hosting<select @bind="hostingMode"><option value="Public">Public</option><option value="Private">Private</option></select></label><label>Private worker identity<input @bind="privateWorker" maxlength="128" placeholder="Required for Private" /></label><label>Profile<select @bind="profile"><option value="web-assessment-passive">Passive web assessment</option><option value="web-assessment-safe-active">Safe active (bounded)</option></select></label><label>Expires in hours<input type="number" min="1" max="720" @bind="expiryHours" /></label></div>
+<label>Authorization evidence<input @bind="evidence" maxlength="200" /></label><button class="primary-button" @onclick="CreateAsync" disabled="@submitting">@(submitting ? "Submitting…" : "+ Start authorized assessment")</button>
+@if (!string.IsNullOrWhiteSpace(message)) { <p class="@(failed ? "error-text" : "muted")">@message</p> }</section>
+</Authorized><NotAuthorized><section class="panel"><p class="muted">Your role can view assessments but cannot create or cancel them.</p></section></NotAuthorized></AuthorizeView>
+
+<section class="panel"><div class="panel-heading"><h2>Assessment history</h2><button class="secondary-button" @onclick="LoadAsync" disabled="@loading">Refresh</button></div>
+@if (loading) { <p class="muted">Loading assessment history…</p> }
+else if (error is not null) { <div class="error-state"><p class="error-text">@error</p><button class="secondary-button" @onclick="LoadAsync">Retry</button></div> }
+else if (assessments.Count == 0) { <div class="empty-state"><span class="empty-icon">◌</span><strong>No web assessments yet</strong><p>Use an explicitly authorized public target or an enrolled private worker.</p></div> }
+else { <table><thead><tr><th>Target</th><th>Profile</th><th>Hosting</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>@foreach (var item in assessments) { <tr><td>@item.TargetUrl</td><td>@item.Profile</td><td>@item.HostingMode</td><td>@item.Status</td><td>@DisplayTime(item.CreatedAt)</td><td><button class="secondary-button" @onclick="() => CancelAsync(item)" disabled="@(item.Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Cancelled or WebAssessmentStatus.Failed or WebAssessmentStatus.Expired)">Cancel</button>@if (item.Status == WebAssessmentStatus.Completed) { <button class="secondary-button" @onclick="() => DownloadReportAsync(item)">Download report</button> }</td></tr> } </tbody></table> }
+<div class="pagination"><button class="secondary-button" @onclick="PreviousPageAsync" disabled="@(loading || page <= 1)">Previous</button><span class="muted">Page @this.page</span><button class="secondary-button" @onclick="NextPageAsync" disabled="@(loading || !hasNext)">Next</button></div>
+</section>
+
+@code {
+    private const int PageSize = 25;
+    private List<WebAssessmentResponse> assessments = [];
+    private string name = "authorized-web-assessment";
+    private string targetUrl = "https://example.com";
+    private WebHostingMode hostingMode = WebHostingMode.Public;
+    private string? privateWorker;
+    private string profile = "web-assessment-passive";
+    private string evidence = "operator-approved-application";
+    private int expiryHours = 24;
+    private int page = 1;
+    private int totalCount;
+    private bool loading = true;
+    private bool submitting;
+    private bool failed;
+    private string? error;
+    private string? message;
+    private bool hasNext => page * PageSize < totalCount;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+    private async Task LoadAsync()
+    {
+        loading = true; error = null;
+        try { var result = await ApiClient.GetPageAsync<WebAssessmentResponse>("/api/v1/web-assessments", page, PageSize); assessments = result.Items?.ToList() ?? []; totalCount = Math.Max(0, result.TotalCount); page = Math.Max(1, result.Page); }
+        catch (SentinelApiException exception) { assessments = []; totalCount = 0; error = exception.UserMessage; }
+        finally { loading = false; }
+    }
+    private async Task CreateAsync()
+    {
+        submitting = true; failed = false; message = null;
+        try { var result = await ApiClient.PostJsonAsync<CreateWebAssessmentRequest, WebAssessmentResponse>("/api/v1/web-assessments", new CreateWebAssessmentRequest(name, targetUrl, hostingMode, privateWorker, profile, [], 30, 300, evidence, DateTimeOffset.UtcNow.AddHours(Math.Clamp(expiryHours, 1, 720)))); message = $"Assessment {result.Id} queued for the authorized worker."; await LoadAsync(); }
+        catch (SentinelApiException exception) { failed = true; message = exception.UserMessage; }
+        finally { submitting = false; }
+    }
+    private async Task CancelAsync(WebAssessmentResponse item) { try { await ApiClient.PostAsync($"/api/v1/web-assessments/{item.Id}/cancel"); await LoadAsync(); } catch (SentinelApiException exception) { error = exception.UserMessage; } }
+    private async Task DownloadReportAsync(WebAssessmentResponse item) { try { var bytes = await ApiClient.GetBytesAsync($"/api/v1/web-assessments/{item.Id}/report"); await JS.InvokeVoidAsync("sentinelaiDownload", $"sentinelai-{item.Id:N}.html", "text/html", bytes); } catch (SentinelApiException exception) { error = exception.UserMessage; } }
+    private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadAsync(); } }
+    private async Task NextPageAsync() { if (hasNext) { page++; await LoadAsync(); } }
+    private static string DisplayTime(DateTimeOffset value) => value == default ? "Not available" : value.ToLocalTime().ToString("g");
+}

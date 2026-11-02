@@ -192,6 +192,51 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.ToTable("ApprovalRequests");
                 });
 
+            modelBuilder.Entity("SentinelAI.Domain.AssessmentScreenshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AssessmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CapturedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("FindingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Format")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScreenshotType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "AssessmentId", "Id");
+
+                    b.ToTable("AssessmentScreenshots");
+                });
+
             modelBuilder.Entity("SentinelAI.Domain.Asset", b =>
                 {
                     b.Property<Guid>("Id")
@@ -225,8 +270,6 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.HasIndex("TenantId", "Address")
                         .IsUnique();
 
-                    b.HasAlternateKey("TenantId", "Id");
-
                     b.ToTable("Assets");
                 });
 
@@ -242,6 +285,9 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<string>("Name")
                         .HasColumnType("text");
 
+                    b.Property<DateTimeOffset>("ObservedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<int>("Port")
                         .HasColumnType("integer");
 
@@ -251,9 +297,6 @@ namespace SentinelAI.Infrastructure.Migrations
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("ObservedAt")
-                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Version")
                         .HasColumnType("text");
@@ -312,8 +355,14 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<DateTimeOffset>("CollectedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("ContentType")
+                        .HasColumnType("text");
+
                     b.Property<Guid>("FindingId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("RedactedContent")
+                        .HasColumnType("text");
 
                     b.Property<string>("Sha256")
                         .IsRequired()
@@ -341,13 +390,46 @@ namespace SentinelAI.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AffectedUrl")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("AssessmentId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid?>("AssetId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("Category")
+                        .HasColumnType("text");
+
+                    b.Property<int>("CheckStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Confidence")
+                        .HasColumnType("text");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Description")
+                        .HasColumnType("text");
+
+                    b.Property<string>("HttpMethod")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Impact")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Parameter")
+                        .HasColumnType("text");
+
+                    b.Property<string>("References")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Remediation")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Reproduction")
                         .HasColumnType("text");
 
                     b.Property<int>("Severity")
@@ -555,6 +637,9 @@ namespace SentinelAI.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("PrivateWorkerIdentity")
+                        .HasColumnType("text");
+
                     b.Property<bool>("PublicTargetOwnershipVerified")
                         .HasColumnType("boolean");
 
@@ -576,6 +661,9 @@ namespace SentinelAI.Infrastructure.Migrations
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
+
+                    b.Property<int?>("WebHostingMode")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -638,6 +726,101 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("SentinelAI.Domain.WebAssessment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AgentJobId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("DiscoveredEndpointCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("text");
+
+                    b.Property<int>("HostingMode")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Profile")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ReportStorageKey")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ScopeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TargetUrl")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "AgentJobId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CreatedAt");
+
+                    b.ToTable("WebAssessments");
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.WebAssessmentEndpoint", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AssessmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Depth")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("DiscoveredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "AssessmentId", "Url")
+                        .IsUnique();
+
+                    b.ToTable("WebAssessmentEndpoints");
+                });
+
             modelBuilder.Entity("SentinelAI.Domain.WorkerRegistration", b =>
                 {
                     b.Property<Guid>("Id")
@@ -690,6 +873,7 @@ namespace SentinelAI.Infrastructure.Migrations
 
                     b.ToTable("Workers");
                 });
+
             modelBuilder.Entity("SentinelAI.Domain.AssetService", b =>
                 {
                     b.HasOne("SentinelAI.Domain.Asset", null)

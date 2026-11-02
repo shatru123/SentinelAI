@@ -90,6 +90,35 @@ public sealed class SentinelApiClient(
         }
     }
 
+    public async Task<byte[]> GetBytesAsync(string endpoint, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            using var response = await SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw CreateHttpFailure(response.StatusCode, endpoint);
+            return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        }
+        catch (SentinelApiException) { throw; }
+        catch (ApiAuthenticationException exception) { throw new SentinelApiException(SentinelApiFailureKind.AuthenticationRequired, "Your session has expired or authentication is required. Sign in again.", exception); }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested) { throw new SentinelApiException(SentinelApiFailureKind.Timeout, "The API request timed out. Try again.", exception); }
+        catch (HttpRequestException exception) { throw new SentinelApiException(SentinelApiFailureKind.Unavailable, "The API is unavailable. Start the API and try again.", exception); }
+    }
+
+    public async Task PostAsync(string endpoint, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            using var response = await SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw CreateHttpFailure(response.StatusCode, endpoint);
+        }
+        catch (SentinelApiException) { throw; }
+        catch (ApiAuthenticationException exception) { throw new SentinelApiException(SentinelApiFailureKind.AuthenticationRequired, "Your session has expired or authentication is required. Sign in again.", exception); }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested) { throw new SentinelApiException(SentinelApiFailureKind.Timeout, "The API request timed out. Try again.", exception); }
+        catch (HttpRequestException exception) { throw new SentinelApiException(SentinelApiFailureKind.Unavailable, "The API is unavailable. Start the API and try again.", exception); }
+    }
+
     public async Task<TResponse> PostJsonAsync<TRequest, TResponse>(string endpoint, TRequest payload, CancellationToken cancellationToken = default)
     {
         try

@@ -115,6 +115,26 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task Private_web_assessment_requires_enrolled_worker_and_is_tenant_scoped()
+    {
+        var workerId = $"private-web-{Guid.NewGuid():N}";
+        using var workerClient = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Worker);
+        workerClient.DefaultRequestHeaders.Add("X-Worker-Id", workerId);
+        var registration = await workerClient.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest(workerId, "3.1", ["web-assessment", "private-web-assessment", "cancellation"]));
+        Assert.Equal(HttpStatusCode.OK, registration.StatusCode);
+
+        using var operatorClient = CreateAuthenticatedClient(tenantId, userId, UserRole.SecurityAnalyst);
+        var created = await operatorClient.PostAsJsonAsync("/api/v1/web-assessments", new CreateWebAssessmentRequest("private app", "https://myapp.internal", WebHostingMode.Private, workerId, "web-assessment-passive", [], 10, 120, "private-lab-approval", DateTimeOffset.UtcNow.AddHours(1)));
+        Assert.Equal(HttpStatusCode.Accepted, created.StatusCode);
+        var assessment = await created.Content.ReadFromJsonAsync<WebAssessmentResponse>();
+        Assert.NotNull(assessment);
+        Assert.NotEqual(Guid.Empty, assessment!.ScopeId);
+
+        using var otherTenant = CreateAuthenticatedClient(Guid.NewGuid(), Guid.NewGuid(), UserRole.Viewer);
+        Assert.Equal(HttpStatusCode.NotFound, (await otherTenant.GetAsync($"/api/v1/web-assessments/{assessment.Id}")).StatusCode);
+    }
+
+    [Fact]
     public async Task Reader_can_retrieve_seeded_assets_and_findings_with_pagination_and_tenant_isolation()
     {
         var otherTenantId = Guid.NewGuid();

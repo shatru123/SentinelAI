@@ -16,6 +16,12 @@ public enum UserRole { Admin, SecurityAnalyst, Viewer, Worker }
 public enum WorkerStatus { Registered, Healthy, Unhealthy, Disabled }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum PublicTargetAuthorizationStatus { Requested, Approved, Revoked, Expired }
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum WebHostingMode { Public, Private }
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum WebAssessmentStatus { Queued, Running, Completed, Failed, Cancelled, Expired }
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum WebCheckStatus { Confirmed, Potential, Informational, Rejected, Inconclusive, NotTested, BlockedByAuthorization, Unsupported }
 
 public sealed class Tenant
 {
@@ -56,6 +62,8 @@ public sealed class TargetScope
     public string AuthorizationEvidence { get; private set; } = string.Empty;
     public bool PublicTargetOwnershipVerified { get; private set; }
     public bool AllowSubdomains { get; private set; }
+    public WebHostingMode? WebHostingMode { get; private set; }
+    public string? PrivateWorkerIdentity { get; private set; }
     public List<PublicTargetVerification> PublicTargetVerifications { get; private set; } = [];
     public DateTimeOffset ExpiresAt { get; private set; }
     public Guid CreatedBy { get; private set; }
@@ -77,6 +85,12 @@ public sealed class TargetScope
         PublicTargetVerifications = verifications.ToList();
         // Kept for migration/source compatibility only. The policy engine never trusts this flag.
         PublicTargetOwnershipVerified = false;
+    }
+
+    public void ConfigureWebHosting(WebHostingMode hostingMode, string? privateWorkerIdentity = null)
+    {
+        WebHostingMode = hostingMode;
+        PrivateWorkerIdentity = string.IsNullOrWhiteSpace(privateWorkerIdentity) ? null : privateWorkerIdentity.Trim();
     }
 
     public void RevokePublicAuthorization(Guid authorizationId)
@@ -396,7 +410,27 @@ public sealed class Finding
     public string Title { get; private set; } = string.Empty;
     public FindingSeverity Severity { get; private set; }
     public string? Description { get; private set; }
+    public Guid? AssessmentId { get; private set; }
+    public string? Category { get; private set; }
+    public string? Confidence { get; private set; }
+    public string? AffectedUrl { get; private set; }
+    public string? HttpMethod { get; private set; }
+    public string? Parameter { get; private set; }
+    public string? Impact { get; private set; }
+    public string? Reproduction { get; private set; }
+    public string? Remediation { get; private set; }
+    public string? References { get; private set; }
+    public WebCheckStatus CheckStatus { get; private set; } = WebCheckStatus.Informational;
     public DateTimeOffset CreatedAt { get; private set; }
+
+    public void ConfigureAssessmentDetails(Guid assessmentId, string category, string confidence, string affectedUrl,
+        string? httpMethod, string? parameter, string? description, string? impact, string? reproduction,
+        string? remediation, string? references, WebCheckStatus checkStatus)
+    {
+        AssessmentId = assessmentId; Category = category; Confidence = confidence; AffectedUrl = affectedUrl;
+        HttpMethod = httpMethod; Parameter = parameter; Description = description; Impact = impact;
+        Reproduction = reproduction; Remediation = remediation; References = references; CheckStatus = checkStatus;
+    }
 }
 
 public sealed class Evidence
@@ -409,7 +443,74 @@ public sealed class Evidence
     public string Source { get; private set; } = string.Empty;
     public string Summary { get; private set; } = string.Empty;
     public string Sha256 { get; private set; } = string.Empty;
+    public string? RedactedContent { get; private set; }
+    public string? ContentType { get; private set; }
     public DateTimeOffset CollectedAt { get; private set; }
+
+    public void ConfigureContent(string? redactedContent, string? contentType)
+    { RedactedContent = redactedContent; ContentType = contentType; }
+}
+
+public sealed class WebAssessment
+{
+    private WebAssessment() { }
+    public WebAssessment(Guid tenantId, Guid jobId, Guid scopeId, string targetUrl, string profile, WebHostingMode hostingMode)
+    {
+        Id = Guid.NewGuid(); TenantId = tenantId; AgentJobId = jobId; ScopeId = scopeId; TargetUrl = targetUrl;
+        Profile = profile; HostingMode = hostingMode; Status = WebAssessmentStatus.Queued; CreatedAt = DateTimeOffset.UtcNow;
+    }
+    public Guid Id { get; private set; }
+    public Guid TenantId { get; private set; }
+    public Guid AgentJobId { get; private set; }
+    public Guid ScopeId { get; private set; }
+    public string TargetUrl { get; private set; } = string.Empty;
+    public string Profile { get; private set; } = string.Empty;
+    public WebHostingMode HostingMode { get; private set; }
+    public WebAssessmentStatus Status { get; private set; }
+    public DateTimeOffset CreatedAt { get; private set; }
+    public DateTimeOffset? StartedAt { get; private set; }
+    public DateTimeOffset? CompletedAt { get; private set; }
+    public string? FailureReason { get; private set; }
+    public string? ReportStorageKey { get; private set; }
+    public int DiscoveredEndpointCount { get; private set; }
+    public void Start() { Status = WebAssessmentStatus.Running; StartedAt = DateTimeOffset.UtcNow; }
+    public void Complete(string reportStorageKey, int endpointCount) { Status = WebAssessmentStatus.Completed; CompletedAt = DateTimeOffset.UtcNow; ReportStorageKey = reportStorageKey; DiscoveredEndpointCount = endpointCount; }
+    public void Fail(string reason) { if (Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Cancelled) return; Status = WebAssessmentStatus.Failed; FailureReason = reason; CompletedAt = DateTimeOffset.UtcNow; }
+    public void Cancel() { if (Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Failed) return; Status = WebAssessmentStatus.Cancelled; FailureReason = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; }
+    public void ResetForRetry() { if (Status == WebAssessmentStatus.Completed) return; Status = WebAssessmentStatus.Queued; StartedAt = null; CompletedAt = null; FailureReason = "Recovered for retry."; ReportStorageKey = null; }
+    public void Expire() { if (Status is WebAssessmentStatus.Queued or WebAssessmentStatus.Running) { Status = WebAssessmentStatus.Expired; CompletedAt = DateTimeOffset.UtcNow; } }
+}
+
+public sealed class WebAssessmentEndpoint
+{
+    private WebAssessmentEndpoint() { }
+    public WebAssessmentEndpoint(Guid tenantId, Guid assessmentId, string url, string method, int depth, string kind)
+    { Id = Guid.NewGuid(); TenantId = tenantId; AssessmentId = assessmentId; Url = url; Method = method; Depth = depth; Kind = kind; DiscoveredAt = DateTimeOffset.UtcNow; }
+    public Guid Id { get; private set; }
+    public Guid TenantId { get; private set; }
+    public Guid AssessmentId { get; private set; }
+    public string Url { get; private set; } = string.Empty;
+    public string Method { get; private set; } = string.Empty;
+    public int Depth { get; private set; }
+    public string Kind { get; private set; } = string.Empty;
+    public DateTimeOffset DiscoveredAt { get; private set; }
+}
+
+public sealed class AssessmentScreenshot
+{
+    private AssessmentScreenshot() { }
+    public AssessmentScreenshot(Guid tenantId, Guid assessmentId, Guid? findingId, string url, string type, string format, string storageKey, string sha256)
+    { Id = Guid.NewGuid(); TenantId = tenantId; AssessmentId = assessmentId; FindingId = findingId; Url = url; ScreenshotType = type; Format = format; StorageKey = storageKey; Sha256 = sha256; CapturedAt = DateTimeOffset.UtcNow; }
+    public Guid Id { get; private set; }
+    public Guid TenantId { get; private set; }
+    public Guid AssessmentId { get; private set; }
+    public Guid? FindingId { get; private set; }
+    public string Url { get; private set; } = string.Empty;
+    public string ScreenshotType { get; private set; } = string.Empty;
+    public string Format { get; private set; } = string.Empty;
+    public string StorageKey { get; private set; } = string.Empty;
+    public string Sha256 { get; private set; } = string.Empty;
+    public DateTimeOffset CapturedAt { get; private set; }
 }
 
 public sealed class ApprovalRequest

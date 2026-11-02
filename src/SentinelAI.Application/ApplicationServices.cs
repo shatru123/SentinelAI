@@ -24,6 +24,9 @@ public interface IAppDbContext
     DbSet<WorkerRegistration> Workers { get; }
     DbSet<PublicTargetAuthorization> PublicTargetAuthorizations { get; }
     DbSet<OutboxMessage> OutboxMessages { get; }
+    DbSet<WebAssessment> WebAssessments { get; }
+    DbSet<WebAssessmentEndpoint> WebAssessmentEndpoints { get; }
+    DbSet<AssessmentScreenshot> AssessmentScreenshots { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
     Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
 }
@@ -56,6 +59,13 @@ public static class InventoryOperationProfiles
 {
     public const string MockPassive = "mock-passive";
     public const string NetworkInventoryPassive = "network-inventory-passive";
+}
+
+public static class WebAssessmentOperationProfiles
+{
+    public const string Passive = "web-assessment-passive";
+    public const string SafeActive = "web-assessment-safe-active";
+    public static bool IsWeb(string profile) => profile.Equals(Passive, StringComparison.OrdinalIgnoreCase) || profile.Equals(SafeActive, StringComparison.OrdinalIgnoreCase);
 }
 
 public interface IScanJobQueue
@@ -94,6 +104,12 @@ public interface IPublicTargetAuthorizationService
     Task<bool> RevokeAsync(PrincipalContext principal, Guid id, CancellationToken cancellationToken);
 }
 
+public interface IWebAssessmentService
+{
+    Task<WebAssessmentResponse> CreateAsync(PrincipalContext principal, CreateWebAssessmentRequest request, CancellationToken cancellationToken);
+    Task<WebAssessmentResponse?> GetAsync(PrincipalContext principal, Guid id, CancellationToken cancellationToken);
+}
+
 public sealed class ScopeService(IAppDbContext db, ITargetScopeValidator validator) : IScopeService
 {
     public async Task<ScopeResponse> CreateAsync(PrincipalContext principal, CreateScopeRequest request, CancellationToken cancellationToken)
@@ -107,6 +123,7 @@ public sealed class ScopeService(IAppDbContext db, ITargetScopeValidator validat
         var scope = new TargetScope(principal.TenantId, request.Name.Trim(), principal.UserId, request.ExpiresAt);
         scope.Configure(request.Targets, request.Exclusions ?? [], request.ApprovedOperationProfiles, request.RequestsPerMinute,
             request.MaxExecutionSeconds, request.AuthorizationEvidence.Trim(), false, request.AllowSubdomains);
+        if (request.HostingMode is not null) scope.ConfigureWebHosting(request.HostingMode.Value, request.PrivateWorkerIdentity);
         var authorizationIds = request.PublicTargetAuthorizationIds ?? [];
         if (authorizationIds.Count > 0)
         {
@@ -138,7 +155,7 @@ public sealed class ScopeService(IAppDbContext db, ITargetScopeValidator validat
         return new PagedResponse<ScopeResponse>(items.Select(ToResponse).ToArray(), page, pageSize, total);
     }
 
-    private static ScopeResponse ToResponse(TargetScope scope) => new(scope.Id, scope.Name, scope.TenantId, scope.Targets, scope.ApprovedOperationProfiles, scope.ExpiresAt, scope.IsActive);
+    private static ScopeResponse ToResponse(TargetScope scope) => new(scope.Id, scope.Name, scope.TenantId, scope.Targets, scope.ApprovedOperationProfiles, scope.ExpiresAt, scope.IsActive, scope.WebHostingMode, scope.PrivateWorkerIdentity);
 }
 
 public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validator, IScanJobQueue queue) : IScanService
@@ -155,7 +172,13 @@ public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validato
 
         var job = new AgentJob(principal.TenantId, scope.Id, principal.UserId, request.OperationProfile);
         db.AgentJobs.Add(job);
-        db.AgentExecutions.Add(new AgentExecution(job.Id, "MockNetworkDiscoveryAgent"));
+        db.AgentExecutions.Add(new AgentExecution(job.Id, WebAssessmentOperationProfiles.IsWeb(request.OperationProfile) ? "AuthorizedWebAssessmentAgent" : "MockNetworkDiscoveryAgent"));
+        if (WebAssessmentOperationProfiles.IsWeb(request.OperationProfile))
+        {
+            var webTarget = scope.Targets.FirstOrDefault(x => x.Kind == TargetKind.Web)?.Value
+                ?? throw new ScopeValidationException(["A web assessment scope must contain a web target."]);
+            db.WebAssessments.Add(new WebAssessment(job.TenantId, job.Id, scope.Id, webTarget, request.OperationProfile, scope.WebHostingMode ?? WebHostingMode.Public));
+        }
         db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "scan.created", nameof(AgentJob), job.Id, "Phase 1 mock assessment queued."));
         db.OutboxMessages.Add(new OutboxMessage(principal.TenantId, OutboxMessageTypes.ScanJob,
             OutboxMessagePayload.Serialize(new OutboxJobEnvelope(job.Id, principal.TenantId))));
@@ -195,6 +218,44 @@ public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validato
     }
 
     private static ScanResponse ToResponse(AgentJob job) => new(job.Id, job.ScopeId, job.Status, job.CreatedAt, job.ExpiresAt, job.OperationProfile);
+}
+
+public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes, IScanService scans) : IWebAssessmentService
+{
+    public async Task<WebAssessmentResponse> CreateAsync(PrincipalContext principal, CreateWebAssessmentRequest request, CancellationToken cancellationToken)
+    {
+        if (!principal.CanOperate) throw new UnauthorizedAccessException("The current role cannot create web assessments.");
+        if (!Uri.TryCreate(request.TargetUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(uri.Host))
+            throw new ScopeValidationException(["A valid HTTP(S) target URL is required."]);
+        if (request.HostingMode == WebHostingMode.Private && string.IsNullOrWhiteSpace(request.PrivateWorkerIdentity))
+            throw new ScopeValidationException(["A private assessment worker is required for private targets."]);
+        if (request.HostingMode == WebHostingMode.Private)
+        {
+            var privateWorker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == request.PrivateWorkerIdentity!.Trim(), cancellationToken);
+            if (privateWorker is null || privateWorker.Status == WorkerStatus.Disabled || !privateWorker.Capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase) || !privateWorker.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase))
+                throw new ScopeValidationException(["The selected private worker is not enrolled with the required web assessment capabilities."]);
+        }
+        var profile = request.OperationProfile.Equals(WebAssessmentOperationProfiles.SafeActive, StringComparison.OrdinalIgnoreCase)
+            ? WebAssessmentOperationProfiles.SafeActive : WebAssessmentOperationProfiles.Passive;
+        var scope = await scopes.CreateAsync(principal, new CreateScopeRequest(
+            request.Name, [new TargetDefinition(TargetKind.Web, uri.ToString())], request.Exclusions ?? [], [profile],
+            request.RequestsPerMinute, request.MaxExecutionSeconds, request.AuthorizationEvidence, request.ExpiresAt,
+            false, null, request.PublicTargetAuthorizationIds, request.AllowSubdomains, request.HostingMode, request.PrivateWorkerIdentity), cancellationToken);
+        var scan = await scans.CreateAsync(principal, new CreateScanRequest(scope.Id, profile), cancellationToken);
+        var assessment = await db.WebAssessments.SingleAsync(x => x.AgentJobId == scan.Id && x.TenantId == principal.TenantId, cancellationToken);
+        return ToResponse(assessment, scan);
+    }
+
+    public async Task<WebAssessmentResponse?> GetAsync(PrincipalContext principal, Guid id, CancellationToken cancellationToken)
+    {
+        var assessment = await db.WebAssessments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.TenantId == principal.TenantId, cancellationToken);
+        if (assessment is null) return null;
+        var job = await db.AgentJobs.AsNoTracking().SingleAsync(x => x.Id == assessment.AgentJobId && x.TenantId == principal.TenantId, cancellationToken);
+        return ToResponse(assessment, new ScanResponse(job.Id, job.ScopeId, job.Status, job.CreatedAt, job.ExpiresAt, job.OperationProfile));
+    }
+
+    private static WebAssessmentResponse ToResponse(WebAssessment assessment, ScanResponse scan)
+        => new(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, scan.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey);
 }
 
 public static class OutboxMessageTypes

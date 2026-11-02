@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using SentinelAI.Agent.Network;
+using SentinelAI.Agent.Vulnerability;
 using SentinelAI.Application;
 using SentinelAI.Domain;
 using SentinelAI.Security.Policy;
@@ -32,6 +33,10 @@ public static class InfrastructureServices
         services.AddSingleton<IHostAddressResolver, SystemHostAddressResolver>();
         services.AddScoped<ITargetScopeValidator, TargetScopeValidator>();
         services.AddScoped<ScanExecutionService>();
+        services.AddScoped<IWebAssessmentEngine, WebAssessmentEngine>();
+        services.AddScoped<IHtmlReportGenerator, HtmlReportGenerator>();
+        services.AddScoped<IScreenshotCaptureService, PlaywrightScreenshotCaptureService>();
+        services.AddSingleton<IAssessmentArtifactStore, FileSystemAssessmentArtifactStore>();
         services.AddSingleton<IPassiveInventoryAdapter, PassiveNetworkInventoryAdapter>();
         services.AddSingleton<WorkerCancellationRegistry>();
         services.AddSingleton<WorkerActivityTracker>();
@@ -104,7 +109,7 @@ public sealed class WorkerActivityTracker
 
 public enum ScanExecutionOutcome { Completed, Cancelled, Expired, AlreadyCompleted, AlreadyRunning, ClaimedByAnotherWorker, Unauthorized, Missing }
 
-public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator validator, IConfiguration configuration, ILogger<ScanExecutionService> logger, IPassiveInventoryAdapter? inventoryAdapter = null)
+public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator validator, IConfiguration configuration, ILogger<ScanExecutionService> logger, IPassiveInventoryAdapter? inventoryAdapter = null, IWebAssessmentEngine? webAssessmentEngine = null)
 {
     private static readonly ActivitySource ActivitySource = new("SentinelAI.Worker");
     private readonly int executionDelayMs = Math.Clamp(configuration.GetValue("Worker:ExecutionDelayMs", 50), 0, 60_000);
@@ -126,6 +131,8 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 job.RecoverExpiredLease(now);
                 var execution = await db.AgentExecutions.SingleOrDefaultAsync(x => x.AgentJobId == job.Id, cancellationToken);
                 execution?.ResetForRetry();
+                var webAssessment = await db.WebAssessments.SingleOrDefaultAsync(x => x.AgentJobId == job.Id, cancellationToken);
+                webAssessment?.ResetForRetry();
                 await db.SaveChangesAsync(cancellationToken);
             }
             catch (DbUpdateConcurrencyException exception)
@@ -174,11 +181,14 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             job.RecoverExpiredLease(now);
         }
         var effectiveWorkerIdentity = string.IsNullOrWhiteSpace(workerIdentity) ? "in-process" : workerIdentity.Trim();
+        IReadOnlyCollection<string> workerCapabilities = [];
         if (workerIdentity is not null)
         {
             var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Identity == workerIdentity, cancellationToken);
-            var requiredCapability = job.OperationProfile.Equals(InventoryOperationProfiles.NetworkInventoryPassive, StringComparison.OrdinalIgnoreCase)
-                ? "passive-inventory" : "passive-mock";
+            workerCapabilities = worker?.Capabilities ?? [];
+            var requiredCapability = WebAssessmentOperationProfiles.IsWeb(job.OperationProfile)
+                ? "web-assessment"
+                : job.OperationProfile.Equals(InventoryOperationProfiles.NetworkInventoryPassive, StringComparison.OrdinalIgnoreCase) ? "passive-inventory" : "passive-mock";
             if (worker is null || !worker.IsHealthyForAdmission(now, WorkerStaleAfter) || !worker.Capabilities.Contains(requiredCapability, StringComparer.OrdinalIgnoreCase)) return ScanExecutionOutcome.Unauthorized;
         }
         if (!job.TryAcquireLease(effectiveWorkerIdentity, now, LeaseDuration))
@@ -208,6 +218,20 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         timeout.CancelAfter(TimeSpan.FromSeconds(scopeDefinition.MaxExecutionSeconds));
         try
         {
+            if (WebAssessmentOperationProfiles.IsWeb(job.OperationProfile))
+            {
+                if (webAssessmentEngine is null) throw new InvalidOperationException("Web assessment execution is not configured.");
+                var assessment = await db.WebAssessments.SingleAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, timeout.Token);
+                await webAssessmentEngine.ExecuteAsync(assessment, job, scopeDefinition, effectiveWorkerIdentity, workerCapabilities,
+                    token => HasActiveLeaseAsync(job.Id, effectiveWorkerIdentity, token), timeout.Token);
+                await db.Entry(job).ReloadAsync(timeout.Token);
+                if (workerIdentity is not null && !job.IsLeaseOwnedBy(workerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled) { execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Cancelled; }
+                execution.Complete(); job.Complete();
+                db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "web-assessment.completed", nameof(WebAssessment), assessment.Id, "Authorized web assessment completed with bounded, non-destructive checks."));
+                await db.SaveChangesAsync(timeout.Token);
+                return ScanExecutionOutcome.Completed;
+            }
             var authorizedTargets = new List<AuthorizedInventoryTarget>(scopeDefinition.Targets.Count);
             foreach (var target in scopeDefinition.Targets)
             {
@@ -259,6 +283,11 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             await db.SaveChangesAsync(timeout.Token);
             await inventoryTransaction.CommitAsync(timeout.Token);
             return ScanExecutionOutcome.Completed;
+        }
+        catch (WebAssessmentLeaseLostException)
+        {
+            await db.Entry(job).ReloadAsync(CancellationToken.None);
+            return ScanExecutionOutcome.ClaimedByAnotherWorker;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {

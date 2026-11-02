@@ -190,7 +190,7 @@ public sealed class WorkerOptions
 {
     public string Identity { get; }
     public string Version { get; } = typeof(Worker).Assembly.GetName().Version?.ToString() ?? "1.1";
-    public IReadOnlyCollection<string> Capabilities { get; } = ["scope-validation", "passive-mock", "passive-inventory", "cancellation", "bounded-concurrency"];
+    public IReadOnlyCollection<string> Capabilities { get; }
     public string? ControlPlaneUrl { get; }
     public int Concurrency { get; }
     public int MaxAttempts { get; }
@@ -201,6 +201,9 @@ public sealed class WorkerOptions
     {
         var url = configuration["Worker:ControlPlaneUrl"];
         Identity = configuration["Worker:Identity"]?.Trim() ?? Environment.GetEnvironmentVariable("HOSTNAME") ?? $"worker-{Guid.NewGuid():N}";
+        var configuredCapabilities = configuration.GetSection("Worker:Capabilities").GetChildren().Select(x => x.Value).Where(x => !string.IsNullOrWhiteSpace(x)).Cast<string>().ToArray();
+        Capabilities = configuredCapabilities.Length > 0
+            ? configuredCapabilities : ["scope-validation", "passive-mock", "passive-inventory", "web-assessment", "cancellation", "bounded-concurrency"];
         ControlPlaneUrl = string.IsNullOrWhiteSpace(url) ? null : url.TrimEnd('/');
         Concurrency = Math.Clamp(configuration.GetValue("Worker:Concurrency", 2), 1, 32);
         MaxAttempts = Math.Clamp(configuration.GetValue("RabbitMQ:MaxAttempts", 3), 1, 20);

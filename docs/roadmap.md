@@ -22,6 +22,16 @@
 
 Current implementation status: the passive foundation is implemented. Workers can advertise the `passive-inventory` capability, the fixed adapter records only execution-time validated scope declarations without artificial network-request delays, and asset-service persistence is tenant isolated. Asset observation and reachability timestamps are distinct. Active network discovery remains intentionally disabled until a separately reviewed adapter, egress policy and security test suite are approved.
 
+## Phase 3.1 — Authorized web application assessment
+- Dedicated web assessment engine separate from passive network inventory
+- Public authorization reuse and explicit private-worker capability routing
+- Bounded same-origin discovery, passive headers/cookies/CORS/API-documentation checks and safe active checks
+- Redacted evidence, Playwright screenshots and tenant-isolated offline HTML reports
+- Authenticated API and Blazor assessment history/report workflow
+- PostgreSQL persistence, lease-aware cancellation and worker capability admission
+
+Coverage is intentionally limited to the checks documented in `docs/web-assessment.md`; destructive exploitation, credential attacks, arbitrary form submission, active network probing and CVE correlation are not part of this milestone.
+
 ## Phase 3 — Vulnerability intelligence
 - CVE/CPE correlation and source attribution
 - Evidence-backed risk scoring
@@ -40,4 +50,4 @@ Current implementation status: the passive foundation is implemented. Workers ca
 - Kubernetes deployment and secret manager integration
 - Load, chaos, security and disaster-recovery testing
 
-The timeline is intentionally milestone-based. Do not enable active scans until the Phase 1 authorization controls and Phase 2 scope enforcement have passed security tests.
+The timeline is intentionally milestone-based. Phase 3.1 is an authorized web assessment milestone, while vulnerability intelligence/CVE correlation remains a separate future capability. Do not enable active network scans or destructive web testing until a separate security review and milestone acceptance.

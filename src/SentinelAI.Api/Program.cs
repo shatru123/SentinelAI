@@ -9,6 +9,7 @@ using OpenTelemetry.Trace;
 using OpenTelemetry.Exporter;
 using SentinelAI.Application;
 using SentinelAI.Api;
+using SentinelAI.Agent.Vulnerability;
 using SentinelAI.Contracts;
 using SentinelAI.Domain;
 using SentinelAI.Infrastructure;
@@ -21,6 +22,7 @@ builder.Services.AddSentinelInfrastructure(builder.Configuration, builder.Enviro
 builder.Services.AddScoped<IScopeService, ScopeService>();
 builder.Services.AddScoped<IScanService, ScanService>();
 builder.Services.AddScoped<IPublicTargetAuthorizationService, PublicTargetAuthorizationService>();
+builder.Services.AddScoped<IWebAssessmentService, WebAssessmentService>();
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddSource("SentinelAI.RabbitMq", "SentinelAI.Worker").AddOtlpExporter())
     .WithMetrics(metrics => metrics.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddMeter("SentinelAI.Jobs").AddOtlpExporter());
@@ -111,6 +113,88 @@ api.MapPost("/scans", async (HttpContext context, CreateScanRequest request, ISc
     return Results.Accepted($"/api/v1/scans/{result.Id}", result);
 }).RequireAuthorization("Operator");
 
+api.MapPost("/web-assessments", async (HttpContext context, CreateWebAssessmentRequest request, IWebAssessmentService service, CancellationToken cancellationToken) =>
+{
+    var result = await service.CreateAsync(ToPrincipal(context), request, cancellationToken);
+    return Results.Accepted($"/api/v1/web-assessments/{result.Id}", result);
+}).RequireAuthorization("Operator");
+
+api.MapGet("/web-assessments/{id:guid}", async (HttpContext context, Guid id, IWebAssessmentService service, CancellationToken cancellationToken) =>
+{
+    var result = await service.GetAsync(ToPrincipal(context), id, cancellationToken);
+    return result is null ? Results.NotFound() : Results.Ok(result);
+}).RequireAuthorization("Reader");
+
+api.MapGet("/web-assessments", async (HttpContext context, IAppDbContext db, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default) =>
+{
+    (page, pageSize) = NormalizePage(page, pageSize);
+    var tenantId = ToPrincipal(context).TenantId;
+    var query = db.WebAssessments.AsNoTracking().Where(x => x.TenantId == tenantId).OrderByDescending(x => x.CreatedAt);
+    var total = await query.CountAsync(cancellationToken);
+    var items = await query.Skip((page - 1) * pageSize).Take(pageSize).Join(db.AgentJobs.AsNoTracking().Where(x => x.TenantId == tenantId), x => x.AgentJobId, x => x.Id, (assessment, job) => new WebAssessmentResponse(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, job.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey)).ToListAsync(cancellationToken);
+    return Results.Ok(new PagedResponse<WebAssessmentResponse>(items, page, pageSize, total));
+}).RequireAuthorization("Reader");
+
+api.MapGet("/web-assessments/{id:guid}/endpoints", async (HttpContext context, Guid id, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var assessment = await db.WebAssessments.AsNoTracking().AnyAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
+    if (!assessment) return Results.NotFound();
+    var endpoints = await db.WebAssessmentEndpoints.AsNoTracking().Where(x => x.AssessmentId == id && x.TenantId == tenantId).OrderBy(x => x.Url).Select(x => new WebAssessmentEndpointResponse(x.Id, x.Url, x.Method, x.Depth, x.Kind, x.DiscoveredAt)).ToListAsync(cancellationToken);
+    return Results.Ok(endpoints);
+}).RequireAuthorization("Reader");
+
+api.MapGet("/web-assessments/{id:guid}/findings", async (HttpContext context, Guid id, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    if (!await db.WebAssessments.AsNoTracking().AnyAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken)) return Results.NotFound();
+    var findings = await db.Findings.AsNoTracking().Where(x => x.TenantId == tenantId && x.AssessmentId == id).OrderByDescending(x => x.CreatedAt)
+        .Select(x => new WebAssessmentFindingResponse(x.Id, x.Title, x.Severity, x.Category, x.Confidence, x.AffectedUrl, x.HttpMethod, x.Parameter, x.Description, x.Impact, x.Reproduction, x.Remediation, x.CheckStatus, x.CreatedAt)).ToListAsync(cancellationToken);
+    return Results.Ok(findings);
+}).RequireAuthorization("Reader");
+
+api.MapPost("/web-assessments/{id:guid}/cancel", async (HttpContext context, Guid id, IAppDbContext db, IScanService scans, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var jobId = await db.WebAssessments.AsNoTracking().Where(x => x.Id == id && x.TenantId == tenantId).Select(x => (Guid?)x.AgentJobId).SingleOrDefaultAsync(cancellationToken);
+    return jobId is null ? Results.NotFound() : await scans.CancelAsync(ToPrincipal(context), jobId.Value, cancellationToken) ? Results.NoContent() : Results.NotFound();
+}).RequireAuthorization("Operator");
+
+api.MapGet("/web-assessments/{id:guid}/screenshots", async (HttpContext context, Guid id, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    if (!await db.WebAssessments.AsNoTracking().AnyAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken)) return Results.NotFound();
+    var screenshots = await db.AssessmentScreenshots.AsNoTracking().Where(x => x.AssessmentId == id && x.TenantId == tenantId).OrderBy(x => x.CapturedAt).Select(x => new ScreenshotResponse(x.Id, x.Url, x.ScreenshotType, x.Format, x.Sha256, x.CapturedAt)).ToListAsync(cancellationToken);
+    return Results.Ok(screenshots);
+}).RequireAuthorization("Reader");
+
+api.MapGet("/web-assessments/{id:guid}/screenshots/{screenshotId:guid}", async (HttpContext context, Guid id, Guid screenshotId, IAppDbContext db, IAssessmentArtifactStore artifacts, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var screenshot = await db.AssessmentScreenshots.AsNoTracking().SingleOrDefaultAsync(x => x.Id == screenshotId && x.AssessmentId == id && x.TenantId == tenantId, cancellationToken);
+    if (screenshot is null) return Results.NotFound();
+    var content = await artifacts.GetAsync(tenantId, screenshot.StorageKey, cancellationToken);
+    return content is null ? Results.NotFound() : Results.File(content, screenshot.Format, $"sentinelai-{screenshot.Id:N}.png");
+}).RequireAuthorization("Reader");
+
+api.MapGet("/web-assessments/{id:guid}/findings/{findingId:guid}/evidence", async (HttpContext context, Guid id, Guid findingId, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var finding = await db.Findings.AsNoTracking().SingleOrDefaultAsync(x => x.Id == findingId && x.AssessmentId == id && x.TenantId == tenantId, cancellationToken);
+    if (finding is null) return Results.NotFound();
+    var evidence = await db.Evidence.AsNoTracking().Where(x => x.FindingId == findingId && x.TenantId == tenantId).OrderBy(x => x.CollectedAt).Select(x => new EvidenceResponse(x.Id, x.FindingId, x.Source, x.Summary, x.Sha256, x.RedactedContent, x.ContentType, x.CollectedAt)).ToListAsync(cancellationToken);
+    return Results.Ok(evidence);
+}).RequireAuthorization("Reader");
+
+api.MapGet("/web-assessments/{id:guid}/report", async (HttpContext context, Guid id, IAppDbContext db, IAssessmentArtifactStore artifacts, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var assessment = await db.WebAssessments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
+    if (assessment is null || string.IsNullOrWhiteSpace(assessment.ReportStorageKey)) return Results.NotFound();
+    var content = await artifacts.GetAsync(tenantId, assessment.ReportStorageKey, cancellationToken);
+    return content is null ? Results.NotFound() : Results.File(content, "text/html; charset=utf-8", $"sentinelai-{assessment.Id:N}.html");
+}).RequireAuthorization("Reader");
+
 api.MapGet("/scans/{id:guid}", async (HttpContext context, Guid id, IScanService service, CancellationToken cancellationToken) =>
 {
     var result = await service.GetAsync(ToPrincipal(context), id, cancellationToken);
@@ -165,7 +249,7 @@ workers.MapPost("/register", async (HttpContext context, WorkerRegistrationReque
 {
     var principal = ToPrincipal(context);
     var identity = request.Identity.Trim();
-    if (identity.Length is 0 or > 128 || request.Capabilities is null || request.Capabilities.Count is 0 or > 32 || request.Capacity is < 1 or > 256 || !request.Capabilities.Any(capability => capability.Equals("passive-mock", StringComparison.OrdinalIgnoreCase) || capability.Equals("passive-inventory", StringComparison.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker identity, capacity or capabilities.");
+    if (identity.Length is 0 or > 128 || request.Capabilities is null || request.Capabilities.Count is 0 or > 32 || request.Capacity is < 1 or > 256 || !request.Capabilities.Any(capability => capability.Equals("passive-mock", StringComparison.OrdinalIgnoreCase) || capability.Equals("passive-inventory", StringComparison.OrdinalIgnoreCase) || capability.Equals("web-assessment", StringComparison.OrdinalIgnoreCase) || capability.Equals("private-web-assessment", StringComparison.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker identity, capacity or capabilities.");
     if (!identity.Equals(context.User.FindFirstValue("worker_id"), StringComparison.Ordinal)) return Results.Unauthorized();
     var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == identity, cancellationToken);
     if (worker is null) { worker = new WorkerRegistration(principal.TenantId, identity, request.Version.Trim(), request.Capabilities); db.Workers.Add(worker); }

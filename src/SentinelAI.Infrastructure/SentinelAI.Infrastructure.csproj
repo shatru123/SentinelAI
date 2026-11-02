@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SentinelAI.Agent.Network\SentinelAI.Agent.Network.csproj" />
+    <ProjectReference Include="..\SentinelAI.Agent.Vulnerability\SentinelAI.Agent.Vulnerability.csproj" />
     <ProjectReference Include="..\SentinelAI.Application\SentinelAI.Application.csproj" />
     <ProjectReference Include="..\SentinelAI.Contracts\SentinelAI.Contracts.csproj" />
     <ProjectReference Include="..\SentinelAI.Domain\SentinelAI.Domain.csproj" />

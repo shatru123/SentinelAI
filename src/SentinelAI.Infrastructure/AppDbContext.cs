@@ -26,6 +26,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<WorkerRegistration> Workers => Set<WorkerRegistration>();
     public DbSet<PublicTargetAuthorization> PublicTargetAuthorizations => Set<PublicTargetAuthorization>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+    public DbSet<WebAssessment> WebAssessments => Set<WebAssessment>();
+    public DbSet<WebAssessmentEndpoint> WebAssessmentEndpoints => Set<WebAssessmentEndpoint>();
+    public DbSet<AssessmentScreenshot> AssessmentScreenshots => Set<AssessmentScreenshot>();
 
     public async Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
     {
@@ -54,6 +57,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<WorkerRegistration>().HasKey(x => x.Id);
         modelBuilder.Entity<PublicTargetAuthorization>().HasKey(x => x.Id);
         modelBuilder.Entity<OutboxMessage>().HasKey(x => x.Id);
+        modelBuilder.Entity<WebAssessment>().HasKey(x => x.Id);
+        modelBuilder.Entity<WebAssessmentEndpoint>().HasKey(x => x.Id);
+        modelBuilder.Entity<AssessmentScreenshot>().HasKey(x => x.Id);
 
         ConfigureTenant(modelBuilder.Entity<User>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<TargetScope>().Property(x => x.TenantId));
@@ -70,6 +76,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<WorkerRegistration>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<PublicTargetAuthorization>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<OutboxMessage>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<WebAssessment>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<WebAssessmentEndpoint>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<AssessmentScreenshot>().Property(x => x.TenantId));
 
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var targetComparer = new ValueComparer<List<TargetDefinition>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList());
@@ -97,6 +106,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<WorkerRegistration>().HasIndex(x => new { x.TenantId, x.Identity }).IsUnique();
         modelBuilder.Entity<PublicTargetAuthorization>().HasIndex(x => new { x.TenantId, x.Target, x.Status });
         modelBuilder.Entity<OutboxMessage>().HasIndex(x => new { x.DispatchedAt, x.NextAttemptAt, x.LeaseExpiresAt, x.CreatedAt });
+        modelBuilder.Entity<WebAssessment>().HasIndex(x => new { x.TenantId, x.CreatedAt });
+        modelBuilder.Entity<WebAssessment>().HasIndex(x => new { x.TenantId, x.AgentJobId }).IsUnique();
+        modelBuilder.Entity<WebAssessmentEndpoint>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.Url }).IsUnique();
+        modelBuilder.Entity<AssessmentScreenshot>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.Id });
     }
 
     private static void ConfigureTenant(PropertyBuilder<Guid> property) => property.IsRequired();

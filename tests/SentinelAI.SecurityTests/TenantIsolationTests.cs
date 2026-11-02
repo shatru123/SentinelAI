@@ -120,6 +120,35 @@ public sealed class TenantIsolationTests
         Assert.True(allowed.IsValid);
     }
 
+    [Fact]
+    public async Task Private_web_target_requires_matching_worker_capability_and_resolves_only_to_private_space()
+    {
+        var tenant = Guid.NewGuid();
+        var scope = new TargetScope(tenant, "private-web", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://myapp.internal")], [], ["web-assessment-passive"], 10, 120, "private-lab-change", false);
+        scope.ConfigureWebHosting(WebHostingMode.Private, "private-worker-a");
+        var validator = new TargetScopeValidator(new StaticResolver([IPAddress.Parse("10.20.1.5")]));
+
+        var denied = await validator.ValidateExecutionAsync(scope, tenant, TargetKind.Web, "https://myapp.internal", "web-assessment-passive", null);
+        var wrongWorker = await validator.ValidateExecutionAsync(scope, tenant, TargetKind.Web, "https://myapp.internal", "web-assessment-passive", new WorkerExecutionContext("private-worker-b", ["web-assessment", "private-web-assessment"]));
+        var allowed = await validator.ValidateExecutionAsync(scope, tenant, TargetKind.Web, "https://myapp.internal", "web-assessment-passive", new WorkerExecutionContext("private-worker-a", ["web-assessment", "private-web-assessment"]));
+
+        Assert.False(denied.IsValid);
+        Assert.False(wrongWorker.IsValid);
+        Assert.True(allowed.IsValid);
+    }
+
+    [Fact]
+    public async Task Public_web_scope_rejects_private_dns_resolution_even_with_web_capability()
+    {
+        var tenant = Guid.NewGuid();
+        var scope = new TargetScope(tenant, "public-web", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://example.com")], [], ["web-assessment-passive"], 10, 120, "public-authorization", false);
+        scope.ConfigureVerifications([new PublicTargetVerification("https://example.com", "approved", "admin", "manual", DateTimeOffset.UtcNow)]);
+        var result = await new TargetScopeValidator(new StaticResolver([IPAddress.Parse("10.20.1.5")])).ValidateExecutionAsync(scope, tenant, TargetKind.Web, "https://example.com", "web-assessment-passive", new WorkerExecutionContext("worker", ["web-assessment"]));
+        Assert.False(result.IsValid);
+    }
+
     private sealed class StaticResolver(IReadOnlyCollection<IPAddress> addresses) : IHostAddressResolver
     {
         public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult(addresses);

@@ -7,6 +7,7 @@ namespace SentinelAI.Security.Policy;
 
 public sealed record ValidatedExecutionTarget(string OriginalHostname, IReadOnlyCollection<IPAddress> ApprovedAddresses,
     DateTimeOffset ResolvedAt, Guid ScopeId, Guid TenantId, DateTimeOffset ExpiresAt, string OperationProfile);
+public sealed record WorkerExecutionContext(string Identity, IReadOnlyCollection<string> Capabilities);
 
 public sealed record ScopeValidationResult(bool IsValid, IReadOnlyList<string> Errors, ValidatedExecutionTarget? ValidatedTarget = null)
 {
@@ -19,6 +20,7 @@ public interface ITargetScopeValidator
     ScopeValidationResult ValidateDefinition(TargetScope scope, Guid tenantId, DateTimeOffset now);
     ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId, string target, string operationProfile, CancellationToken cancellationToken = default);
     ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId, TargetKind kind, string target, string operationProfile, CancellationToken cancellationToken = default);
+    ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId, TargetKind kind, string target, string operationProfile, WorkerExecutionContext? worker, CancellationToken cancellationToken = default);
     ValueTask<ScopeValidationResult> ValidateRedirectAsync(TargetScope scope, Guid tenantId, Uri redirect, string operationProfile, CancellationToken cancellationToken = default);
 }
 
@@ -53,7 +55,8 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
                 errors.Add(error!);
                 continue;
             }
-            if (requiresPublicAuthorization && !HasValidPublicAuthorization(scope, target, now))
+            var privateWebTarget = target.Kind == TargetKind.Web && scope.WebHostingMode == WebHostingMode.Private && !string.IsNullOrWhiteSpace(scope.PrivateWorkerIdentity);
+            if (requiresPublicAuthorization && !privateWebTarget && !HasValidPublicAuthorization(scope, target, now))
                 errors.Add($"Public target '{target.Value}' requires a current ownership authorization verification record.");
         }
         foreach (var exclusion in scope.Exclusions)
@@ -64,7 +67,10 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     public ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId, string target, string operationProfile, CancellationToken cancellationToken = default)
         => ValidateExecutionAsync(scope, tenantId, TargetKind.Network, target, operationProfile, cancellationToken);
 
-    public async ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId, TargetKind kind, string target, string operationProfile, CancellationToken cancellationToken = default)
+    public ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId, TargetKind kind, string target, string operationProfile, CancellationToken cancellationToken = default)
+        => ValidateExecutionAsync(scope, tenantId, kind, target, operationProfile, null, cancellationToken);
+
+    public async ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId, TargetKind kind, string target, string operationProfile, WorkerExecutionContext? worker, CancellationToken cancellationToken = default)
     {
         var definition = ValidateDefinition(scope, tenantId, DateTimeOffset.UtcNow);
         if (!definition.IsValid) return definition;
@@ -75,7 +81,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         return kind switch
         {
             TargetKind.Network => await ValidateNetworkExecutionAsync(scope, target, operationProfile, cancellationToken),
-            TargetKind.Web => await ValidateWebExecutionAsync(scope, target, operationProfile, cancellationToken),
+            TargetKind.Web => await ValidateWebExecutionAsync(scope, target, operationProfile, worker, cancellationToken),
             TargetKind.Code => ValidateCodeExecution(scope, target, operationProfile),
             _ => ScopeValidationResult.Invalid("Target kind is not supported.")
         };
@@ -122,14 +128,21 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         return ScopeValidationResult.Invalid("Target is outside the authorized scope.");
     }
 
-    private async ValueTask<ScopeValidationResult> ValidateWebExecutionAsync(TargetScope scope, string target, string operationProfile, CancellationToken cancellationToken)
+    private async ValueTask<ScopeValidationResult> ValidateWebExecutionAsync(TargetScope scope, string target, string operationProfile, WorkerExecutionContext? worker, CancellationToken cancellationToken)
     {
-        if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || !IsValidHostname(uri.Host) || uri.UserInfo.Length > 0)
+        if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || !IsValidWebHost(uri.Host) || uri.UserInfo.Length > 0)
             return ScopeValidationResult.Invalid("Web target must be an absolute HTTP(S) URL without credentials.");
         IReadOnlyCollection<IPAddress> resolved;
         try { resolved = await resolver.ResolveAsync(uri.Host, cancellationToken); }
         catch (SocketException) { return ScopeValidationResult.Invalid("Web target could not be resolved safely."); }
-        if (resolved.Count == 0 || resolved.Any(IsDisallowedAddress) || resolved.Any(IsPrivateAddress)) return ScopeValidationResult.Invalid("Web target DNS resolution is unsafe.");
+        if (resolved.Count == 0 || resolved.Any(IsDisallowedAddress)) return ScopeValidationResult.Invalid("Web target DNS resolution is unsafe.");
+        if (scope.WebHostingMode == WebHostingMode.Private)
+        {
+            if (string.IsNullOrWhiteSpace(scope.PrivateWorkerIdentity) || worker is null || !scope.PrivateWorkerIdentity.Equals(worker.Identity.Trim(), StringComparison.Ordinal) || !worker.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase))
+                return ScopeValidationResult.Invalid("Private web assessments require the explicitly assigned private worker capability.");
+            if (resolved.Any(ip => !IsPrivateAddress(ip))) return ScopeValidationResult.Invalid("Private web targets must resolve only to private address space.");
+        }
+        else if (resolved.Any(IsPrivateAddress)) return ScopeValidationResult.Invalid("Public web target DNS resolution is unsafe.");
         if (IsExcluded(scope.Exclusions, uri.Host, resolved) || IsExcluded(scope.Exclusions, uri.ToString(), resolved)) return ScopeValidationResult.Invalid("Web target or a resolved redirect destination is explicitly excluded.");
         foreach (var authorized in scope.Targets.Where(x => x.Kind == TargetKind.Web))
         {
@@ -165,7 +178,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
                 if (!IsValidHostname(value)) { error = $"Network target '{value}' is not a strict IP, CIDR or hostname."; return false; }
                 requiresPublicAuthorization = true; return true;
             case TargetKind.Web:
-                if (!Uri.TryCreate(value, UriKind.Absolute, out var web) || web.Scheme is not ("http" or "https") || !IsValidHostname(web.Host) || web.UserInfo.Length > 0)
+                if (!Uri.TryCreate(value, UriKind.Absolute, out var web) || web.Scheme is not ("http" or "https") || !IsValidWebHost(web.Host) || web.UserInfo.Length > 0)
                 { error = $"Web target '{value}' must be an absolute HTTP(S) URL without credentials."; return false; }
                 requiresPublicAuthorization = true; return true;
             case TargetKind.Code:
@@ -288,6 +301,9 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         var labels = value.Split('.');
         return labels.Length >= 2 && labels.All(label => label.Length is > 0 and <= 63 && label[0] != '-' && label[^1] != '-' && label.All(c => char.IsLetterOrDigit(c) || c == '-'));
     }
+
+    private static bool IsValidWebHost(string value)
+        => IPAddress.TryParse(value, out var address) ? !IsDisallowedAddress(address) : IsValidHostname(value);
 
     private static bool DomainMatches(string candidate, string authorized, bool allowSubdomains)
     {

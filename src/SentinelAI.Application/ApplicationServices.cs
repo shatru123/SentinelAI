@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using SentinelAI.Contracts;
 using SentinelAI.Domain;
 using SentinelAI.Security.Policy;
@@ -27,6 +29,7 @@ public interface IAppDbContext
     DbSet<WebAssessment> WebAssessments { get; }
     DbSet<WebAssessmentEndpoint> WebAssessmentEndpoints { get; }
     DbSet<AssessmentScreenshot> AssessmentScreenshots { get; }
+    DbSet<WebAssessmentCheck> WebAssessmentChecks { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
     Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
 }
@@ -100,6 +103,7 @@ public interface IScanService
 public interface IPublicTargetAuthorizationService
 {
     Task<PublicTargetAuthorizationResponse> RequestAsync(PrincipalContext principal, PublicTargetAuthorizationRequest request, CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<PublicTargetAuthorizationResponse>> ListAsync(PrincipalContext principal, CancellationToken cancellationToken);
     Task<PublicTargetAuthorizationResponse?> ApproveAsync(PrincipalContext principal, Guid id, PublicTargetAuthorizationApprovalRequest request, CancellationToken cancellationToken);
     Task<bool> RevokeAsync(PrincipalContext principal, Guid id, CancellationToken cancellationToken);
 }
@@ -122,8 +126,8 @@ public sealed class ScopeService(IAppDbContext db, ITargetScopeValidator validat
         if (string.IsNullOrWhiteSpace(request.AuthorizationEvidence)) throw new ScopeValidationException(["Authorization evidence is required."]);
         var scope = new TargetScope(principal.TenantId, request.Name.Trim(), principal.UserId, request.ExpiresAt);
         scope.Configure(request.Targets, request.Exclusions ?? [], request.ApprovedOperationProfiles, request.RequestsPerMinute,
-            request.MaxExecutionSeconds, request.AuthorizationEvidence.Trim(), false, request.AllowSubdomains);
-        if (request.HostingMode is not null) scope.ConfigureWebHosting(request.HostingMode.Value, request.PrivateWorkerIdentity);
+            request.MaxExecutionSeconds, request.AuthorizationEvidence.Trim(), false, request.AllowSubdomains, request.MaxTotalRequests, request.MaxConcurrentRequests, request.MaxPages, request.MaxCrawlDepth, request.MaxResponseBytes);
+        if (request.HostingMode is not null) scope.ConfigureWebHosting(request.HostingMode.Value, request.PrivateWorkerIdentity, request.PrivateNetworkRanges);
         var authorizationIds = request.PublicTargetAuthorizationIds ?? [];
         if (authorizationIds.Count > 0)
         {
@@ -221,7 +225,7 @@ public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validato
     private static ScanResponse ToResponse(AgentJob job) => new(job.Id, job.ScopeId, job.Status, job.CreatedAt, job.ExpiresAt, job.OperationProfile);
 }
 
-public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes, IScanService scans) : IWebAssessmentService
+public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes, IScanService scans, IConfiguration configuration, IHostEnvironment environment) : IWebAssessmentService
 {
     public async Task<WebAssessmentResponse> CreateAsync(PrincipalContext principal, CreateWebAssessmentRequest request, CancellationToken cancellationToken)
     {
@@ -235,13 +239,21 @@ public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes,
             var privateWorker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == request.PrivateWorkerIdentity!.Trim(), cancellationToken);
             if (privateWorker is null || privateWorker.Status == WorkerStatus.Disabled || !privateWorker.Capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase) || !privateWorker.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase))
                 throw new ScopeValidationException(["The selected private worker is not enrolled with the required web assessment capabilities."]);
+            var ranges = request.PrivateNetworkRanges?.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+            if (ranges.Length == 0 && !IsDevelopmentPrivateEnrollmentAllowed())
+                throw new ScopeValidationException(["Private web assessments require administrator-approved private network ranges."]);
+            if (ranges.Length > 0 && !privateWorker.PrivateAssessmentApproved)
+                throw new ScopeValidationException(["The selected private worker has no valid administrator-approved private network authorization."]);
+            if (ranges.Length > 0 && ranges.Any(range => !TargetScopeValidator.IsValidPrivateNetworkRange(range) || !privateWorker.ApprovedPrivateNetworkRanges.Any(approved => TargetScopeValidator.IsNetworkRangeContainedBy(range, approved))))
+                throw new ScopeValidationException(["Every requested private network range must be contained by the worker's administrator-approved ranges."]);
         }
         var profile = request.OperationProfile.Equals(WebAssessmentOperationProfiles.SafeActive, StringComparison.OrdinalIgnoreCase)
             ? WebAssessmentOperationProfiles.SafeActive : WebAssessmentOperationProfiles.Passive;
         var scope = await scopes.CreateAsync(principal, new CreateScopeRequest(
             request.Name, [new TargetDefinition(TargetKind.Web, uri.ToString())], request.Exclusions ?? [], [profile],
             request.RequestsPerMinute, request.MaxExecutionSeconds, request.AuthorizationEvidence, request.ExpiresAt,
-            false, null, request.PublicTargetAuthorizationIds, request.AllowSubdomains, request.HostingMode, request.PrivateWorkerIdentity), cancellationToken);
+            false, null, request.PublicTargetAuthorizationIds, request.AllowSubdomains, request.HostingMode, request.PrivateWorkerIdentity, request.PrivateNetworkRanges,
+            request.MaxTotalRequests, request.MaxConcurrentRequests, request.MaxPages, request.MaxCrawlDepth, request.MaxResponseBytes), cancellationToken);
         var scan = await scans.CreateAsync(principal, new CreateScanRequest(scope.Id, profile), cancellationToken);
         var assessment = await db.WebAssessments.SingleAsync(x => x.AgentJobId == scan.Id && x.TenantId == principal.TenantId, cancellationToken);
         return ToResponse(assessment, scan);
@@ -257,6 +269,9 @@ public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes,
 
     private static WebAssessmentResponse ToResponse(WebAssessment assessment, ScanResponse scan)
         => new(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, scan.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey);
+
+    private bool IsDevelopmentPrivateEnrollmentAllowed()
+        => environment.IsDevelopment() && configuration.GetValue("Worker:AllowDevelopmentPrivateEnrollment", false);
 }
 
 public static class OutboxMessageTypes
@@ -287,6 +302,12 @@ public sealed class PublicTargetAuthorizationService(IAppDbContext db) : IPublic
         return ToResponse(authorization);
     }
 
+    public async Task<IReadOnlyCollection<PublicTargetAuthorizationResponse>> ListAsync(PrincipalContext principal, CancellationToken cancellationToken)
+    {
+        var items = await db.PublicTargetAuthorizations.AsNoTracking().Where(x => x.TenantId == principal.TenantId).OrderByDescending(x => x.CreatedAt).ToListAsync(cancellationToken);
+        return items.Select(ToResponse).ToArray();
+    }
+
     public async Task<PublicTargetAuthorizationResponse?> ApproveAsync(PrincipalContext principal, Guid id, PublicTargetAuthorizationApprovalRequest request, CancellationToken cancellationToken)
     {
         if (principal.Role != UserRole.Admin) throw new UnauthorizedAccessException("Only administrators may approve public target authorization.");
@@ -312,7 +333,7 @@ public sealed class PublicTargetAuthorizationService(IAppDbContext db) : IPublic
     }
 
     private static PublicTargetAuthorizationResponse ToResponse(PublicTargetAuthorization authorization)
-        => new(authorization.Id, authorization.Target, authorization.Status, authorization.RequestedBy, authorization.ApprovedBy, authorization.CreatedAt, authorization.ApprovedAt, authorization.ExpiresAt);
+        => new(authorization.Id, authorization.Target, authorization.GetStatus(DateTimeOffset.UtcNow), authorization.RequestedBy, authorization.ApprovedBy, authorization.CreatedAt, authorization.ApprovedAt, authorization.ExpiresAt);
 }
 
 public sealed class ScopeValidationException(IReadOnlyList<string> errors) : Exception(string.Join(" ", errors))

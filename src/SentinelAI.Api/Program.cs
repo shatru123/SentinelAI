@@ -13,6 +13,7 @@ using SentinelAI.Agent.Vulnerability;
 using SentinelAI.Contracts;
 using SentinelAI.Domain;
 using SentinelAI.Infrastructure;
+using SentinelAI.Security.Policy;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddProblemDetails();
@@ -98,6 +99,9 @@ api.MapPost("/public-target-authorizations", async (HttpContext context, PublicT
     return Results.Created($"/api/v1/public-target-authorizations/{result.Id}", result);
 }).RequireAuthorization("Operator");
 
+api.MapGet("/public-target-authorizations", async (HttpContext context, IPublicTargetAuthorizationService service, CancellationToken cancellationToken) =>
+    Results.Ok(await service.ListAsync(ToPrincipal(context), cancellationToken))).RequireAuthorization("Reader");
+
 api.MapPost("/public-target-authorizations/{id:guid}/approve", async (HttpContext context, Guid id, PublicTargetAuthorizationApprovalRequest request, IPublicTargetAuthorizationService service, CancellationToken cancellationToken) =>
 {
     var result = await service.ApproveAsync(ToPrincipal(context), id, request, cancellationToken);
@@ -151,6 +155,15 @@ api.MapGet("/web-assessments/{id:guid}/findings", async (HttpContext context, Gu
     var findings = await db.Findings.AsNoTracking().Where(x => x.TenantId == tenantId && x.AssessmentId == id).OrderByDescending(x => x.CreatedAt)
         .Select(x => new WebAssessmentFindingResponse(x.Id, x.Title, x.Severity, x.Category, x.Confidence, x.AffectedUrl, x.HttpMethod, x.Parameter, x.Description, x.Impact, x.Reproduction, x.Remediation, x.CheckStatus, x.CreatedAt)).ToListAsync(cancellationToken);
     return Results.Ok(findings);
+}).RequireAuthorization("Reader");
+
+api.MapGet("/web-assessments/{id:guid}/checks", async (HttpContext context, Guid id, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    if (!await db.WebAssessments.AsNoTracking().AnyAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken)) return Results.NotFound();
+    var checks = await db.WebAssessmentChecks.AsNoTracking().Where(x => x.AssessmentId == id && x.TenantId == tenantId).OrderBy(x => x.CheckId).ThenBy(x => x.AffectedEndpoint)
+        .Select(x => new WebAssessmentCheckResponse(x.Id, x.CheckId, x.Name, x.Category, x.Status, x.StartedAt, x.CompletedAt, x.AffectedEndpoint, x.Reason)).ToListAsync(cancellationToken);
+    return Results.Ok(checks);
 }).RequireAuthorization("Reader");
 
 api.MapPost("/web-assessments/{id:guid}/cancel", async (HttpContext context, Guid id, IAppDbContext db, IScanService scans, CancellationToken cancellationToken) =>
@@ -252,12 +265,32 @@ workers.MapPost("/register", async (HttpContext context, WorkerRegistrationReque
     if (identity.Length is 0 or > 128 || request.Capabilities is null || request.Capabilities.Count is 0 or > 32 || request.Capacity is < 1 or > 256 || !request.Capabilities.Any(capability => capability.Equals("passive-mock", StringComparison.OrdinalIgnoreCase) || capability.Equals("passive-inventory", StringComparison.OrdinalIgnoreCase) || capability.Equals("web-assessment", StringComparison.OrdinalIgnoreCase) || capability.Equals("private-web-assessment", StringComparison.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker identity, capacity or capabilities.");
     if (!identity.Equals(context.User.FindFirstValue("worker_id"), StringComparison.Ordinal)) return Results.Unauthorized();
     var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == identity, cancellationToken);
-    if (worker is null) { worker = new WorkerRegistration(principal.TenantId, identity, request.Version.Trim(), request.Capabilities); db.Workers.Add(worker); }
+    if (worker is null)
+    {
+        if (request.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase) &&
+            !context.RequestServices.GetRequiredService<IConfiguration>().GetValue("Worker:AllowDevelopmentPrivateEnrollment", false))
+            return Results.Forbid();
+        worker = new WorkerRegistration(principal.TenantId, identity, request.Version.Trim(), request.Capabilities); db.Workers.Add(worker);
+    }
     if (worker.Status == WorkerStatus.Disabled) return Results.Forbid();
     worker.Heartbeat(0, request.Capacity);
     await db.SaveChangesAsync(cancellationToken);
     return Results.Ok(ToWorkerResponse(worker));
 });
+api.MapPost("/workers/{identity}/private-authorization", async (HttpContext context, string identity, PrivateWorkerAuthorizationRequest request, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    if (principal.Role != UserRole.Admin) return Results.Forbid();
+    if (string.IsNullOrWhiteSpace(identity) || request.NetworkRanges is null || request.NetworkRanges.Count > 64 || (request.Enabled && request.NetworkRanges.Count < 1) || request.NetworkRanges.Any(range => !TargetScopeValidator.IsValidPrivateNetworkRange(range)))
+        return Results.BadRequest("Only valid private IPv4/IPv6 CIDR ranges may be approved.");
+    var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == identity.Trim(), cancellationToken);
+    if (worker is null) return Results.NotFound();
+    if (request.Enabled) worker.ConfigurePrivateAssessmentAuthorization(request.NetworkRanges);
+    else worker.RevokePrivateAssessmentAuthorization();
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, request.Enabled ? "worker.private-authorization.approved" : "worker.private-authorization.revoked", nameof(WorkerRegistration), worker.Id, "Administrator-controlled private web assessment authorization changed."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(ToWorkerResponse(worker));
+}).RequireAuthorization("Admin");
 workers.MapPost("/heartbeat", async (HttpContext context, WorkerHeartbeatRequest request, IAppDbContext db, CancellationToken cancellationToken) =>
 {
     var principal = ToPrincipal(context);
@@ -280,6 +313,25 @@ api.MapGet("/workers", async (HttpContext context, IAppDbContext db, Cancellatio
     return Results.Ok(workers.Select(ToWorkerResponse));
 }).RequireAuthorization("Reader");
 
+api.MapPost("/workers/{identity}/provision", async (HttpContext context, string identity, WorkerProvisionRequest request, IAppDbContext db, CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    if (principal.Role != UserRole.Admin) return Results.Forbid();
+    var normalizedIdentity = identity.Trim();
+    var capabilities = request.Capabilities?.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+    var allowedCapabilities = new[] { "passive-mock", "passive-inventory", "web-assessment", "private-web-assessment", "cancellation", "scope-validation", "bounded-concurrency" };
+    if (normalizedIdentity.Length is 0 or > 128 || capabilities.Length == 0 || capabilities.Any(capability => !allowedCapabilities.Contains(capability, StringComparer.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker provisioning request.");
+    var ranges = request.PrivateNetworkRanges?.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+    if (capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase) && (ranges.Length == 0 || ranges.Any(range => !TargetScopeValidator.IsValidPrivateNetworkRange(range)))) return Results.BadRequest("Private web capability requires approved private IPv4/IPv6 CIDR ranges.");
+    var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == normalizedIdentity, cancellationToken);
+    if (worker is null) { worker = new WorkerRegistration(principal.TenantId, normalizedIdentity, request.Version.Trim(), capabilities); db.Workers.Add(worker); }
+    if (capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase)) worker.ConfigurePrivateAssessmentAuthorization(ranges);
+    await db.SaveChangesAsync(cancellationToken);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "worker.provisioned", nameof(WorkerRegistration), worker.Id, "Administrator provisioned worker capabilities and private network authorization."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(ToWorkerResponse(worker));
+}).RequireAuthorization("Admin");
+
 app.Run();
 
 static PrincipalContext ToPrincipal(HttpContext context)
@@ -292,5 +344,5 @@ static PrincipalContext ToPrincipal(HttpContext context)
 }
 
 static (int Page, int PageSize) NormalizePage(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize, 1, 100));
-static WorkerResponse ToWorkerResponse(WorkerRegistration worker) => new(worker.Id, worker.Identity, worker.Version, worker.Status, worker.Capabilities, worker.LastHeartbeatAt, worker.CurrentActiveJobs, worker.MaximumCapacity, worker.LastJobStartedAt, worker.LastJobCompletedAt);
+static WorkerResponse ToWorkerResponse(WorkerRegistration worker) => new(worker.Id, worker.Identity, worker.Version, worker.Status, worker.Capabilities, worker.LastHeartbeatAt, worker.CurrentActiveJobs, worker.MaximumCapacity, worker.LastJobStartedAt, worker.LastJobCompletedAt, worker.PrivateAssessmentApproved, worker.ApprovedPrivateNetworkRanges);
 public partial class Program { }

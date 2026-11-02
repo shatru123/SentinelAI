@@ -16,7 +16,13 @@ public sealed record CreateScopeRequest(
     IReadOnlyCollection<Guid>? PublicTargetAuthorizationIds = null,
     bool AllowSubdomains = false,
     WebHostingMode? HostingMode = null,
-    string? PrivateWorkerIdentity = null);
+    string? PrivateWorkerIdentity = null,
+    IReadOnlyCollection<string>? PrivateNetworkRanges = null,
+    int MaxTotalRequests = 200,
+    int MaxConcurrentRequests = 4,
+    int MaxPages = 24,
+    int MaxCrawlDepth = 2,
+    int MaxResponseBytes = 512 * 1024);
 
 public sealed record PublicTargetVerificationRequest(string Target, string Evidence, string Verifier, string Method, DateTimeOffset VerifiedAt);
 
@@ -46,7 +52,13 @@ public sealed record CreateWebAssessmentRequest(
     string AuthorizationEvidence,
     DateTimeOffset ExpiresAt,
     bool AllowSubdomains = false,
-    IReadOnlyCollection<Guid>? PublicTargetAuthorizationIds = null);
+    IReadOnlyCollection<Guid>? PublicTargetAuthorizationIds = null,
+    IReadOnlyCollection<string>? PrivateNetworkRanges = null,
+    int MaxTotalRequests = 200,
+    int MaxConcurrentRequests = 4,
+    int MaxPages = 24,
+    int MaxCrawlDepth = 2,
+    int MaxResponseBytes = 512 * 1024);
 public sealed record WebAssessmentResponse(Guid Id, Guid JobId, Guid ScopeId, string TargetUrl, string Profile,
     WebHostingMode HostingMode, WebAssessmentStatus Status, ScanJobStatus JobStatus, DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, int DiscoveredEndpointCount, string? ReportStorageKey);
@@ -56,14 +68,18 @@ public sealed record WebAssessmentFindingResponse(Guid Id, string Title, Finding
     string? Remediation, WebCheckStatus CheckStatus, DateTimeOffset CreatedAt);
 public sealed record EvidenceResponse(Guid Id, Guid FindingId, string Source, string Summary, string Sha256, string? RedactedContent, string? ContentType, DateTimeOffset CollectedAt);
 public sealed record ScreenshotResponse(Guid Id, string Url, string ScreenshotType, string Format, string Sha256, DateTimeOffset CapturedAt);
+public sealed record WebAssessmentCheckResponse(Guid Id, string CheckId, string Name, string Category, WebCheckStatus Status, DateTimeOffset StartedAt, DateTimeOffset? CompletedAt, string? AffectedEndpoint, string? Reason);
 public sealed record AgentResponse(Guid Id, string Name, string Status, DateTimeOffset LastHeartbeatAt);
 public sealed record WorkerRegistrationRequest(string Identity, string Version, IReadOnlyCollection<string> Capabilities, int Capacity = 1);
 public sealed record WorkerHeartbeatRequest(string Identity, int ActiveJobs, int Capacity, DateTimeOffset? LastJobStartedAt = null, DateTimeOffset? LastJobCompletedAt = null);
 public sealed record WorkerResponse(Guid Id, string Identity, string Version, WorkerStatus Status, IReadOnlyCollection<string> Capabilities, DateTimeOffset LastHeartbeatAt,
-    int CurrentActiveJobs = 0, int MaximumCapacity = 1, DateTimeOffset? LastJobStartedAt = null, DateTimeOffset? LastJobCompletedAt = null);
+    int CurrentActiveJobs = 0, int MaximumCapacity = 1, DateTimeOffset? LastJobStartedAt = null, DateTimeOffset? LastJobCompletedAt = null,
+    bool PrivateAssessmentApproved = false, IReadOnlyCollection<string>? ApprovedPrivateNetworkRanges = null);
 public sealed record PublicTargetAuthorizationRequest(string Target, string Reason);
 public sealed record PublicTargetAuthorizationApprovalRequest(string Evidence, string Method, DateTimeOffset ExpiresAt);
 public sealed record PublicTargetAuthorizationResponse(Guid Id, string Target, PublicTargetAuthorizationStatus Status, Guid RequestedBy, Guid? ApprovedBy, DateTimeOffset CreatedAt, DateTimeOffset? ApprovedAt, DateTimeOffset? ExpiresAt);
+public sealed record PrivateWorkerAuthorizationRequest(IReadOnlyCollection<string> NetworkRanges, bool Enabled = true);
+public sealed record WorkerProvisionRequest(string Version, IReadOnlyCollection<string> Capabilities, IReadOnlyCollection<string>? PrivateNetworkRanges = null);
 public sealed record PagedResponse<T>(IReadOnlyCollection<T> Items, int Page, int PageSize, int TotalCount);
 
 public sealed record CurrentUserResponse(string Subject, Guid TenantId, Guid UserId, string Role);

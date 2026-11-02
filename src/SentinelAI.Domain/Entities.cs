@@ -21,7 +21,7 @@ public enum WebHostingMode { Public, Private }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum WebAssessmentStatus { Queued, Running, Completed, Failed, Cancelled, Expired }
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum WebCheckStatus { Confirmed, Potential, Informational, Rejected, Inconclusive, NotTested, BlockedByAuthorization, Unsupported }
+public enum WebCheckStatus { Passed, FindingDetected, PotentialFinding, Confirmed, Potential, Informational, Rejected, Inconclusive, NotTested, Skipped, BlockedByAuthorization, Unsupported, FailedToExecute }
 
 public sealed class Tenant
 {
@@ -58,6 +58,11 @@ public sealed class TargetScope
     public List<string> Exclusions { get; private set; } = [];
     public List<string> ApprovedOperationProfiles { get; private set; } = [];
     public int RequestsPerMinute { get; private set; } = 30;
+    public int MaxTotalRequests { get; private set; } = 200;
+    public int MaxConcurrentRequests { get; private set; } = 4;
+    public int MaxPages { get; private set; } = 24;
+    public int MaxCrawlDepth { get; private set; } = 2;
+    public int MaxResponseBytes { get; private set; } = 512 * 1024;
     public int MaxExecutionSeconds { get; private set; } = 300;
     public string AuthorizationEvidence { get; private set; } = string.Empty;
     public bool PublicTargetOwnershipVerified { get; private set; }
@@ -65,6 +70,7 @@ public sealed class TargetScope
     public WebHostingMode? WebHostingMode { get; private set; }
     public string? PrivateWorkerIdentity { get; private set; }
     public List<PublicTargetVerification> PublicTargetVerifications { get; private set; } = [];
+    public List<string> ApprovedPrivateNetworkRanges { get; private set; } = [];
     public DateTimeOffset ExpiresAt { get; private set; }
     public Guid CreatedBy { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
@@ -73,10 +79,12 @@ public sealed class TargetScope
 
     public void Configure(IReadOnlyCollection<TargetDefinition> targets, IReadOnlyCollection<string> exclusions,
         IReadOnlyCollection<string> profiles, int requestsPerMinute, int maxExecutionSeconds,
-        string authorizationEvidence, bool publicTargetOwnershipVerified, bool allowSubdomains = false)
+        string authorizationEvidence, bool publicTargetOwnershipVerified, bool allowSubdomains = false,
+        int maxTotalRequests = 200, int maxConcurrentRequests = 4, int maxPages = 24, int maxCrawlDepth = 2, int maxResponseBytes = 512 * 1024)
     {
         Targets = targets.ToList(); Exclusions = exclusions.ToList(); ApprovedOperationProfiles = profiles.ToList();
         RequestsPerMinute = requestsPerMinute; MaxExecutionSeconds = maxExecutionSeconds;
+        MaxTotalRequests = maxTotalRequests; MaxConcurrentRequests = maxConcurrentRequests; MaxPages = maxPages; MaxCrawlDepth = maxCrawlDepth; MaxResponseBytes = maxResponseBytes;
         AuthorizationEvidence = authorizationEvidence; PublicTargetOwnershipVerified = publicTargetOwnershipVerified; AllowSubdomains = allowSubdomains;
     }
 
@@ -87,10 +95,11 @@ public sealed class TargetScope
         PublicTargetOwnershipVerified = false;
     }
 
-    public void ConfigureWebHosting(WebHostingMode hostingMode, string? privateWorkerIdentity = null)
+    public void ConfigureWebHosting(WebHostingMode hostingMode, string? privateWorkerIdentity = null, IReadOnlyCollection<string>? approvedPrivateNetworkRanges = null)
     {
         WebHostingMode = hostingMode;
         PrivateWorkerIdentity = string.IsNullOrWhiteSpace(privateWorkerIdentity) ? null : privateWorkerIdentity.Trim();
+        ApprovedPrivateNetworkRanges = approvedPrivateNetworkRanges?.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
     }
 
     public void RevokePublicAuthorization(Guid authorizationId)
@@ -246,6 +255,8 @@ public sealed class WorkerRegistration
     public DateTimeOffset? LastJobAt { get; private set; }
     public int CurrentActiveJobs { get; private set; }
     public int MaximumCapacity { get; private set; }
+    public bool PrivateAssessmentApproved { get; private set; }
+    public List<string> ApprovedPrivateNetworkRanges { get; private set; } = [];
     public DateTimeOffset? LastJobStartedAt { get; private set; }
     public DateTimeOffset? LastJobCompletedAt { get; private set; }
     public void Heartbeat(int activeJobs = 0, int capacity = 1, DateTimeOffset? lastJobStartedAt = null, DateTimeOffset? lastJobCompletedAt = null)
@@ -262,6 +273,16 @@ public sealed class WorkerRegistration
     public void MarkJobCompleted(DateTimeOffset now) { LastJobAt = now; LastJobCompletedAt = now; }
     public void MarkJob() { MarkJobStarted(DateTimeOffset.UtcNow); Heartbeat(CurrentActiveJobs, MaximumCapacity, LastJobStartedAt, LastJobCompletedAt); }
     public void MarkUnhealthy() { Status = WorkerStatus.Unhealthy; }
+    public void ConfigurePrivateAssessmentAuthorization(IReadOnlyCollection<string> ranges, bool approved = true)
+    {
+        ApprovedPrivateNetworkRanges = ranges.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        PrivateAssessmentApproved = approved && ApprovedPrivateNetworkRanges.Count > 0;
+    }
+    public void RevokePrivateAssessmentAuthorization()
+    {
+        ApprovedPrivateNetworkRanges = [];
+        PrivateAssessmentApproved = false;
+    }
 }
 
 public sealed class PublicTargetAuthorization
@@ -285,6 +306,8 @@ public sealed class PublicTargetAuthorization
     public DateTimeOffset? ApprovedAt { get; private set; }
     public DateTimeOffset? ExpiresAt { get; private set; }
     public DateTimeOffset? RevokedAt { get; private set; }
+    public PublicTargetAuthorizationStatus GetStatus(DateTimeOffset now)
+        => Status == PublicTargetAuthorizationStatus.Approved && ExpiresAt is not null && ExpiresAt <= now ? PublicTargetAuthorizationStatus.Expired : Status;
 
     public void Approve(Guid approver, string evidence, string method, DateTimeOffset expiresAt)
     {
@@ -421,6 +444,7 @@ public sealed class Finding
     public string? Remediation { get; private set; }
     public string? References { get; private set; }
     public WebCheckStatus CheckStatus { get; private set; } = WebCheckStatus.Informational;
+    public string? IdempotencyKey { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
 
     public void ConfigureAssessmentDetails(Guid assessmentId, string category, string confidence, string affectedUrl,
@@ -431,6 +455,7 @@ public sealed class Finding
         HttpMethod = httpMethod; Parameter = parameter; Description = description; Impact = impact;
         Reproduction = reproduction; Remediation = remediation; References = references; CheckStatus = checkStatus;
     }
+    public void SetIdempotencyKey(string key) => IdempotencyKey = key;
 }
 
 public sealed class Evidence
@@ -511,6 +536,29 @@ public sealed class AssessmentScreenshot
     public string StorageKey { get; private set; } = string.Empty;
     public string Sha256 { get; private set; } = string.Empty;
     public DateTimeOffset CapturedAt { get; private set; }
+}
+
+public sealed class WebAssessmentCheck
+{
+    private WebAssessmentCheck() { }
+    public WebAssessmentCheck(Guid tenantId, Guid assessmentId, string checkId, string name, string category, WebCheckStatus status, string endpoint)
+    {
+        Id = Guid.NewGuid(); TenantId = tenantId; AssessmentId = assessmentId; CheckId = checkId; Name = name; Category = category; Status = status;
+        AffectedEndpoint = endpoint; StartedAt = DateTimeOffset.UtcNow; CompletedAt = StartedAt;
+    }
+    public Guid Id { get; private set; }
+    public Guid TenantId { get; private set; }
+    public Guid AssessmentId { get; private set; }
+    public string CheckId { get; private set; } = string.Empty;
+    public string Name { get; private set; } = string.Empty;
+    public string Category { get; private set; } = string.Empty;
+    public WebCheckStatus Status { get; private set; }
+    public DateTimeOffset StartedAt { get; private set; }
+    public DateTimeOffset? CompletedAt { get; private set; }
+    public string? AffectedEndpoint { get; private set; }
+    public string? Reason { get; private set; }
+    public void Complete(WebCheckStatus status, string? reason = null)
+    { Status = status; Reason = reason; CompletedAt = DateTimeOffset.UtcNow; }
 }
 
 public sealed class ApprovalRequest

@@ -29,6 +29,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<WebAssessment> WebAssessments => Set<WebAssessment>();
     public DbSet<WebAssessmentEndpoint> WebAssessmentEndpoints => Set<WebAssessmentEndpoint>();
     public DbSet<AssessmentScreenshot> AssessmentScreenshots => Set<AssessmentScreenshot>();
+    public DbSet<WebAssessmentCheck> WebAssessmentChecks => Set<WebAssessmentCheck>();
 
     public async Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
     {
@@ -60,6 +61,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<WebAssessment>().HasKey(x => x.Id);
         modelBuilder.Entity<WebAssessmentEndpoint>().HasKey(x => x.Id);
         modelBuilder.Entity<AssessmentScreenshot>().HasKey(x => x.Id);
+        modelBuilder.Entity<WebAssessmentCheck>().HasKey(x => x.Id);
 
         ConfigureTenant(modelBuilder.Entity<User>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<TargetScope>().Property(x => x.TenantId));
@@ -79,6 +81,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<WebAssessment>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<WebAssessmentEndpoint>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<AssessmentScreenshot>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<WebAssessmentCheck>().Property(x => x.TenantId));
 
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var targetComparer = new ValueComparer<List<TargetDefinition>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList());
@@ -88,7 +91,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         scope.Property(x => x.Exclusions).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
         scope.Property(x => x.ApprovedOperationProfiles).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
         scope.Property(x => x.PublicTargetVerifications).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<PublicTargetVerification>>(v, jsonOptions) ?? new List<PublicTargetVerification>()).Metadata.SetValueComparer(new ValueComparer<List<PublicTargetVerification>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList()));
+        scope.Property(x => x.ApprovedPrivateNetworkRanges).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
         modelBuilder.Entity<WorkerRegistration>().Property(x => x.Capabilities).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
+        modelBuilder.Entity<WorkerRegistration>().Property(x => x.ApprovedPrivateNetworkRanges).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
 
         modelBuilder.Entity<Tenant>().Property<byte[]>("RowVersion").IsConcurrencyToken();
         modelBuilder.Entity<TargetScope>().Property<byte[]>("RowVersion").IsConcurrencyToken();
@@ -110,6 +115,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<WebAssessment>().HasIndex(x => new { x.TenantId, x.AgentJobId }).IsUnique();
         modelBuilder.Entity<WebAssessmentEndpoint>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.Url }).IsUnique();
         modelBuilder.Entity<AssessmentScreenshot>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.Id });
+        modelBuilder.Entity<WebAssessmentCheck>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.CheckId, x.AffectedEndpoint }).IsUnique();
+        modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.IdempotencyKey }).IsUnique();
     }
 
     private static void ConfigureTenant(PropertyBuilder<Guid> property) => property.IsRequired();

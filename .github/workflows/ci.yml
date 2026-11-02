@@ -50,6 +50,7 @@ jobs:
           RABBITMQ_TEST_USER: sentinelai
           RABBITMQ_TEST_PASSWORD: sentinelai
           SENTINELAI_POSTGRES_CONNECTION: Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=sentinelai
+          SENTINELAI_RUN_BROWSER_TESTS: "true"
       - run: docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
       - uses: actions/upload-artifact@v4
         if: always()

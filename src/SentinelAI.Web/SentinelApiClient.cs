@@ -90,6 +90,23 @@ public sealed class SentinelApiClient(
         }
     }
 
+    public async Task<T> GetJsonAsync<T>(string endpoint, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            using var response = await SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw CreateHttpFailure(response.StatusCode, endpoint);
+            return await response.Content.ReadFromJsonAsync<T>(cancellationToken)
+                ?? throw new SentinelApiException(SentinelApiFailureKind.InvalidResponse, "The API returned an invalid response. Try again.");
+        }
+        catch (SentinelApiException) { throw; }
+        catch (ApiAuthenticationException exception) { throw new SentinelApiException(SentinelApiFailureKind.AuthenticationRequired, "Your session has expired or authentication is required. Sign in again.", exception); }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested) { throw new SentinelApiException(SentinelApiFailureKind.Timeout, "The API request timed out. Try again.", exception); }
+        catch (HttpRequestException exception) { logger.LogWarning(exception, "The API could not be reached for {Endpoint}.", endpoint); throw new SentinelApiException(SentinelApiFailureKind.Unavailable, "The API is unavailable. Start the API and try again.", exception); }
+        catch (JsonException exception) { logger.LogWarning(exception, "The API returned invalid JSON for {Endpoint}.", endpoint); throw new SentinelApiException(SentinelApiFailureKind.InvalidResponse, "The API returned an invalid response. Try again.", exception); }
+    }
+
     public async Task<byte[]> GetBytesAsync(string endpoint, CancellationToken cancellationToken = default)
     {
         try

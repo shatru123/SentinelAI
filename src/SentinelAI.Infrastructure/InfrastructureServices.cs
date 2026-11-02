@@ -182,10 +182,12 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         }
         var effectiveWorkerIdentity = string.IsNullOrWhiteSpace(workerIdentity) ? "in-process" : workerIdentity.Trim();
         IReadOnlyCollection<string> workerCapabilities = [];
+        IReadOnlyCollection<string>? workerPrivateNetworkRanges = null;
         if (workerIdentity is not null)
         {
             var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Identity == workerIdentity, cancellationToken);
             workerCapabilities = worker?.Capabilities ?? [];
+            workerPrivateNetworkRanges = worker?.ApprovedPrivateNetworkRanges;
             if (WebAssessmentOperationProfiles.IsWeb(job.OperationProfile))
             {
                 var routeScope = await db.TargetScopes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == job.ScopeId && x.TenantId == job.TenantId, cancellationToken);
@@ -229,7 +231,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             {
                 if (webAssessmentEngine is null) throw new InvalidOperationException("Web assessment execution is not configured.");
                 var assessment = await db.WebAssessments.SingleAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, timeout.Token);
-                await webAssessmentEngine.ExecuteAsync(assessment, job, scopeDefinition, effectiveWorkerIdentity, workerCapabilities,
+                await webAssessmentEngine.ExecuteAsync(assessment, job, scopeDefinition, effectiveWorkerIdentity, workerCapabilities, workerPrivateNetworkRanges,
                     token => HasActiveLeaseAsync(job.Id, effectiveWorkerIdentity, token), timeout.Token);
                 await db.Entry(job).ReloadAsync(timeout.Token);
                 if (workerIdentity is not null && !job.IsLeaseOwnedBy(workerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;

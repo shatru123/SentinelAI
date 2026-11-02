@@ -9,18 +9,24 @@
 <div class="page-heading"><div><p class="eyebrow">Application security / authorized execution</p><h1>Web assessments</h1><p class="muted">Bounded, evidence-backed web checks. Authorization and DNS scope are revalidated before every request.</p></div></div>
 <AuthorizeView Roles="Admin,SecurityAnalyst"><Authorized>
 <section class="panel assessment-form"><div class="panel-heading"><div><p class="eyebrow">Register and assess</p><h2>New web assessment</h2></div><span class="status-pill healthy">NO DESTRUCTIVE TESTS</span></div>
-<div class="form-grid"><label>Assessment name<input @bind="name" maxlength="80" /></label><label>Application URL<input @bind="targetUrl" maxlength="512" /></label><label>Hosting<select @bind="hostingMode"><option value="Public">Public</option><option value="Private">Private</option></select></label><label>Private worker identity<input @bind="privateWorker" maxlength="128" placeholder="Required for Private" /></label><label>Profile<select @bind="profile"><option value="web-assessment-passive">Passive web assessment</option><option value="web-assessment-safe-active">Safe active (bounded)</option></select></label><label>Expires in hours<input type="number" min="1" max="720" @bind="expiryHours" /></label></div>
+<div class="form-grid"><label>Assessment name<input @bind="name" maxlength="80" /></label><label>Application URL<input @bind="targetUrl" maxlength="512" /></label><label>Hosting<select @bind="hostingMode"><option value="Public">Public</option><option value="Private">Private</option></select></label><label>Approved private worker<select @bind="privateWorker"><option value="">Select an enrolled worker</option>@foreach (var worker in workers.Where(x => x.PrivateAssessmentApproved && x.Capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase))) { <option value="@worker.Identity">@worker.Identity · @worker.Status · @string.Join(", ", worker.ApprovedPrivateNetworkRanges ?? [])</option> }</select></label><label>Private CIDR (optional)<input @bind="privateNetworkRange" maxlength="64" placeholder="10.20.0.0/16" /></label><label>Profile<select @bind="profile"><option value="web-assessment-passive">Passive web assessment</option><option value="web-assessment-safe-active">Safe active (bounded)</option></select></label><label>Expires in hours<input type="number" min="1" max="720" @bind="expiryHours" /></label></div>
 <label>Authorization evidence<input @bind="evidence" maxlength="200" /></label><button class="primary-button" @onclick="CreateAsync" disabled="@submitting">@(submitting ? "Submitting…" : "+ Start authorized assessment")</button>
 @if (!string.IsNullOrWhiteSpace(message)) { <p class="@(failed ? "error-text" : "muted")">@message</p> }</section>
+<section class="panel"><div class="panel-heading"><h2>Public target authorization</h2><span class="muted">An administrator must approve the exact scheme, host, port and path.</span></div><div class="form-grid"><label>Target URL<input @bind="authorizationTarget" maxlength="512" /></label><label>Reason<input @bind="authorizationReason" maxlength="500" /></label></div><button class="secondary-button" @onclick="RequestAuthorizationAsync">Request authorization</button>@if (authorizations.Count > 0) { <table><thead><tr><th>Target</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>@foreach (var authorization in authorizations) { <tr><td>@authorization.Target</td><td>@authorization.Status</td><td>@DisplayTime(authorization.ExpiresAt ?? default)</td><td><AuthorizeView Roles="Admin"><Authorized Context="adminContext">@if (authorization.Status == PublicTargetAuthorizationStatus.Requested) { <button class="secondary-button" @onclick="() => ApproveAuthorizationAsync(authorization)">Approve</button> } @if (authorization.Status == PublicTargetAuthorizationStatus.Approved) { <button class="secondary-button" @onclick="() => RevokeAuthorizationAsync(authorization)">Revoke</button> }</Authorized></AuthorizeView></td></tr> } </tbody></table> }</section>
 </Authorized><NotAuthorized><section class="panel"><p class="muted">Your role can view assessments but cannot create or cancel them.</p></section></NotAuthorized></AuthorizeView>
 
 <section class="panel"><div class="panel-heading"><h2>Assessment history</h2><button class="secondary-button" @onclick="LoadAsync" disabled="@loading">Refresh</button></div>
 @if (loading) { <p class="muted">Loading assessment history…</p> }
 else if (error is not null) { <div class="error-state"><p class="error-text">@error</p><button class="secondary-button" @onclick="LoadAsync">Retry</button></div> }
 else if (assessments.Count == 0) { <div class="empty-state"><span class="empty-icon">◌</span><strong>No web assessments yet</strong><p>Use an explicitly authorized public target or an enrolled private worker.</p></div> }
-else { <table><thead><tr><th>Target</th><th>Profile</th><th>Hosting</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>@foreach (var item in assessments) { <tr><td>@item.TargetUrl</td><td>@item.Profile</td><td>@item.HostingMode</td><td>@item.Status</td><td>@DisplayTime(item.CreatedAt)</td><td><button class="secondary-button" @onclick="() => CancelAsync(item)" disabled="@(item.Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Cancelled or WebAssessmentStatus.Failed or WebAssessmentStatus.Expired)">Cancel</button>@if (item.Status == WebAssessmentStatus.Completed) { <button class="secondary-button" @onclick="() => DownloadReportAsync(item)">Download report</button> }</td></tr> } </tbody></table> }
+else { <table><thead><tr><th>Target</th><th>Profile</th><th>Hosting</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>@foreach (var item in assessments) { <tr><td>@item.TargetUrl</td><td>@item.Profile</td><td>@item.HostingMode</td><td>@item.Status</td><td>@DisplayTime(item.CreatedAt)</td><td><button class="secondary-button" @onclick="() => OpenDetailsAsync(item)">Details</button><button class="secondary-button" @onclick="() => CancelAsync(item)" disabled="@(item.Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Cancelled or WebAssessmentStatus.Failed or WebAssessmentStatus.Expired)">Cancel</button>@if (item.Status == WebAssessmentStatus.Completed) { <button class="secondary-button" @onclick="() => DownloadReportAsync(item)">Download report</button> }</td></tr> } </tbody></table> }
 <div class="pagination"><button class="secondary-button" @onclick="PreviousPageAsync" disabled="@(loading || page <= 1)">Previous</button><span class="muted">Page @this.page</span><button class="secondary-button" @onclick="NextPageAsync" disabled="@(loading || !hasNext)">Next</button></div>
 </section>
+
+@if (selectedAssessment is not null)
+{
+<section class="panel"><div class="panel-heading"><h2>Assessment details</h2><button class="secondary-button" @onclick="() => selectedAssessment = null">Close</button></div><p class="muted">@selectedAssessment.TargetUrl · @selectedAssessment.Status · @selectedAssessment.HostingMode</p><div class="detail-grid"><div><h3>Findings</h3>@if (detailFindings.Count == 0) { <p class="muted">No findings recorded.</p> } else { @foreach (var finding in detailFindings) { <article class="finding"><strong>@finding.Title</strong><p>@finding.Severity · @finding.CheckStatus · confidence @finding.Confidence</p><p>@finding.Description</p></article> } }</div><div><h3>Coverage</h3>@foreach (var check in detailChecks) { <p><strong>@check.Name</strong> · @check.Status<br /><span class="muted">@check.AffectedEndpoint</span></p> }<h3>Endpoints</h3>@foreach (var endpoint in detailEndpoints) { <p class="muted">@endpoint.Method @endpoint.Url</p> }<h3>Screenshots</h3>@foreach (var screenshot in detailScreenshots) { <p class="muted">@screenshot.ScreenshotType · @screenshot.Url · @screenshot.Sha256</p> }</div></div></section>
+}
 
 @code {
     private const int PageSize = 25;
@@ -29,6 +35,7 @@ else { <table><thead><tr><th>Target</th><th>Profile</th><th>Hosting</th><th>Stat
     private string targetUrl = "https://example.com";
     private WebHostingMode hostingMode = WebHostingMode.Public;
     private string? privateWorker;
+    private string privateNetworkRange = string.Empty;
     private string profile = "web-assessment-passive";
     private string evidence = "operator-approved-application";
     private int expiryHours = 24;
@@ -39,9 +46,27 @@ else { <table><thead><tr><th>Target</th><th>Profile</th><th>Hosting</th><th>Stat
     private bool failed;
     private string? error;
     private string? message;
+    private string authorizationTarget = "https://example.com";
+    private string authorizationReason = string.Empty;
+    private List<PublicTargetAuthorizationResponse> authorizations = [];
+    private List<WorkerResponse> workers = [];
+    private WebAssessmentResponse? selectedAssessment;
+    private List<WebAssessmentFindingResponse> detailFindings = [];
+    private List<WebAssessmentEndpointResponse> detailEndpoints = [];
+    private List<WebAssessmentCheckResponse> detailChecks = [];
+    private List<ScreenshotResponse> detailScreenshots = [];
     private bool hasNext => page * PageSize < totalCount;
 
-    protected override async Task OnInitializedAsync() => await LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        try
+        {
+            authorizations = (await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations")).ToList();
+            workers = (await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers")).ToList();
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+    }
     private async Task LoadAsync()
     {
         loading = true; error = null;
@@ -52,11 +77,38 @@ else { <table><thead><tr><th>Target</th><th>Profile</th><th>Hosting</th><th>Stat
     private async Task CreateAsync()
     {
         submitting = true; failed = false; message = null;
-        try { var result = await ApiClient.PostJsonAsync<CreateWebAssessmentRequest, WebAssessmentResponse>("/api/v1/web-assessments", new CreateWebAssessmentRequest(name, targetUrl, hostingMode, privateWorker, profile, [], 30, 300, evidence, DateTimeOffset.UtcNow.AddHours(Math.Clamp(expiryHours, 1, 720)))); message = $"Assessment {result.Id} queued for the authorized worker."; await LoadAsync(); }
+        try { var ranges = string.IsNullOrWhiteSpace(privateNetworkRange) ? Array.Empty<string>() : [privateNetworkRange.Trim()]; var selectedAuthorization = authorizations.FirstOrDefault(x => x.Status == PublicTargetAuthorizationStatus.Approved && string.Equals(x.Target, targetUrl, StringComparison.OrdinalIgnoreCase)); var result = await ApiClient.PostJsonAsync<CreateWebAssessmentRequest, WebAssessmentResponse>("/api/v1/web-assessments", new CreateWebAssessmentRequest(name, targetUrl, hostingMode, privateWorker, profile, [], 30, 300, evidence, DateTimeOffset.UtcNow.AddHours(Math.Clamp(expiryHours, 1, 720)), false, selectedAuthorization is null ? [] : [selectedAuthorization.Id], ranges)); message = $"Assessment {result.Id} queued for the authorized worker."; await LoadAsync(); }
         catch (SentinelApiException exception) { failed = true; message = exception.UserMessage; }
         finally { submitting = false; }
     }
+    private async Task RequestAuthorizationAsync()
+    {
+        try { await ApiClient.PostJsonAsync<PublicTargetAuthorizationRequest, PublicTargetAuthorizationResponse>("/api/v1/public-target-authorizations", new PublicTargetAuthorizationRequest(authorizationTarget, authorizationReason)); authorizations = (await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations")).ToList(); message = "Authorization request submitted for administrator review."; }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+    }
+    private async Task ApproveAuthorizationAsync(PublicTargetAuthorizationResponse authorization)
+    {
+        try { await ApiClient.PostJsonAsync<PublicTargetAuthorizationApprovalRequest, PublicTargetAuthorizationResponse>($"/api/v1/public-target-authorizations/{authorization.Id}/approve", new PublicTargetAuthorizationApprovalRequest("operator-approved-engagement", "administrator-review", DateTimeOffset.UtcNow.AddHours(24))); authorizations = (await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations")).ToList(); }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+    }
+    private async Task RevokeAuthorizationAsync(PublicTargetAuthorizationResponse authorization)
+    {
+        try { await ApiClient.PostAsync($"/api/v1/public-target-authorizations/{authorization.Id}/revoke"); authorizations = (await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations")).ToList(); }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+    }
     private async Task CancelAsync(WebAssessmentResponse item) { try { await ApiClient.PostAsync($"/api/v1/web-assessments/{item.Id}/cancel"); await LoadAsync(); } catch (SentinelApiException exception) { error = exception.UserMessage; } }
+    private async Task OpenDetailsAsync(WebAssessmentResponse item)
+    {
+        try
+        {
+            selectedAssessment = item;
+            detailFindings = (await ApiClient.GetJsonAsync<List<WebAssessmentFindingResponse>>($"/api/v1/web-assessments/{item.Id}/findings")).ToList();
+            detailEndpoints = (await ApiClient.GetJsonAsync<List<WebAssessmentEndpointResponse>>($"/api/v1/web-assessments/{item.Id}/endpoints")).ToList();
+            detailChecks = (await ApiClient.GetJsonAsync<List<WebAssessmentCheckResponse>>($"/api/v1/web-assessments/{item.Id}/checks")).ToList();
+            detailScreenshots = (await ApiClient.GetJsonAsync<List<ScreenshotResponse>>($"/api/v1/web-assessments/{item.Id}/screenshots")).ToList();
+        }
+        catch (SentinelApiException exception) { selectedAssessment = null; error = exception.UserMessage; }
+    }
     private async Task DownloadReportAsync(WebAssessmentResponse item) { try { var bytes = await ApiClient.GetBytesAsync($"/api/v1/web-assessments/{item.Id}/report"); await JS.InvokeVoidAsync("sentinelaiDownload", $"sentinelai-{item.Id:N}.html", "text/html", bytes); } catch (SentinelApiException exception) { error = exception.UserMessage; } }
     private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadAsync(); } }
     private async Task NextPageAsync() { if (hasNext) { page++; await LoadAsync(); } }

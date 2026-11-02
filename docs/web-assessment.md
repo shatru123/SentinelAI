@@ -10,8 +10,8 @@ SentinelAI has two independent execution paths:
 | Check | Passive | Safe active | Result |
 |---|---:|---:|---|
 | CSP, HSTS, X-Content-Type-Options, Referrer-Policy | Yes | Yes | Evidence-backed missing-header findings |
-| Cookie Secure/HttpOnly observation | Yes | Yes | Redacted `Set-Cookie` evidence |
-| Wildcard CORS observation | Yes | Yes | Medium finding; application-specific review remains required |
+| Cookie Secure/HttpOnly/SameSite observation | Yes | Yes | Per-cookie redacted evidence; only sensitive cookies create findings |
+| Credentialed wildcard CORS observation | Yes | Yes | Potential finding only when credentials are also enabled |
 | Server and OpenAPI/Swagger indicators | Yes | Yes | Informational only |
 | Same-origin links/forms and bounded endpoint discovery | Yes | Yes | Persisted endpoint records |
 | HTTP `OPTIONS` method observation | No | Yes | Potential TRACE exposure only when advertised |
@@ -30,3 +30,13 @@ Public web targets require a current administrator-approved authorization record
 ## Artifacts
 
 Screenshots and reports are stored under a tenant/assessment-prefixed key using `Artifacts:Root`. The API verifies tenant ownership before serving either artifact. Reports are self-contained and do not load external CSS, JavaScript or image URLs.
+
+## Phase 3.1.1 hardening
+
+Browser screenshots run through a fresh, assessment-scoped Playwright context and a loopback policy proxy. Browser routes and the proxy both revalidate HTTP(S) scope, DNS and redirects; the proxy connects only to the validated address pin while preserving the original Host and TLS SNI. Cookies, authentication state and browser profiles are never persisted between assessments. Lease loss, cancellation, scope expiry and request-budget exhaustion close the context and proxy.
+
+Private execution requires administrator provisioning at `POST /api/v1/workers/{identity}/provision` with explicit private IPv4/IPv6 CIDRs. An assessment may select only a range contained by the worker's approved ranges; execution validates the intersection again after DNS resolution. A worker cannot grant itself the private capability or ranges in production registration.
+
+Public authorization IDs are selected from the authenticated dashboard and are matched to the assessment's scheme, effective port, hostname and path boundary. A free-text evidence description does not authorize a public target. The dashboard also exposes approved worker health, capabilities and ranges for private assessment selection.
+
+Each assessment stores idempotent findings, request-budget limits and a check coverage matrix. Reports include severity distribution, confirmed/potential/informational counts, check statuses, skipped/unsupported reasons and finding-specific screenshot metadata. Sensitive screenshot selectors are configurable through the assessment context; the default policy covers password, hidden, token, secret, API-key, session, payment, email and phone fields plus explicit sensitive markers.

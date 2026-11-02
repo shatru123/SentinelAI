@@ -7,7 +7,7 @@ namespace SentinelAI.Security.Policy;
 
 public sealed record ValidatedExecutionTarget(string OriginalHostname, IReadOnlyCollection<IPAddress> ApprovedAddresses,
     DateTimeOffset ResolvedAt, Guid ScopeId, Guid TenantId, DateTimeOffset ExpiresAt, string OperationProfile);
-public sealed record WorkerExecutionContext(string Identity, IReadOnlyCollection<string> Capabilities);
+public sealed record WorkerExecutionContext(string Identity, IReadOnlyCollection<string> Capabilities, IReadOnlyCollection<string>? ApprovedPrivateNetworkRanges = null);
 
 public sealed record ScopeValidationResult(bool IsValid, IReadOnlyList<string> Errors, ValidatedExecutionTarget? ValidatedTarget = null)
 {
@@ -47,6 +47,11 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         if (scope.ApprovedOperationProfiles.Count == 0) errors.Add("At least one operation profile is required.");
         if (scope.RequestsPerMinute is < 1 or > 10_000) errors.Add("Requests per minute must be between 1 and 10000.");
         if (scope.MaxExecutionSeconds is < 1 or > 86_400) errors.Add("Maximum execution time is invalid.");
+        if (scope.MaxTotalRequests is < 1 or > 100_000) errors.Add("Maximum total requests is invalid.");
+        if (scope.MaxConcurrentRequests is < 1 or > 64) errors.Add("Maximum concurrent requests is invalid.");
+        if (scope.MaxPages is < 1 or > 10_000) errors.Add("Maximum page count is invalid.");
+        if (scope.MaxCrawlDepth is < 0 or > 20) errors.Add("Maximum crawl depth is invalid.");
+        if (scope.MaxResponseBytes is < 1_024 or > 10 * 1024 * 1024) errors.Add("Maximum response size is invalid.");
 
         foreach (var target in scope.Targets)
         {
@@ -141,6 +146,13 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
             if (string.IsNullOrWhiteSpace(scope.PrivateWorkerIdentity) || worker is null || !scope.PrivateWorkerIdentity.Equals(worker.Identity.Trim(), StringComparison.Ordinal) || !worker.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase))
                 return ScopeValidationResult.Invalid("Private web assessments require the explicitly assigned private worker capability.");
             if (resolved.Any(ip => !IsPrivateAddress(ip))) return ScopeValidationResult.Invalid("Private web targets must resolve only to private address space.");
+            if (scope.ApprovedPrivateNetworkRanges.Count > 0)
+            {
+                if (worker.ApprovedPrivateNetworkRanges is null || worker.ApprovedPrivateNetworkRanges.Count == 0)
+                    return ScopeValidationResult.Invalid("Private web targets require administrator-approved worker network ranges.");
+                if (resolved.Any(ip => !scope.ApprovedPrivateNetworkRanges.Any(range => IsWithinNetwork(ip, range)) || !worker.ApprovedPrivateNetworkRanges.Any(range => IsWithinNetwork(ip, range))))
+                    return ScopeValidationResult.Invalid("Private web target resolved outside the effective approved network scope.");
+            }
         }
         else if (resolved.Any(IsPrivateAddress)) return ScopeValidationResult.Invalid("Public web target DNS resolution is unsafe.");
         if (IsExcluded(scope.Exclusions, uri.Host, resolved) || IsExcluded(scope.Exclusions, uri.ToString(), resolved)) return ScopeValidationResult.Invalid("Web target or a resolved redirect destination is explicitly excluded.");
@@ -232,7 +244,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         if (TryParseCidr(verified.Trim(), out var verifiedAddress, out var verifiedPrefix) && TryParseCidr(target.Trim(), out var targetAddress, out var targetPrefix))
             return verifiedAddress.AddressFamily == targetAddress.AddressFamily && CidrContains($"{verifiedAddress}/{verifiedPrefix}", $"{targetAddress}/{targetPrefix}");
         if (Uri.TryCreate(verified, UriKind.Absolute, out var verifiedUri) && Uri.TryCreate(target, UriKind.Absolute, out var targetUri))
-            return verifiedUri.Scheme.Equals(targetUri.Scheme, StringComparison.OrdinalIgnoreCase) && verifiedUri.Host.Equals(targetUri.Host, StringComparison.OrdinalIgnoreCase) && IsPathWithin(verifiedUri.AbsolutePath, targetUri.AbsolutePath);
+            return verifiedUri.Scheme.Equals(targetUri.Scheme, StringComparison.OrdinalIgnoreCase) && EffectivePort(verifiedUri) == EffectivePort(targetUri) && verifiedUri.Host.Equals(targetUri.Host, StringComparison.OrdinalIgnoreCase) && IsPathWithin(verifiedUri.AbsolutePath, targetUri.AbsolutePath);
         return string.Equals(verified.Trim().TrimEnd('.'), target.Trim().TrimEnd('.'), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -313,10 +325,13 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
 
     private static bool IsPathWithin(string basePath, string candidatePath)
     {
-        var baseValue = string.IsNullOrWhiteSpace(basePath) ? "/" : basePath.TrimEnd('/') + "/";
+        var normalizedBase = string.IsNullOrWhiteSpace(basePath) ? "/" : "/" + basePath.Trim('/');
+        var baseValue = normalizedBase == "/" ? "/" : normalizedBase + "/";
         var candidate = string.IsNullOrWhiteSpace(candidatePath) ? "/" : candidatePath;
-        return candidate.Equals(basePath, StringComparison.OrdinalIgnoreCase) || candidate.StartsWith(baseValue, StringComparison.OrdinalIgnoreCase);
+        return candidate.Equals(normalizedBase, StringComparison.OrdinalIgnoreCase) || candidate.StartsWith(baseValue, StringComparison.OrdinalIgnoreCase);
     }
+
+    private static int EffectivePort(Uri uri) => uri.IsDefaultPort ? (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? 443 : 80) : uri.Port;
 
     private static string NormalizeRepositoryPath(string path) => path.Trim('/').TrimEnd('/').Replace(".git", string.Empty, StringComparison.OrdinalIgnoreCase);
 
@@ -330,7 +345,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     {
         address = NormalizeAddress(address);
         return address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any) || IPAddress.IsLoopback(address) ||
-           IsWithinNetwork(address, "169.254.0.0/16") || IsWithinNetwork(address, "192.0.0.0/24") || IsWithinNetwork(address, "192.0.2.0/24") || IsWithinNetwork(address, "192.88.99.0/24") ||
+           IsWithinNetwork(address, "0.0.0.0/8") || IsWithinNetwork(address, "100.64.0.0/10") || IsWithinNetwork(address, "169.254.0.0/16") || IsWithinNetwork(address, "192.0.0.0/24") || IsWithinNetwork(address, "192.0.2.0/24") || IsWithinNetwork(address, "192.88.99.0/24") ||
            IsWithinNetwork(address, "198.18.0.0/15") || IsWithinNetwork(address, "198.51.100.0/24") || IsWithinNetwork(address, "203.0.113.0/24") ||
            IsWithinNetwork(address, "224.0.0.0/4") || IsWithinNetwork(address, "240.0.0.0/4") ||
            IsWithinNetwork(address, "::/128") || IsWithinNetwork(address, "::1/128") || IsWithinNetwork(address, "100::/64") || IsWithinNetwork(address, "64:ff9b::/96") ||
@@ -352,4 +367,9 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         => new(hostname, addresses.Select(NormalizeAddress).Distinct().ToArray(), DateTimeOffset.UtcNow, scope.Id, scope.TenantId, scope.ExpiresAt, operationProfile);
 
     private static IPAddress NormalizeAddress(IPAddress address) => address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+
+    public static bool IsValidPrivateNetworkRange(string value)
+        => TryParseCidr(value.Trim(), out var address, out _) && IsPrivateAddress(address) && !IsDisallowedAddress(address) && !CidrIntersectsDisallowed(value.Trim());
+
+    public static bool IsNetworkRangeContainedBy(string candidate, string approved) => CidrContains(approved.Trim(), candidate.Trim());
 }

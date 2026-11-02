@@ -104,6 +104,38 @@ public sealed class ScopeValidatorTests
         Assert.False(rebinding.IsValid);
     }
 
+    [Fact]
+    public void Public_authorization_does_not_cross_port_or_sibling_path_boundaries()
+    {
+        var scope = new TargetScope(tenantId, "public-web", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://example.com/app")], [], ["web-passive"], 30, 300, "ticket", false);
+        scope.ConfigureVerifications([new PublicTargetVerification("https://example.com/app", "ticket", "admin", "review", DateTimeOffset.UtcNow)]);
+
+        var portScope = new TargetScope(tenantId, "wrong-port", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        portScope.Configure([new TargetDefinition(TargetKind.Web, "https://example.com:8443/app")], [], ["web-passive"], 30, 300, "ticket", false);
+        portScope.ConfigureVerifications([new PublicTargetVerification("https://example.com/app", "ticket", "admin", "review", DateTimeOffset.UtcNow)]);
+
+        var siblingScope = new TargetScope(tenantId, "sibling", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        siblingScope.Configure([new TargetDefinition(TargetKind.Web, "https://example.com/application")], [], ["web-passive"], 30, 300, "ticket", false);
+        siblingScope.ConfigureVerifications([new PublicTargetVerification("https://example.com/app", "ticket", "admin", "review", DateTimeOffset.UtcNow)]);
+
+        Assert.True(validator.ValidateDefinition(scope, tenantId, DateTimeOffset.UtcNow).IsValid);
+        Assert.False(validator.ValidateDefinition(portScope, tenantId, DateTimeOffset.UtcNow).IsValid);
+        Assert.False(validator.ValidateDefinition(siblingScope, tenantId, DateTimeOffset.UtcNow).IsValid);
+    }
+
+    [Fact]
+    public async Task Private_execution_requires_the_intersection_of_scope_and_worker_ranges()
+    {
+        var scope = new TargetScope(tenantId, "private-web", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://private.example.test")], [], ["web-assessment-passive"], 30, 300, "approved", false);
+        scope.ConfigureWebHosting(WebHostingMode.Private, "worker-a", ["10.20.0.0/16"]);
+        var allowed = await new TargetScopeValidator(new PrivateResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://private.example.test", "web-assessment-passive", new WorkerExecutionContext("worker-a", ["web-assessment", "private-web-assessment"], ["10.20.10.0/24"]));
+        var outside = await new TargetScopeValidator(new OutsidePrivateResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://private.example.test", "web-assessment-passive", new WorkerExecutionContext("worker-a", ["web-assessment", "private-web-assessment"], ["10.20.10.0/24"]));
+        Assert.True(allowed.IsValid);
+        Assert.False(outside.IsValid);
+    }
+
     private TargetScope CreateScope(string target, DateTimeOffset expiresAt)
     {
         var scope = new TargetScope(tenantId, "test-scope", Guid.NewGuid(), expiresAt);
@@ -120,4 +152,9 @@ public sealed class ScopeValidatorTests
     {
         public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<IPAddress>>([IPAddress.Parse("10.0.0.4")]);
     }
+
+    private sealed class PrivateResolver : IHostAddressResolver
+    { public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<IPAddress>>([IPAddress.Parse("10.20.10.4")]); }
+    private sealed class OutsidePrivateResolver : IHostAddressResolver
+    { public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<IPAddress>>([IPAddress.Parse("10.21.10.4")]); }
 }

@@ -417,6 +417,9 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<string>("HttpMethod")
                         .HasColumnType("text");
 
+                    b.Property<string>("IdempotencyKey")
+                        .HasColumnType("text");
+
                     b.Property<string>("Impact")
                         .HasColumnType("text");
 
@@ -445,6 +448,9 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "Severity");
+
+                    b.HasIndex("TenantId", "AssessmentId", "IdempotencyKey")
+                        .IsUnique();
 
                     b.ToTable("Findings");
                 });
@@ -613,6 +619,10 @@ namespace SentinelAI.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("ApprovedPrivateNetworkRanges")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("AuthorizationEvidence")
                         .IsRequired()
                         .HasColumnType("text");
@@ -630,7 +640,22 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int>("MaxConcurrentRequests")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MaxCrawlDepth")
+                        .HasColumnType("integer");
+
                     b.Property<int>("MaxExecutionSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MaxPages")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MaxResponseBytes")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MaxTotalRequests")
                         .HasColumnType("integer");
 
                     b.Property<string>("Name")
@@ -783,6 +808,53 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.ToTable("WebAssessments");
                 });
 
+            modelBuilder.Entity("SentinelAI.Domain.WebAssessmentCheck", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AffectedEndpoint")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("AssessmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("CheckId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "AssessmentId", "CheckId", "AffectedEndpoint")
+                        .IsUnique();
+
+                    b.ToTable("WebAssessmentChecks");
+                });
+
             modelBuilder.Entity("SentinelAI.Domain.WebAssessmentEndpoint", b =>
                 {
                     b.Property<Guid>("Id")
@@ -827,6 +899,10 @@ namespace SentinelAI.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("ApprovedPrivateNetworkRanges")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("Capabilities")
                         .IsRequired()
                         .HasColumnType("text");
@@ -852,6 +928,9 @@ namespace SentinelAI.Infrastructure.Migrations
 
                     b.Property<int>("MaximumCapacity")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("PrivateAssessmentApproved")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTimeOffset>("RegisteredAt")
                         .HasColumnType("timestamp with time zone");

@@ -32,6 +32,16 @@ Current implementation status: the passive foundation is implemented. Workers ca
 
 Coverage is intentionally limited to the checks documented in `docs/web-assessment.md`; destructive exploitation, credential attacks, arbitrary form submission, active network probing and CVE correlation are not part of this milestone.
 
+## Phase 3.1.1 — Web assessment security hardening
+- Policy-enforced Playwright browser sessions using a per-assessment loopback proxy, execution-time scope checks and pinned DNS destinations
+- Browser cancellation and lease-loss shutdown with configurable screenshot redaction selectors
+- Administrator-provisioned private workers with tenant-scoped IPv4/IPv6 CIDR authorization and effective scope intersection
+- Exact public authorization matching by scheme, host, effective port and path boundary
+- Idempotent findings, request budgets, assessment check coverage and expanded offline report summaries
+- Dashboard workflow for requesting, reviewing and selecting approved public authorizations and approved private workers
+
+This milestone does not add destructive attacks, credential testing, arbitrary form submission, active network discovery or broader exploitation. Unsupported checks remain explicitly identified in reports.
+
 ## Phase 3 — Vulnerability intelligence
 - CVE/CPE correlation and source attribution
 - Evidence-backed risk scoring

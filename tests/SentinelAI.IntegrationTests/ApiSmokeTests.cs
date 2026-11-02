@@ -92,6 +92,10 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         var approved = await client.PostAsJsonAsync($"/api/v1/public-target-authorizations/{authorization!.Id}/approve", new PublicTargetAuthorizationApprovalRequest("ticket-123", "security-review", DateTimeOffset.UtcNow.AddHours(1)));
         Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
 
+        var listed = await client.GetFromJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations");
+        Assert.NotNull(listed);
+        Assert.Contains(listed, item => item.Id == authorization.Id && item.Status == PublicTargetAuthorizationStatus.Approved);
+
         var scope = new CreateScopeRequest("approved-public", [new TargetDefinition(TargetKind.Web, "https://example.com")], [], ["web-passive"], 30, 300, "ticket-123", DateTimeOffset.UtcNow.AddHours(1), false, null, [authorization.Id]);
         var createdScope = await client.PostAsJsonAsync("/api/v1/scopes", scope);
         Assert.Equal(HttpStatusCode.Created, createdScope.StatusCode);

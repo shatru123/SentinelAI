@@ -46,12 +46,12 @@ public interface IScanJobQueue
     IAsyncEnumerable<ScanJobDelivery> ReadAllAsync(Guid? tenantId = null, string? workerIdentity = null, CancellationToken cancellationToken = default);
     ValueTask RequestCancellationAsync(Guid jobId, CancellationToken cancellationToken = default);
     ValueTask RequestCancellationAsync(Guid jobId, Guid tenantId, string workerIdentity, CancellationToken cancellationToken = default);
-    IAsyncEnumerable<Guid> ReadCancellationsAsync(string workerIdentity, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<Guid> ReadCancellationsAsync(Guid tenantId, string workerIdentity, CancellationToken cancellationToken = default);
 }
 
 public interface IImmediateScanJobQueue { }
 
-public sealed record ScanJobDelivery(Guid JobId, Guid TenantId, int Attempt,
+public sealed record ScanJobDelivery(Guid JobId, Guid TenantId, string? WorkerIdentity, int Attempt,
     Func<CancellationToken, ValueTask> AcknowledgeAsync,
     Func<bool, CancellationToken, ValueTask> RejectAsync);
 

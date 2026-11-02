@@ -74,7 +74,7 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
         await using (var recoveryScope = scopeFactory.CreateAsyncScope())
             await recoveryScope.ServiceProvider.GetRequiredService<ScanExecutionService>().RecoverExpiredLeasesAsync(stoppingToken, options.TenantId);
 
-        var cancellationListener = ListenForCancellationsAsync(options.Identity, stoppingToken);
+        var cancellationListener = ListenForCancellationsAsync(options.TenantId.Value, options.Identity, stoppingToken);
         var gate = new SemaphoreSlim(options.Concurrency, options.Concurrency);
         try
         {
@@ -95,9 +95,9 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
         }
     }
 
-    private async Task ListenForCancellationsAsync(string workerIdentity, CancellationToken cancellationToken)
+    private async Task ListenForCancellationsAsync(Guid tenantId, string workerIdentity, CancellationToken cancellationToken)
     {
-        await foreach (var jobId in queue.ReadCancellationsAsync(workerIdentity, cancellationToken))
+        await foreach (var jobId in queue.ReadCancellationsAsync(tenantId, workerIdentity, cancellationToken))
         {
             logger.LogInformation("Cancellation signal received for job {JobId}.", jobId);
             cancellationRegistry.Cancel(jobId);
@@ -141,7 +141,8 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
-                await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().RequeueOrFailAsync(delivery.JobId, delivery.Attempt + 1, options.MaxAttempts, exception.Message, CancellationToken.None);
+                var owned = await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().RequeueOrFailAsync(delivery.JobId, options.Identity, delivery.Attempt + 1, options.MaxAttempts, exception.Message, CancellationToken.None);
+                if (!owned) { await delivery.AcknowledgeAsync(CancellationToken.None); return; }
             }
             catch (Exception persistenceException) { logger.LogError(persistenceException, "Could not persist failure state for job {JobId}.", delivery.JobId); }
             await delivery.RejectAsync(delivery.Attempt + 1 < options.MaxAttempts, CancellationToken.None);
@@ -169,11 +170,19 @@ public sealed class Worker(ILogger<Worker> logger, IScanJobQueue queue, IService
             {
                 await Task.Delay(interval, jobToken);
                 await using var scope = scopeFactory.CreateAsyncScope();
-                if (!await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().RenewLeaseAsync(jobId, workerIdentity, jobToken)) return;
+                if (!await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().RenewLeaseAsync(jobId, workerIdentity, stoppingToken))
+                {
+                    cancellationRegistry.Cancel(jobId);
+                    return;
+                }
             }
         }
         catch (OperationCanceledException) when (jobToken.IsCancellationRequested || stoppingToken.IsCancellationRequested) { }
-        catch (Exception exception) { logger.LogWarning(exception, "Lease renewal failed for job {JobId}.", jobId); }
+        catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
+        {
+            cancellationRegistry.Cancel(jobId);
+            logger.LogWarning(exception, "Lease renewal failed for job {JobId}; execution cancellation was requested.", jobId);
+        }
     }
 }
 
@@ -185,6 +194,7 @@ public sealed class WorkerOptions
     public string? ControlPlaneUrl { get; }
     public int Concurrency { get; }
     public int MaxAttempts { get; }
+    public int LeaseDurationSeconds { get; }
     public int LeaseRenewalSeconds { get; }
     public Guid? TenantId { get; }
     public WorkerOptions(IConfiguration configuration)
@@ -194,7 +204,9 @@ public sealed class WorkerOptions
         ControlPlaneUrl = string.IsNullOrWhiteSpace(url) ? null : url.TrimEnd('/');
         Concurrency = Math.Clamp(configuration.GetValue("Worker:Concurrency", 2), 1, 32);
         MaxAttempts = Math.Clamp(configuration.GetValue("RabbitMQ:MaxAttempts", 3), 1, 20);
+        LeaseDurationSeconds = Math.Clamp(configuration.GetValue("Worker:LeaseDurationSeconds", 60), 10, 3600);
         LeaseRenewalSeconds = Math.Clamp(configuration.GetValue("Worker:LeaseRenewalSeconds", 15), 2, 300);
+        if (LeaseRenewalSeconds >= LeaseDurationSeconds / 2) throw new InvalidOperationException("Worker lease renewal interval must be less than half of the lease duration.");
         TenantId = Guid.TryParse(configuration["Worker:TenantId"] ?? configuration["Authentication:WorkerTenantId"], out var tenantId) ? tenantId : null;
     }
 }

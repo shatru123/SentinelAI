@@ -80,6 +80,100 @@ public sealed class ScanLifecycleTests
     }
 
     [Fact]
+    public void Full_heartbeat_capacity_does_not_block_admission_when_local_worker_has_a_slot()
+    {
+        var worker = new WorkerRegistration(Guid.NewGuid(), "worker-a", "test", ["passive-mock"]);
+        worker.Heartbeat(activeJobs: 4, capacity: 4);
+
+        Assert.True(worker.IsAvailable(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+    }
+
+    [Fact]
+    public void Lease_renewal_rejects_expired_or_changed_ownership()
+    {
+        var job = new AgentJob(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "mock-passive");
+        var acquiredAt = DateTimeOffset.UtcNow;
+        Assert.True(job.TryAcquireLease("worker-a", acquiredAt, TimeSpan.FromSeconds(5)));
+        Assert.False(job.RenewLease("worker-b", acquiredAt.AddSeconds(1), TimeSpan.FromSeconds(5)));
+        Assert.False(job.RenewLease("worker-a", acquiredAt.AddSeconds(6), TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public void Failure_recovery_cannot_release_a_lease_owned_by_another_worker()
+    {
+        var job = new AgentJob(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "mock-passive");
+        Assert.True(job.TryAcquireLease("worker-a", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+        var before = job.LeaseOwnerWorkerId;
+
+        Assert.True(job.IsLeaseOwnedBy("worker-a", DateTimeOffset.UtcNow));
+        Assert.False(job.IsLeaseOwnedBy("worker-b", DateTimeOffset.UtcNow));
+        Assert.Equal(before, job.LeaseOwnerWorkerId);
+    }
+
+    [Fact]
+    public async Task Failure_requeue_requires_the_current_lease_owner()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var db = new AppDbContext(options);
+        var tenant = new Tenant("requeue tenant");
+        var user = new User(tenant.Id, "analyst", "Analyst", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "private", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], [], ["mock-passive"], 10, 120, "ticket", false);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, "mock-passive");
+        var execution = new AgentExecution(job.Id, "test");
+        db.AddRange(tenant, user, scope, job, execution);
+        Assert.True(job.TryAcquireLease("worker-a", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+        execution.Start();
+        await db.SaveChangesAsync();
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new EmptyResolver()), new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance);
+
+        var changed = await service.RequeueOrFailAsync(job.Id, "worker-b", 1, 3, "stale worker", CancellationToken.None);
+
+        Assert.False(changed);
+        Assert.Equal(ScanJobStatus.Running, job.Status);
+        Assert.Equal("worker-a", job.LeaseOwnerWorkerId);
+    }
+
+    [Fact]
+    public async Task Execution_stops_without_asset_side_effect_after_lease_ownership_changes()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(databaseName).Options;
+        await using var db = new AppDbContext(options);
+        var tenant = new Tenant("ownership tenant");
+        var user = new User(tenant.Id, "analyst", "Analyst", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "private", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], [], ["mock-passive"], 10, 120, "ticket", false);
+        var worker = new WorkerRegistration(tenant.Id, "worker-a", "test", ["passive-mock"]);
+        worker.Heartbeat(0, 2);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, "mock-passive");
+        var execution = new AgentExecution(job.Id, "test");
+        db.AddRange(tenant, user, scope, worker, job, execution);
+        await db.SaveChangesAsync();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Worker:ExecutionDelayMs"] = "500" }).Build();
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new EmptyResolver()), configuration, NullLogger<ScanExecutionService>.Instance);
+        var running = service.ExecuteAsync(job.Id, CancellationToken.None, tenant.Id, worker.Identity);
+
+        await using var competingDb = new AppDbContext(options);
+        AgentJob? competingJob = null;
+        for (var attempt = 0; attempt < 100 && competingJob is null; attempt++)
+        {
+            competingJob = await competingDb.AgentJobs.AsNoTracking().SingleAsync(x => x.Id == job.Id);
+            if (competingJob.LeaseOwnerWorkerId is null) { competingJob = null; await Task.Delay(10); }
+        }
+        Assert.NotNull(competingJob);
+        var takeover = await competingDb.AgentJobs.SingleAsync(x => x.Id == job.Id);
+        takeover.ReleaseLeaseForRetry("lease handoff");
+        Assert.True(takeover.TryAcquireLease("worker-b", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+        await competingDb.SaveChangesAsync();
+
+        var outcome = await running;
+
+        Assert.Equal(ScanExecutionOutcome.ClaimedByAnotherWorker, outcome);
+        Assert.Empty(await db.Assets.ToListAsync());
+    }
+
+    [Fact]
     public async Task A_healthy_worker_lease_is_not_recovered_by_another_worker_starting()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;

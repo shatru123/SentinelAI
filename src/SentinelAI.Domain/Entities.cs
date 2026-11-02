@@ -160,7 +160,7 @@ public sealed class AgentJob
     public bool IsLeaseOwnedBy(string workerIdentity, DateTimeOffset now) => HasActiveLease(now) && string.Equals(LeaseOwnerWorkerId, workerIdentity?.Trim(), StringComparison.Ordinal);
     public void RecoverExpiredLease(DateTimeOffset now)
     {
-        if (Status == ScanJobStatus.Running && LeaseExpiresAt is not null && LeaseExpiresAt <= now)
+        if (Status == ScanJobStatus.Running && (LeaseExpiresAt is null || LeaseExpiresAt <= now))
         {
             Status = ScanJobStatus.Queued;
             StartedAt = null;
@@ -239,7 +239,10 @@ public sealed class WorkerRegistration
         CurrentActiveJobs = Math.Max(0, activeJobs); MaximumCapacity = Math.Max(1, capacity); LastHeartbeatAt = DateTimeOffset.UtcNow; Status = WorkerStatus.Healthy;
         LastJobStartedAt = lastJobStartedAt ?? LastJobStartedAt; LastJobCompletedAt = lastJobCompletedAt ?? LastJobCompletedAt;
     }
-    public bool IsAvailable(DateTimeOffset now, TimeSpan staleAfter) => Status is WorkerStatus.Registered or WorkerStatus.Healthy && LastHeartbeatAt >= now.Subtract(staleAfter) && CurrentActiveJobs < MaximumCapacity;
+    // Heartbeat capacity is telemetry only. Admission is enforced by the worker's local semaphore;
+    // a delayed heartbeat must never reject a job that has already been admitted locally.
+    public bool IsHealthyForAdmission(DateTimeOffset now, TimeSpan staleAfter) => Status is WorkerStatus.Registered or WorkerStatus.Healthy && LastHeartbeatAt >= now.Subtract(staleAfter);
+    public bool IsAvailable(DateTimeOffset now, TimeSpan staleAfter) => IsHealthyForAdmission(now, staleAfter);
     public bool IsStale(DateTimeOffset now, TimeSpan staleAfter) => LastHeartbeatAt < now.Subtract(staleAfter);
     public void MarkJobStarted(DateTimeOffset now) { LastJobAt = now; LastJobStartedAt = now; }
     public void MarkJobCompleted(DateTimeOffset now) { LastJobAt = now; LastJobCompletedAt = now; }

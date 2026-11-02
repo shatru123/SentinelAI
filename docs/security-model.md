@@ -16,7 +16,7 @@ Public targets use a two-step workflow: an operator requests authorization, then
 
 CIDR validation classifies the complete IPv4/IPv6 range, including IPv4-mapped IPv6, ULA, link-local, multicast, reserved and documentation ranges. DNS exclusions are evaluated against the hostname and every resolved address. Web scopes require exact hostname matching by default; subdomains require the explicit `AllowSubdomains` scope option, and redirects are revalidated with scheme, port, path and resolved-address checks.
 
-Worker jobs are protected by database-backed leases owned by the authenticated worker identity. Leases are renewed during execution and only expired leases are recoverable. Worker heartbeats persist active count, capacity, health and last execution timestamps; stale workers are marked unhealthy and are not eligible for new claims.
+Worker jobs are protected by database-backed leases owned by the authenticated worker identity. Lease renewal failure, ownership change, or expiry cancels execution before further persisted side effects. Startup recovery requeues expired and legacy unleased Running jobs, resets their executions, and treats optimistic concurrency conflicts as an expected race rather than a worker-startup failure. Worker heartbeats persist active count, capacity, health and last execution timestamps; capacity is telemetry while admission is enforced by each worker's local semaphore.
 
 Validate IPv4 and IPv6, private/link-local/multicast/reserved ranges, mapped addresses, DNS rebinding, redirects and alternate address encodings. Resolve and validate destinations at execution time, not only when a scope is created. Re-check after every redirect and immediately before connecting.
 
@@ -36,7 +36,7 @@ Run workers non-root with read-only filesystems where possible, constrained egre
 
 ## Messaging and tenant isolation
 
-Each tenant has a separate job queue and each worker has a separate cancellation queue. RabbitMQ messages are durable and persistent, are consumed with manual acknowledgements, and are published on confirm-enabled channels. Retry publication completes before the original delivery is acknowledged; bounded failures are dead-lettered. The worker rejects a tenant mismatch or an unassigned job without acknowledging it.
+Each tenant has a separate job queue and each tenant/worker pair has a separate cancellation queue. RabbitMQ messages are durable and persistent, are consumed with manual acknowledgements, and are published on confirm-enabled channels. Cancellation payloads must match both the expected tenant and exact worker identity before acknowledgement. Retry publication completes before the original delivery is acknowledged; bounded failures are dead-lettered. The worker rejects a tenant mismatch or an unassigned job without acknowledging it.
 
 The API writes `AgentJob`, audit data and `OutboxMessage` in one PostgreSQL transaction. The outbox dispatcher retries pending messages after broker or API restart and marks them dispatched only after confirmation.
 

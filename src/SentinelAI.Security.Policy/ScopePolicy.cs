@@ -276,7 +276,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         => networks.Any(network => CidrContains(network, definition));
 
     private static bool CidrIntersectsDisallowed(string definition)
-        => new[] { "0.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4", "::/128", "::1/128", "fe80::/10", "ff00::/8", "2001:db8::/32" }
+        => new[] { "0.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4", "::/128", "::1/128", "100::/64", "64:ff9b::/96", "2001::/32", "2001:2::/48", "2001:10::/28", "2001:20::/28", "2001:db8::/32", "2002::/16", "fe80::/10", "ff00::/8" }
             .Any(disallowed => CidrRangesIntersect(definition, disallowed));
 
     private static BigInteger ToNumber(IPAddress address) => new(address.GetAddressBytes(), isUnsigned: true, isBigEndian: true);
@@ -314,12 +314,12 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     {
         address = NormalizeAddress(address);
         return address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any) || IPAddress.IsLoopback(address) ||
-           IsWithinNetwork(address, "0.0.0.0/8") || IsWithinNetwork(address, "100.64.0.0/10") || IsWithinNetwork(address, "127.0.0.0/8") ||
-           IsWithinNetwork(address, "169.254.0.0/16") || IsWithinNetwork(address, "192.0.0.0/24") || IsWithinNetwork(address, "192.0.2.0/24") ||
+           IsWithinNetwork(address, "169.254.0.0/16") || IsWithinNetwork(address, "192.0.0.0/24") || IsWithinNetwork(address, "192.0.2.0/24") || IsWithinNetwork(address, "192.88.99.0/24") ||
            IsWithinNetwork(address, "198.18.0.0/15") || IsWithinNetwork(address, "198.51.100.0/24") || IsWithinNetwork(address, "203.0.113.0/24") ||
            IsWithinNetwork(address, "224.0.0.0/4") || IsWithinNetwork(address, "240.0.0.0/4") ||
-           IsWithinNetwork(address, "::/128") || IsWithinNetwork(address, "::1/128") || IsWithinNetwork(address, "fe80::/10") ||
-           IsWithinNetwork(address, "ff00::/8") || IsWithinNetwork(address, "2001:db8::/32");
+           IsWithinNetwork(address, "::/128") || IsWithinNetwork(address, "::1/128") || IsWithinNetwork(address, "100::/64") || IsWithinNetwork(address, "64:ff9b::/96") ||
+           IsWithinNetwork(address, "2001::/32") || IsWithinNetwork(address, "2001:2::/48") || IsWithinNetwork(address, "2001:10::/28") || IsWithinNetwork(address, "2001:20::/28") ||
+           IsWithinNetwork(address, "2001:db8::/32") || IsWithinNetwork(address, "2002::/16") || IsWithinNetwork(address, "fe80::/10") || IsWithinNetwork(address, "ff00::/8");
     }
 
     internal static bool IsWithinNetwork(IPAddress address, string definition)

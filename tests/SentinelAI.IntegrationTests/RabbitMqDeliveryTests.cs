@@ -36,7 +36,7 @@ public sealed class RabbitMqDeliveryTests
     }
 
     [Fact]
-    public async Task Cancellation_is_routed_to_the_bound_worker_queue()
+    public async Task Cancellation_is_routed_by_tenant_and_exact_worker_identity()
     {
         var configuration = new ConfigurationManager();
         configuration["RabbitMQ:Host"] = Environment.GetEnvironmentVariable("RABBITMQ_TEST_HOST") ?? "localhost";
@@ -45,11 +45,20 @@ public sealed class RabbitMqDeliveryTests
         configuration["RabbitMQ:Password"] = Environment.GetEnvironmentVariable("RABBITMQ_TEST_PASSWORD") ?? "replace-with-local-dev-password";
         await using var provider = new RabbitMqConnectionProvider(configuration, NullLogger<RabbitMqConnectionProvider>.Instance);
         var queue = new RabbitMqScanJobQueue(provider, configuration, NullLogger<RabbitMqScanJobQueue>.Instance);
-        var jobId = Guid.NewGuid();
-        await queue.RequestCancellationAsync(jobId, Guid.NewGuid(), "worker-cancellation-routing", CancellationToken.None);
+        var workerIdentity = "same-worker/tenant-bound";
+        var tenantA = Guid.NewGuid();
+        var tenantB = Guid.NewGuid();
+        var jobA = Guid.NewGuid();
+        var jobB = Guid.NewGuid();
+        await queue.RequestCancellationAsync(jobA, tenantA, workerIdentity, CancellationToken.None);
+        await queue.RequestCancellationAsync(jobB, tenantB, workerIdentity, CancellationToken.None);
 
-        await using var reader = queue.ReadCancellationsAsync("worker-cancellation-routing").GetAsyncEnumerator();
-        Assert.True(await reader.MoveNextAsync());
-        Assert.Equal(jobId, reader.Current);
+        await using var readerA = queue.ReadCancellationsAsync(tenantA, workerIdentity).GetAsyncEnumerator();
+        Assert.True(await readerA.MoveNextAsync());
+        Assert.Equal(jobA, readerA.Current);
+
+        await using var readerB = queue.ReadCancellationsAsync(tenantB, workerIdentity).GetAsyncEnumerator();
+        Assert.True(await readerB.MoveNextAsync());
+        Assert.Equal(jobB, readerB.Current);
     }
 }

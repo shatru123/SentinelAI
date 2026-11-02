@@ -50,6 +50,46 @@ public sealed class TenantIsolationTests
     }
 
     [Fact]
+    public async Task Mapped_ipv6_is_normalized_before_scope_and_special_range_checks()
+    {
+        var tenant = Guid.NewGuid();
+        var scope = new TargetScope(tenant, "mapped", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], [], ["mock-passive"], 10, 120, "ticket", false);
+        var validator = new TargetScopeValidator(new StaticResolver([]));
+
+        var result = await validator.ValidateExecutionAsync(scope, tenant, TargetKind.Network, "::ffff:10.0.0.10", "mock-passive");
+
+        Assert.True(result.IsValid);
+        Assert.Equal(IPAddress.Parse("10.0.0.10"), result.ValidatedTarget!.ApprovedAddresses.Single());
+    }
+
+    [Fact]
+    public void IPv6_benchmark_and_transition_ranges_are_rejected()
+    {
+        var tenant = Guid.NewGuid();
+        var scope = new TargetScope(tenant, "special-v6", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "2001:2::/48")], [], ["mock-passive"], 10, 120, "ticket", false);
+
+        var result = new TargetScopeValidator(new StaticResolver([])).ValidateDefinition(scope, tenant, DateTimeOffset.UtcNow);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, error => error.Contains("special-purpose", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Cidr_exclusion_respects_range_boundaries()
+    {
+        var tenant = Guid.NewGuid();
+        var scope = new TargetScope(tenant, "boundary", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Network, "10.0.0.0/8")], ["10.0.0.0/24"], ["mock-passive"], 10, 120, "ticket", false);
+        var validator = new TargetScopeValidator(new StaticResolver([]));
+
+        var result = await validator.ValidateExecutionAsync(scope, tenant, TargetKind.Network, "10.0.1.0/24", "mock-passive");
+
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
     public async Task Dns_exclusion_is_applied_to_every_resolved_address()
     {
         var tenant = Guid.NewGuid();

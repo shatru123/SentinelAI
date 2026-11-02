@@ -7,6 +7,10 @@
 
     <main>
         <div class="top-row px-4">
+            <button type="button" class="profile-trigger" onclick="openModal('modal-profile')" aria-haspopup="dialog" aria-controls="modal-profile">
+                <img src="/images/shatrughna.jpg" alt="" class="profile-trigger-avatar" />
+                <span>Shatrughna Ambhore</span>
+            </button>
             <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
         </div>
 
@@ -14,6 +18,39 @@
             @Body
         </article>
     </main>
+</div>
+
+<div id="modal-profile" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title" aria-hidden="true" onclick="if (event.target === this) closeModal('modal-profile')">
+    <div class="profile-modal-content" onclick="event.stopPropagation()">
+        <button type="button" onclick="closeModal('modal-profile')" class="modal-close" title="Close" aria-label="Close profile">✕</button>
+
+        <div class="profile-modal-body">
+            <div class="profile-photo-wrap">
+                <div class="profile-photo-glow"></div>
+                <a href="/images/shatrughna.jpg" target="_blank" rel="noopener noreferrer" title="View the full original photo in a new tab">
+                    <img src="/images/shatrughna.jpg" alt="Shatrughna Ambhore" class="profile-photo" />
+                </a>
+                <a href="/images/shatrughna.jpg" target="_blank" rel="noopener noreferrer" class="profile-full-view">
+                    <span aria-hidden="true">🔍</span> Full view
+                </a>
+            </div>
+
+            <h2 id="profile-modal-title">Shatrughna Ambhore</h2>
+            <span class="profile-role">Lead Creator &amp; Software Engineer</span>
+            <p class="profile-description">Architected LearningOS to deliver a resilient, career-grade 100-day engineering and AI learning system.</p>
+
+            <div class="profile-links">
+                <a href="mailto:ambhoreshatrughna@gmail.com"><span aria-hidden="true">✉️</span> ambhoreshatrughna@gmail.com</a>
+                <a href="tel:+919604466334"><span aria-hidden="true">📞</span> +91 9604466334</a>
+                <a href="https://github.com/shatru123/Learning" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">🐙</span> GitHub Repository</a>
+            </div>
+
+            <div class="profile-modal-footer">
+                <a href="/images/shatrughna.jpg" target="_blank" rel="noopener noreferrer">🖼️ Open full photo ↗</a>
+                <button type="button" onclick="closeModal('modal-profile')" class="secondary-button">Close</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div id="blazor-error-ui" data-nosnippet>

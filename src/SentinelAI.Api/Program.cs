@@ -779,6 +779,14 @@ api.MapPost("/assets/{assetId:guid}/software-components", async (
         || !string.Equals(cpe!.Vendor, request.Vendor.Trim(), StringComparison.OrdinalIgnoreCase)
         || !string.Equals(cpe.Product, request.Product.Trim(), StringComparison.OrdinalIgnoreCase))
         return Results.BadRequest("CPE vendor and product must match the supplied product identity.");
+    if (!string.IsNullOrWhiteSpace(request.Version)
+        && cpe.Version is not ("*" or "-")
+        && !string.Equals(cpe.Version, request.Version.Trim(), StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest("The concrete CPE version must match the observed product version.");
+
+    var normalizedVersion = request.Version;
+    if (string.IsNullOrWhiteSpace(normalizedVersion) && cpe.Version is not ("*" or "-"))
+        normalizedVersion = cpe.Version;
 
     var hasInventoryEvidence = await db.AssetServices.AnyAsync(x =>
         x.Id == request.EvidenceId && x.AssetId == assetId && x.TenantId == principal.TenantId, cancellationToken);
@@ -791,7 +799,7 @@ api.MapPost("/assets/{assetId:guid}/software-components", async (
         return Results.BadRequest("Evidence must be an inventory service observation or an asset finding belonging to this tenant and asset.");
 
     var component = new SoftwareComponent(principal.TenantId, assetId, request.Vendor, request.Product,
-        request.Version, cpe.Value, request.IdentificationMethod, request.EvidenceId, request.Confidence);
+        normalizedVersion, cpe.Value, request.IdentificationMethod, request.EvidenceId, request.Confidence);
     db.SoftwareComponents.Add(component);
     db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "software-component.candidate.created",
         nameof(SoftwareComponent), component.Id, "An evidence-linked software identity candidate was recorded; it is not operator-confirmed."));
@@ -1190,6 +1198,11 @@ api.MapGet("/vulnerability-intelligence/report", async (
         rows.Add(string.Join(',', values.Select(CsvField)));
     }
 
+    var principal = ToPrincipal(context);
+    db.AuditEvents.Add(new AuditEvent(tenantId, principal.UserId, "vulnerability.report.exported",
+        "VulnerabilityIntelligenceReport", null, $"CSV exported with {matches.Count} tenant-scoped match records."));
+    await db.SaveChangesAsync(cancellationToken);
+
     var csv = "\uFEFF" + string.Join("\r\n", rows);
     return Results.File(
         System.Text.Encoding.UTF8.GetBytes(csv),
@@ -1210,7 +1223,14 @@ static PrincipalContext ToPrincipal(HttpContext context)
 
 static (int Page, int PageSize) NormalizePage(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize, 1, 100));
 
-static string CsvField(string? value) => "\"" + (value ?? string.Empty).Replace("\"", "\"\"") + "\"";
+static string CsvField(string? value)
+{
+    value ??= string.Empty;
+    var first = value.TrimStart().FirstOrDefault();
+    if (first is '=' or '+' or '-' or '@' or '\t' or '\r')
+        value = "'" + value;
+    return "\"" + value.Replace("\"", "\"\"") + "\"";
+}
 
 static string? FindFirstCriteriaId(ApplicabilityNode node) => node switch
 {

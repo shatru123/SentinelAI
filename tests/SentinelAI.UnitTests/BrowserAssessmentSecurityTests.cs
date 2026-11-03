@@ -304,6 +304,164 @@ public sealed class BrowserAssessmentSecurityTests
             new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token));
     }
 
+    [BrowserFact]
+    public async Task Scenario16_Playwright_route_websocket_handler_closes_live_websocket_connection()
+    {
+        var playwright = await Playwright.CreateAsync();
+        try
+        {
+            var launch = new BrowserTypeLaunchOptions { Headless = true };
+            var executable = PlaywrightScreenshotCaptureService.ResolveChromiumExecutable();
+            if (executable is not null) launch.ExecutablePath = executable;
+            var browser = await playwright.Chromium.LaunchAsync(launch);
+            try
+            {
+                var context = await browser.NewContextAsync();
+                try
+                {
+                    var closeTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    await context.RouteWebSocketAsync("**/ws", ws =>
+                    {
+                        PlaywrightScreenshotCaptureService.HandleWebSocketRoute(ws);
+                        closeTcs.TrySetResult(true);
+                    });
+
+                    var page = await context.NewPageAsync();
+                    await page.GotoAsync("data:text/html,<html><body>test</body></html>");
+                    await page.EvaluateAsync("() => { try { new WebSocket('wss://127.0.0.1:9999/ws'); } catch(e){} }");
+
+                    var completed = await Task.WhenAny(closeTcs.Task, Task.Delay(5000));
+                    Assert.Same(closeTcs.Task, completed);
+                    Assert.True(await closeTcs.Task);
+
+                    try { await page.CloseAsync(); } catch { }
+                }
+                finally
+                {
+                    try { await context.CloseAsync(); } catch { }
+                }
+            }
+            finally
+            {
+                try { await browser.CloseAsync(); } catch { }
+            }
+        }
+        finally
+        {
+            playwright.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_during_chromium_launch_drains_and_disposes_late_arriving_browser()
+    {
+        using var cts = new CancellationTokenSource();
+        var tcs = new TaskCompletionSource<IAsyncDisposable>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var mockBrowser = new TestDisposableResource();
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            PlaywrightScreenshotCaptureService.AwaitPlaywrightStepInternalAsync(tcs.Task, cts.Token));
+
+        tcs.SetResult(mockBrowser);
+
+        await mockBrowser.DisposedTcs.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(mockBrowser.IsDisposed);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_browser_context_creation_drains_and_disposes_late_arriving_context()
+    {
+        using var cts = new CancellationTokenSource();
+        var tcs = new TaskCompletionSource<IAsyncDisposable>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var mockContext = new TestDisposableResource();
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            PlaywrightScreenshotCaptureService.AwaitPlaywrightStepInternalAsync(tcs.Task, cts.Token));
+
+        tcs.SetResult(mockContext);
+
+        await mockContext.DisposedTcs.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(mockContext.IsDisposed);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_page_creation_drains_and_disposes_late_arriving_page()
+    {
+        using var cts = new CancellationTokenSource();
+        var tcs = new TaskCompletionSource<IAsyncDisposable>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var mockPage = new TestDisposableResource();
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            PlaywrightScreenshotCaptureService.AwaitPlaywrightStepInternalAsync(tcs.Task, cts.Token));
+
+        tcs.SetResult(mockPage);
+
+        await mockPage.DisposedTcs.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(mockPage.IsDisposed);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_navigation_safely_observes_late_completion_and_fault()
+    {
+        using var cts = new CancellationTokenSource();
+        var tcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            PlaywrightScreenshotCaptureService.AwaitPlaywrightStepInternalAsync(tcs.Task, cts.Token));
+
+        tcs.SetException(new PlaywrightException("Target page closed"));
+
+        await Task.Delay(50);
+        Assert.True(tcs.Task.IsFaulted);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_screenshot_generation_safely_drains_task()
+    {
+        using var cts = new CancellationTokenSource();
+        var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            PlaywrightScreenshotCaptureService.AwaitPlaywrightStepInternalAsync(tcs.Task, cts.Token));
+
+        tcs.SetResult([1, 2, 3]);
+
+        await Task.Delay(50);
+        Assert.True(tcs.Task.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Authorization_revocation_during_step_translates_to_revoked_exception()
+    {
+        using var cts = new CancellationTokenSource();
+        var tcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() =>
+            PlaywrightScreenshotCaptureService.AwaitPlaywrightStepInternalAsync(tcs.Task, cts.Token, isAuthorizationRevoked: () => true));
+    }
+
+    [Fact]
+    public async Task Lease_lost_during_step_translates_to_lease_lost_exception()
+    {
+        using var cts = new CancellationTokenSource();
+        var tcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<WebAssessmentLeaseLostException>(() =>
+            PlaywrightScreenshotCaptureService.AwaitPlaywrightStepInternalAsync(tcs.Task, cts.Token, isLeaseLost: () => true));
+    }
+
     private static BrowserAssessmentContext CreateHttpsContext(
         ControlledHttpsServer server,
         string path,
@@ -604,5 +762,24 @@ public sealed class BrowserAssessmentSecurityTests
         public Task FallbackAsync(RouteFallbackOptions? options = null) => Task.CompletedTask;
         public Task FulfillAsync(RouteFulfillOptions? options = null) => Task.CompletedTask;
         public Task<IAPIResponse> FetchAsync(RouteFetchOptions? options = null) => Task.FromResult<IAPIResponse>(null!);
+    }
+
+    private sealed class TestDisposableResource : IAsyncDisposable, IDisposable
+    {
+        public bool IsDisposed { get; private set; }
+        public TaskCompletionSource<bool> DisposedTcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask DisposeAsync()
+        {
+            IsDisposed = true;
+            DisposedTcs.TrySetResult(true);
+            return ValueTask.CompletedTask;
+        }
+
+        public void Dispose()
+        {
+            IsDisposed = true;
+            DisposedTcs.TrySetResult(true);
+        }
     }
 }

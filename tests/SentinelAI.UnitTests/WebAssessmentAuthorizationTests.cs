@@ -25,8 +25,8 @@ public sealed class WebAssessmentAuthorizationTests
 
         await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => engine.ExecuteAsync(
             fixture.Assessment, fixture.Job, fixture.Scope, fixture.Worker.Identity, fixture.Worker.Capabilities, [],
-            _ => Task.FromResult(true), CancellationToken.None,
-            _ => Task.FromResult<WorkerExecutionContext?>(Interlocked.Exchange(ref revoked, 1) == 0 ? fixture.WorkerContext : null)));
+            (activeDb, ct) => Task.FromResult(true), CancellationToken.None,
+            (activeDb, ct) => Task.FromResult<WorkerExecutionContext?>(Interlocked.Exchange(ref revoked, 1) == 0 ? fixture.WorkerContext : null)));
 
         Assert.False(report.Started.Task.IsCompleted);
         Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
@@ -42,8 +42,8 @@ public sealed class WebAssessmentAuthorizationTests
         var engine = fixture.CreateEngine(report);
         var task = engine.ExecuteAsync(
             fixture.Assessment, fixture.Job, fixture.Scope, fixture.Worker.Identity, fixture.Worker.Capabilities, [],
-            _ => Task.FromResult(true), CancellationToken.None,
-            _ => Task.FromResult<WorkerExecutionContext?>(fixture.WorkerContext));
+            (activeDb, ct) => Task.FromResult(true), CancellationToken.None,
+            (activeDb, ct) => Task.FromResult<WorkerExecutionContext?>(fixture.WorkerContext));
 
         await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         fixture.Worker.ProvisionByAdministrator("test", ["passive-mock"], []);
@@ -464,7 +464,7 @@ public sealed class WebAssessmentAuthorizationTests
         using var cts = new CancellationTokenSource();
         var report = new ControlledReportGenerator();
         var engine = fixture.CreateEngine(report);
-        var task = engine.ExecuteAsync(fixture.Assessment, fixture.Job, fixture.Scope, fixture.Worker.Identity, fixture.Worker.Capabilities, fixture.Worker.ApprovedPrivateNetworkRanges, _ => Task.FromResult(true), cts.Token, _ => Task.FromResult<WorkerExecutionContext?>(fixture.WorkerContext));
+        var task = engine.ExecuteAsync(fixture.Assessment, fixture.Job, fixture.Scope, fixture.Worker.Identity, fixture.Worker.Capabilities, fixture.Worker.ApprovedPrivateNetworkRanges, (activeDb, ct) => Task.FromResult(true), cts.Token, (activeDb, ct) => Task.FromResult<WorkerExecutionContext?>(fixture.WorkerContext));
 
         await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cts.Cancel();
@@ -777,11 +777,6 @@ public sealed class WebAssessmentAuthorizationTests
             IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<IAppDbContext, CancellationToken, Task<bool>> leaseCheck,
             CancellationToken cancellationToken, Func<IAppDbContext, CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
             => throw new WebAssessmentAuthorizationRevokedException();
-
-        public Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessment assessment, AgentJob job, TargetScope scope, string workerIdentity,
-            IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<CancellationToken, Task<bool>> leaseCheck,
-            CancellationToken cancellationToken, Func<CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
-            => throw new WebAssessmentAuthorizationRevokedException();
     }
 
     private sealed class ThrowingReportGenerator : IHtmlReportGenerator
@@ -811,13 +806,6 @@ public sealed class WebAssessmentAuthorizationTests
             if (OnAfterExecute is not null) await OnAfterExecute();
             return new WebAssessmentExecutionResult(published, 1);
         }
-
-        public Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessment assessment, AgentJob job, TargetScope scope, string workerIdentity,
-            IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<CancellationToken, Task<bool>> leaseCheck,
-            CancellationToken cancellationToken, Func<CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
-            => ExecuteAsync(assessment, job, scope, workerIdentity, workerCapabilities, approvedPrivateNetworkRanges,
-                (_, ct) => leaseCheck(ct), cancellationToken,
-                refreshAuthorization is null ? null : (_, ct) => refreshAuthorization(ct));
     }
 
     private sealed class ControlledReportGenerator : IHtmlReportGenerator

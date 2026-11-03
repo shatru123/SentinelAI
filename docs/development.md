@@ -25,9 +25,38 @@ dotnet test SentinelAI.slnx
 docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
 ```
 
-For local launch profiles, run the API at `http://localhost:5109` and the Web app at `http://localhost:5056`. The Development Web configuration points to `http://localhost:5109`; do not change it to the Compose host port. Compose keeps its separate override: the browser-facing API is `http://127.0.0.1:5080`, the Web app is `http://127.0.0.1:5081`, and the Web container calls the API at `http://api:8080` over the internal network. If Assets or Findings show an unavailable-API message, confirm the selected launch profile, API health endpoint, sign in at `/auth/login`, and restart the Web app after configuration changes.
+### Run the in-process local development profile
 
-To exercise the broker path, start Compose and inspect `docker compose ... logs worker api`; the worker should register with the control plane and the RabbitMQ queues should exist. Grafana is at `http://127.0.0.1:3000` with Prometheus and Tempo provisioned from `deploy/observability`; local credentials default to `admin` / `admin` and can be changed with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`.
+Run the API and Web app in two separate terminals; keep the API terminal running while testing the dashboard.
+
+Terminal 1:
+
+```bash
+dotnet run --project src/SentinelAI.Api --launch-profile http
+```
+
+Terminal 2:
+
+```bash
+dotnet run --project src/SentinelAI.Web --launch-profile http
+```
+
+Open `http://localhost:5056/auth/login` once, then continue to `http://localhost:5056/`. The API listens on `http://localhost:5109`. Development API settings use EF Core InMemory, an InMemory queue, and `Worker:RunInProcess=true`; scan jobs are consumed inside the API process. No separate Worker project is required in this mode. The in-memory database is reset whenever the API process restarts.
+
+### Run the full Docker Compose profile
+
+```bash
+cp .env.example .env
+docker compose --env-file .env -f deploy/docker/docker-compose.yml up --build
+```
+
+Open `http://127.0.0.1:5081/auth/login`, then `http://127.0.0.1:5081/`. The local Compose dashboard defaults to the Development Admin role so the first external worker can be provisioned from Setup or Workers. On the Setup page, provision the configured `compose-worker` identity; the separate worker container will then register and begin sending heartbeats. Do not use this Development role configuration in a shared or production environment. Set `DASHBOARD_ROLE=SecurityAnalyst` in `.env` to test a restricted analyst view after the worker has been provisioned.
+
+The browser-facing API is `http://127.0.0.1:5080`; the Web container calls it internally at `http://api:8080`. The Development Web launch profile uses `http://localhost:5109`; do not change it to the Compose host port.
+
+To exercise the broker path, inspect `docker compose --env-file .env -f deploy/docker/docker-compose.yml logs -f api worker`. The worker should log a successful registration after its identity is provisioned. Grafana is at `http://127.0.0.1:3000` with Prometheus and Tempo provisioned from `deploy/observability`; local credentials default to `admin` / `admin` and can be changed with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`.
+
+If an API-backed page shows an unavailable-API error, check `http://localhost:5109/health` (local profile) or `http://127.0.0.1:5080/health` (Compose), confirm the Web app's configured API base URL, sign in at `/auth/login`, and restart the Web app after configuration changes.
 
 Phase 1.2.2 integration tests require reachable PostgreSQL and RabbitMQ. Compose publishes them on `127.0.0.1:5432` and `127.0.0.1:5672`; CI provisions both services. The PostgreSQL tests verify migration state, legacy Running-job recovery, persisted heartbeat capacity, concurrent recovery, and database concurrency protection for worker leases. RabbitMQ tests verify manual acknowledgement/retry and cancellation isolation for identical worker identities in different tenants.
 

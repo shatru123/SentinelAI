@@ -26,10 +26,11 @@ public sealed class DashboardComponentTests
             [nameof(MetricCard.StatusClass)] = "critical"
         });
 
-        var component = await renderer.Dispatcher.InvokeAsync(
-            () => renderer.RenderComponentAsync<MetricCard>(parameters));
-
-        var html = component.ToHtmlString();
+        var html = await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            var component = await renderer.RenderComponentAsync<MetricCard>(parameters);
+            return component.ToHtmlString();
+        });
         Assert.Contains("metric-card accent-red", html);
         Assert.Contains("Critical Findings", html);
         Assert.Contains(">3<", html);
@@ -54,10 +55,11 @@ public sealed class DashboardComponentTests
             [nameof(EmptyState.ActionUrl)] = "/web-assessments"
         });
 
-        var component = await renderer.Dispatcher.InvokeAsync(
-            () => renderer.RenderComponentAsync<EmptyState>(parameters));
-
-        var html = component.ToHtmlString();
+        var html = await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            var component = await renderer.RenderComponentAsync<EmptyState>(parameters);
+            return component.ToHtmlString();
+        });
         Assert.Contains("href=\"/web-assessments\"", html);
         Assert.Contains("Launch Assessment", html);
     }

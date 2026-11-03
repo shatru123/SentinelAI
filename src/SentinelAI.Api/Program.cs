@@ -985,6 +985,8 @@ api.MapPost("/vulnerability-intelligence/matches/{matchId:guid}/lifecycle", asyn
     var match = await db.AssetVulnerabilityMatches.SingleOrDefaultAsync(
         x => x.Id == matchId && x.TenantId == principal.TenantId, cancellationToken);
     if (match is null) return Results.NotFound();
+    if (match.Status != VulnerabilityMatchStatus.Confirmed)
+        return Results.BadRequest("Lifecycle transitions are available only for confirmed asset/CVE matches.");
 
     var fromStatus = match.LifecycleStatus;
     try

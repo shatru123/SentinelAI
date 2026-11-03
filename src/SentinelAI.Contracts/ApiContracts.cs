@@ -224,3 +224,12 @@ public sealed record VulnerabilityCatalogResponse(
     IReadOnlyCollection<VulnerabilityCvssResponse> Cvss,
     VulnerabilityEpssResponse? Epss,
     VulnerabilityKevResponse? Kev);
+
+public sealed record VulnerabilityCatalogListItem(
+    string CveId,
+    string Status,
+    DateTimeOffset PublishedAt,
+    DateTimeOffset LastModifiedAt,
+    string Description);
+
+public sealed record VulnerabilitySyncResponse(int RecordsProcessed);

@@ -168,6 +168,49 @@ public sealed class PostgresReliabilityTests
     }
 
     [Fact]
+    public async Task Postgres_web_endpoint_retry_is_unique_at_the_database_boundary()
+    {
+        var connection = PostgreSqlConnection();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+
+        var tenant = new Tenant($"web-endpoint-{Guid.NewGuid():N}");
+        var user = new User(tenant.Id, $"web-endpoint-{Guid.NewGuid():N}", "Integration", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "web-endpoint-scope", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://allowed.test/app")], [], ["web-assessment-passive"], 10, 120, "integration", false);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, "web-assessment-passive");
+        var execution = new AgentExecution(job.Id, "AuthorizedWebAssessmentAgent");
+        var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, "https://allowed.test/app", "web-assessment-passive", WebHostingMode.Public);
+        db.AddRange(tenant, user, scope, job, execution, assessment);
+        await db.SaveChangesAsync();
+
+        try
+        {
+            var endpoint = new WebAssessmentEndpoint(tenant.Id, assessment.Id, "https://allowed.test/app", "GET", 0, "page");
+            db.WebAssessmentEndpoints.Add(endpoint);
+            await db.SaveChangesAsync();
+
+            await using var retryDb = new AppDbContext(options);
+            retryDb.WebAssessmentEndpoints.Add(new WebAssessmentEndpoint(tenant.Id, assessment.Id, endpoint.Url, "GET", 0, "page"));
+            await Assert.ThrowsAsync<DbUpdateException>(() => retryDb.SaveChangesAsync());
+            retryDb.ChangeTracker.Clear();
+
+            Assert.Equal(1, await retryDb.WebAssessmentEndpoints.CountAsync(x => x.TenantId == tenant.Id && x.AssessmentId == assessment.Id && x.Url == endpoint.Url));
+        }
+        finally
+        {
+            await db.WebAssessmentEndpoints.Where(x => x.AssessmentId == assessment.Id).ExecuteDeleteAsync();
+            await db.WebAssessments.Where(x => x.Id == assessment.Id).ExecuteDeleteAsync();
+            await db.AgentExecutions.Where(x => x.AgentJobId == job.Id).ExecuteDeleteAsync();
+            await db.AgentJobs.Where(x => x.Id == job.Id).ExecuteDeleteAsync();
+            await db.TargetScopes.Where(x => x.Id == scope.Id).ExecuteDeleteAsync();
+            await db.Users.Where(x => x.Id == user.Id).ExecuteDeleteAsync();
+            await db.Tenants.Where(x => x.Id == tenant.Id).ExecuteDeleteAsync();
+        }
+    }
+
+    [Fact]
     public async Task Postgres_backfills_reachability_history_without_overwriting_observation_or_existing_values()
     {
         var connection = PostgreSqlConnection();

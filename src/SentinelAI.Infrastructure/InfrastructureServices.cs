@@ -317,6 +317,19 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             await inventoryTransaction.CommitAsync(timeout.Token);
             return ScanExecutionOutcome.Completed;
         }
+        catch (WebAssessmentAuthorizationRevokedException)
+        {
+            await db.Entry(job).ReloadAsync(CancellationToken.None);
+            await db.Entry(execution).ReloadAsync(CancellationToken.None);
+            var webAssessment = await db.WebAssessments.SingleOrDefaultAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, CancellationToken.None);
+            if (job.Status is not (ScanJobStatus.Completed or ScanJobStatus.Failed)) job.Cancel();
+            execution.Cancel();
+            webAssessment?.RevokeAuthorization();
+            db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.authorization-revoked", nameof(AgentJob), job.Id,
+                "Worker authorization was revoked during execution; the job was cancelled without publishing results."));
+            await db.SaveChangesAsync(CancellationToken.None);
+            return ScanExecutionOutcome.Cancelled;
+        }
         catch (WebAssessmentLeaseLostException)
         {
             await db.Entry(job).ReloadAsync(CancellationToken.None);

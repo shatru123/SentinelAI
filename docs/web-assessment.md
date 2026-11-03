@@ -56,3 +56,9 @@ The browser proxy treats HTTPS `CONNECT` as a host, effective-port and pinned-DN
 Private worker authorization is read from the control-plane database before each web operation and browser route. Capability removal, private-range changes, worker reassignment, lease loss and scope expiry stop subsequent requests and close browser resources. Endpoint persistence is retry-idempotent across lease takeover, and request budgets use a synchronized sliding one-minute window plus a separate total-attempt budget.
 
 Built-in screenshot redaction selectors are always applied. Configured selectors are additive and cover sensitive input names and explicitly marked DOM elements. The implementation and tests cover the supported passive and bounded safe-active checks only; penetration testing, credential attacks, destructive actions, unrestricted authorization testing and active network discovery remain unsupported or unverified.
+
+## Phase 3.1.4 final regression hardening
+
+Browser navigation performs a bounded, read-only redirect preflight with the same live worker authorization, lease check, DNS-pinned connection and path-boundary validation used by execution. The browser is opened only at the validated final URL, preventing a redirect inside an established HTTPS CONNECT tunnel from bypassing path authorization. Authorization revocation cancels the linked session, closes the page/context and stops the policy proxy; it is persisted and audited separately from ordinary cancellation and lease loss.
+
+Request budgets use an injectable clock in tests and keep rolling-window admission, total accepted requests and attempted requests independent. Waiting admission observes cancellation and lease loss. Genuine HTTPS browser fixtures use an ephemeral certificate only under the explicit browser-test environment flag; production contexts keep normal certificate validation enabled.

@@ -889,6 +889,171 @@ api.MapGet("/vulnerability-intelligence/matches", async (
     return Results.Ok(matches);
 }).RequireAuthorization("Reader");
 
+
+
+api.MapPost("/vulnerability-intelligence/matches/{matchId:guid}/triage", async (
+    HttpContext context,
+    Guid matchId,
+    AssessVulnerabilityRiskRequest request,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var match = await db.AssetVulnerabilityMatches.AsNoTracking().SingleOrDefaultAsync(
+        x => x.Id == matchId && x.TenantId == principal.TenantId, cancellationToken);
+    if (match is null) return Results.NotFound();
+    if (match.Status != VulnerabilityMatchStatus.Confirmed)
+        return Results.BadRequest("Risk triage is available only after product identity and CVE applicability are confirmed.");
+
+    var cvss = await db.VulnerabilityCvssMetrics.AsNoTracking()
+        .Where(x => x.CveId == match.CveId)
+        .OrderByDescending(x => x.Version == "4.0")
+        .ThenByDescending(x => x.ObservedAt)
+        .FirstOrDefaultAsync(cancellationToken);
+    var epss = await db.VulnerabilityEpssScores.AsNoTracking()
+        .Where(x => x.CveId == match.CveId)
+        .OrderByDescending(x => x.AsOfDate)
+        .FirstOrDefaultAsync(cancellationToken);
+    var kev = await db.VulnerabilityKevEntries.AsNoTracking()
+        .SingleOrDefaultAsync(x => x.CveId == match.CveId && x.IsListed, cancellationToken);
+
+    var recommendation = VulnerabilityTriage.Recommend(new TriageSignals(
+        kev is not null,
+        cvss?.BaseScore,
+        epss?.Score,
+        request.IsInternetFacing,
+        request.IsBusinessCritical));
+    var priority = Enum.Parse<VulnerabilityRiskPriority>(recommendation.Priority.ToString(), ignoreCase: false);
+
+    await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+    var assessment = new VulnerabilityTriageAssessment(
+        principal.TenantId, match.Id, principal.UserId, priority,
+        cvss?.BaseScore, cvss?.Version, cvss?.Vector, cvss?.Source, cvss?.ObservedAt,
+        epss?.Score, epss?.Percentile, epss?.AsOfDate,
+        kev is not null, kev?.CatalogVersion, kev?.CatalogReleasedAt,
+        request.IsInternetFacing, request.IsBusinessCritical,
+        JsonSerializer.Serialize(recommendation.Reasons), recommendation.Disclaimer);
+    db.VulnerabilityTriageAssessments.Add(assessment);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "vulnerability.match.triaged",
+        nameof(VulnerabilityTriageAssessment), assessment.Id,
+        $"CVE {match.CveId} received {priority} triage guidance; source metrics and environmental context were preserved separately."));
+    await db.SaveChangesAsync(cancellationToken);
+    await transaction.CommitAsync(cancellationToken);
+
+    return Results.Ok(new VulnerabilityTriageAssessmentResponse(
+        assessment.Id, assessment.MatchId, assessment.Priority,
+        assessment.CvssBaseScore, assessment.CvssVersion, assessment.CvssVector, assessment.CvssObservedAt,
+        assessment.EpssScore, assessment.EpssPercentile, assessment.EpssAsOfDate,
+        assessment.IsKnownExploited, assessment.KevCatalogVersion, assessment.KevCatalogReleasedAt,
+        assessment.IsInternetFacing, assessment.IsBusinessCritical,
+        recommendation.Reasons, assessment.Disclaimer, assessment.AssessedAt));
+}).RequireAuthorization("Operator");
+
+api.MapGet("/vulnerability-intelligence/matches/{matchId:guid}/triage", async (
+    HttpContext context,
+    Guid matchId,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var matchExists = await db.AssetVulnerabilityMatches.AnyAsync(
+        x => x.Id == matchId && x.TenantId == tenantId, cancellationToken);
+    if (!matchExists) return Results.NotFound();
+    var assessment = await db.VulnerabilityTriageAssessments.AsNoTracking()
+        .Where(x => x.MatchId == matchId && x.TenantId == tenantId)
+        .OrderByDescending(x => x.AssessedAt)
+        .FirstOrDefaultAsync(cancellationToken);
+    if (assessment is null) return Results.NotFound();
+    return Results.Ok(new VulnerabilityTriageAssessmentResponse(
+        assessment.Id, assessment.MatchId, assessment.Priority,
+        assessment.CvssBaseScore, assessment.CvssVersion, assessment.CvssVector, assessment.CvssObservedAt,
+        assessment.EpssScore, assessment.EpssPercentile, assessment.EpssAsOfDate,
+        assessment.IsKnownExploited, assessment.KevCatalogVersion, assessment.KevCatalogReleasedAt,
+        assessment.IsInternetFacing, assessment.IsBusinessCritical,
+        JsonSerializer.Deserialize<string[]>(assessment.ReasonsJson) ?? [],
+        assessment.Disclaimer, assessment.AssessedAt));
+}).RequireAuthorization("Reader");
+
+api.MapPost("/vulnerability-intelligence/matches/{matchId:guid}/lifecycle", async (
+    HttpContext context,
+    Guid matchId,
+    TransitionVulnerabilityMatchRequest request,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var match = await db.AssetVulnerabilityMatches.SingleOrDefaultAsync(
+        x => x.Id == matchId && x.TenantId == principal.TenantId, cancellationToken);
+    if (match is null) return Results.NotFound();
+
+    var fromStatus = match.LifecycleStatus;
+    try
+    {
+        match.TransitionLifecycle(request.Status, request.Reason);
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+
+    await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+    var transition = new VulnerabilityMatchTransition(principal.TenantId, match.Id, principal.UserId,
+        fromStatus, request.Status, request.Reason);
+    db.VulnerabilityMatchTransitions.Add(transition);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "vulnerability.match.lifecycle.changed",
+        nameof(AssetVulnerabilityMatch), match.Id, $"Lifecycle changed from {fromStatus} to {request.Status}."));
+    await db.SaveChangesAsync(cancellationToken);
+    await transaction.CommitAsync(cancellationToken);
+
+    return Results.Ok(new VulnerabilityMatchTransitionResponse(
+        transition.Id, transition.MatchId, transition.FromStatus, transition.ToStatus,
+        transition.ActorId, transition.Reason, transition.OccurredAt));
+}).RequireAuthorization("Operator");
+
+api.MapGet("/vulnerability-intelligence/matches/{matchId:guid}/history", async (
+    HttpContext context,
+    Guid matchId,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var matchExists = await db.AssetVulnerabilityMatches.AnyAsync(
+        x => x.Id == matchId && x.TenantId == tenantId, cancellationToken);
+    if (!matchExists) return Results.NotFound();
+
+    var transitions = await db.VulnerabilityMatchTransitions.AsNoTracking()
+        .Where(x => x.MatchId == matchId && x.TenantId == tenantId)
+        .OrderByDescending(x => x.OccurredAt)
+        .Select(x => new VulnerabilityMatchTransitionResponse(
+            x.Id, x.MatchId, x.FromStatus, x.ToStatus, x.ActorId, x.Reason, x.OccurredAt))
+        .ToListAsync(cancellationToken);
+    var assessments = await db.VulnerabilityTriageAssessments.AsNoTracking()
+        .Where(x => x.MatchId == matchId && x.TenantId == tenantId)
+        .OrderByDescending(x => x.AssessedAt)
+        .Select(x => new
+        {
+            x.Id, x.Priority, x.CvssBaseScore, x.CvssVersion, x.EpssScore, x.EpssPercentile,
+            x.EpssAsOfDate, x.IsKnownExploited, x.IsInternetFacing, x.IsBusinessCritical,
+            x.ReasonsJson, x.Disclaimer, x.AssessedAt
+        })
+        .ToListAsync(cancellationToken);
+    return Results.Ok(new
+    {
+        Transitions = transitions,
+        TriageAssessments = assessments.Select(x => new
+        {
+            x.Id, x.Priority, x.CvssBaseScore, x.CvssVersion, x.EpssScore, x.EpssPercentile,
+            x.EpssAsOfDate, x.IsKnownExploited, x.IsInternetFacing, x.IsBusinessCritical,
+            Reasons = JsonSerializer.Deserialize<string[]>(x.ReasonsJson) ?? [],
+            x.Disclaimer, x.AssessedAt
+        })
+    });
+}).RequireAuthorization("Reader");
+
 app.Run();
 
 static PrincipalContext ToPrincipal(HttpContext context)

@@ -13,11 +13,11 @@ SentinelAI is designed to discover and inventory explicitly authorized assets, e
 | Repository foundation and architecture | Complete |
 | Phase 1 solution foundation | Complete |
 | Phase 1.1 broker-backed worker and security remediation | Complete |
-| Authorized network inventory (passive foundation) | In progress |
-| Authorized web application assessment (Phase 3.1) | Implemented with bounded coverage |
-| Vulnerability intelligence / CVE correlation | Planned separately |
-| OpenAI, Claude and Ollama providers | Planned |
-| SOC dashboard and monitoring | Phase 3.1.6 MVP merged; UI/runtime acceptance fixes in progress |
+| Authorized network inventory (passive foundation) | Complete |
+| Authorized web application assessment (Phase 3.1) | Complete with bounded coverage and security hardening |
+| Vulnerability intelligence / CVE correlation (Phase 3) | In progress — design and acceptance criteria |
+| OpenAI, Claude and Ollama providers (Phase 4) | Planned |
+| SOC dashboard and monitoring | Phase 3.1 MVP and runtime acceptance fixes merged |
 | Cloud/local deployment | Docker Compose development stack available; production deployment hardening remains |
 
 ## Architecture at a glance

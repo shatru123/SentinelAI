@@ -34,6 +34,8 @@ Validate IPv4 and IPv6, private/link-local/multicast/reserved ranges, mapped add
 
 Run workers non-root with read-only filesystems where possible, constrained egress, CPU/memory/process limits, bounded concurrency, timeouts, cancellation and an operator-controlled global stop switch. Worker credentials are mapped to worker identities by the API; `X-Worker-Id` is only accepted when it matches the authenticated credential binding. Shared worker tokens are restricted to explicit local-development compatibility.
 
+Browser assessments execute with JavaScript disabled and strict policy proxying. WebSocket connections are terminated at both the loopback proxy boundary (rejecting HTTP Upgrade handshakes) and the browser route boundary (closing intercepted attempts with RFC 6455 policy code 1008 via tracked, observed task owners). Chromium lifecycle steps drain late-arriving resources on cancellation, preventing persistent processes or orphaned tasks.
+
 ## Messaging and tenant isolation
 
 Each tenant has a separate job queue and each tenant/worker pair has a separate cancellation queue. RabbitMQ messages are durable and persistent, are consumed with manual acknowledgements, and are published on confirm-enabled channels. Cancellation payloads must match both the expected tenant and exact worker identity before acknowledgement. Retry publication completes before the original delivery is acknowledged; bounded failures are dead-lettered. The worker rejects a tenant mismatch or an unassigned job without acknowledging it.

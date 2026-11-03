@@ -212,6 +212,7 @@ public sealed class BrowserAssessmentSecurityTests
         PlaywrightScreenshotCaptureService.HandleWebSocketRoute(testWsRoute);
         Assert.True(testWsRoute.Closed);
         Assert.False(testWsRoute.ConnectedToServerCalled);
+        Assert.Equal(1008, testWsRoute.CloseOptions?.Code);
 
         // 2. Playwright capture with attemptWebSockets in HTML page succeeds while WebSockets and JS remain disabled in production
         var screenshot = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
@@ -307,32 +308,99 @@ public sealed class BrowserAssessmentSecurityTests
     [BrowserFact]
     public async Task Scenario16_Playwright_route_websocket_handler_closes_live_websocket_connection()
     {
+        await using var server = new ControlledHttpsServer(attemptWebSockets: true);
         var playwright = await Playwright.CreateAsync();
         try
         {
-            var launch = new BrowserTypeLaunchOptions { Headless = true };
+            var launch = new BrowserTypeLaunchOptions
+            {
+                Headless = true,
+                Args = ["--ignore-certificate-errors", $"--host-resolver-rules=MAP allowed.test {server.Address}"]
+            };
             var executable = PlaywrightScreenshotCaptureService.ResolveChromiumExecutable();
             if (executable is not null) launch.ExecutablePath = executable;
             var browser = await playwright.Chromium.LaunchAsync(launch);
             try
             {
-                var context = await browser.NewContextAsync();
+                var context = await browser.NewContextAsync(new BrowserNewContextOptions
+                {
+                    IgnoreHTTPSErrors = true,
+                    JavaScriptEnabled = true
+                });
                 try
                 {
-                    var closeTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                    await context.RouteWebSocketAsync("**/ws", ws =>
+                    await using var tracker = new WebSocketRouteTracker();
+                    var handlerInvoked = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var closeCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                    tracker.TestOnlyOnRouteClosed = (ws, closeTask) =>
                     {
-                        PlaywrightScreenshotCaptureService.HandleWebSocketRoute(ws);
-                        closeTcs.TrySetResult(true);
+                        if (closeTask.IsCompletedSuccessfully)
+                            closeCompleted.TrySetResult(true);
+                        else
+                            closeCompleted.TrySetException(closeTask.Exception?.GetBaseException() ?? new Exception("Close failed"));
+                    };
+
+                    await context.RouteWebSocketAsync("**/*", ws =>
+                    {
+                        handlerInvoked.TrySetResult(ws.Url);
+                        tracker.HandleRoute(ws);
                     });
 
                     var page = await context.NewPageAsync();
-                    await page.GotoAsync("data:text/html,<html><body>test</body></html>");
-                    await page.EvaluateAsync("() => { try { new WebSocket('wss://127.0.0.1:9999/ws'); } catch(e){} }");
+                    await page.GotoAsync($"https://allowed.test:{server.Port}/app");
 
-                    var completed = await Task.WhenAny(closeTcs.Task, Task.Delay(5000));
-                    Assert.Same(closeTcs.Task, completed);
-                    Assert.True(await closeTcs.Task);
+                    // Real browser-level WSS connection attempt with observable state hooks
+                    await page.EvaluateAsync($$"""
+                        () => {
+                            window.__wsOpened = false;
+                            window.__wsClosed = false;
+                            window.__wsCloseCode = null;
+                            window.__wsCloseReason = null;
+                            window.__wsError = false;
+
+                            try {
+                                const ws = new WebSocket('wss://allowed.test:{{server.Port}}/ws');
+                                ws.onopen = () => { window.__wsOpened = true; };
+                                ws.onclose = (e) => {
+                                    window.__wsClosed = true;
+                                    window.__wsCloseCode = e.code;
+                                    window.__wsCloseReason = e.reason;
+                                };
+                                ws.onerror = () => { window.__wsError = true; };
+                            } catch (e) {
+                                window.__wsError = true;
+                            }
+                        }
+                    """);
+
+                    // 1. Verify Handler Invocation distinction
+                    var interceptedUrl = await handlerInvoked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    Assert.Contains("/ws", interceptedUrl);
+                    Assert.True(tracker.InterceptedCount >= 1);
+
+                    // 2. Verify Close Operation Completion distinction
+                    var closeSucceeded = await closeCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    Assert.True(closeSucceeded, "WebSocketRouteTracker must complete the CloseAsync task.");
+                    await tracker.DrainPendingClosuresAsync(TimeSpan.FromSeconds(2));
+                    Assert.True(tracker.ClosedCount >= 1);
+                    Assert.Equal(tracker.InterceptedCount, tracker.ClosedCount);
+                    Assert.Equal(0, tracker.FailedCount);
+
+                    // 3. Verify Browser-Observed Closure distinction
+                    await page.WaitForFunctionAsync("() => window.__wsClosed === true || window.__wsError === true", null, new PageWaitForFunctionOptions { Timeout = 5000 });
+                    var wsOpened = await page.EvaluateAsync<bool>("() => window.__wsOpened");
+                    var wsClosed = await page.EvaluateAsync<bool>("() => window.__wsClosed");
+                    var closeCode = await page.EvaluateAsync<int?>("() => window.__wsCloseCode");
+                    var closeReason = await page.EvaluateAsync<string?>("() => window.__wsCloseReason");
+
+                    Assert.False(wsOpened, "WebSocket connection must never transition to open state.");
+                    Assert.True(wsClosed, "Browser must observe the close event fired by route closure.");
+                    Assert.Equal(1008, closeCode);
+                    Assert.Contains("SentinelAI", closeReason);
+
+                    // 4. Verify server isolation: fixture server NEVER received any WebSocket request
+                    Assert.DoesNotContain("/ws", server.RequestedPaths);
 
                     try { await page.CloseAsync(); } catch { }
                 }
@@ -350,6 +418,96 @@ public sealed class BrowserAssessmentSecurityTests
         {
             playwright.Dispose();
         }
+    }
+
+    [Fact]
+    public void Scenario17_WebSocket_tracker_handles_synchronous_close_exception_safely()
+    {
+        var tracker = new WebSocketRouteTracker();
+        var testWsRoute = new TestWebSocketRoute
+        {
+            OnCloseAsync = _ => throw new InvalidOperationException("Simulated synchronous close failure.")
+        };
+
+        tracker.HandleRoute(testWsRoute);
+
+        Assert.Equal(1, tracker.InterceptedCount);
+        Assert.Equal(1, tracker.FailedCount);
+        Assert.Equal(0, tracker.ClosedCount);
+        Assert.Equal(0, tracker.ActivePendingCount);
+    }
+
+    [Fact]
+    public async Task Scenario18_WebSocket_tracker_handles_asynchronous_close_fault_without_unobserved_exception()
+    {
+        var tracker = new WebSocketRouteTracker();
+        var failureObserved = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        tracker.TestOnlyOnRouteClosed = (ws, task) =>
+        {
+            if (task.IsFaulted) failureObserved.TrySetResult(true);
+        };
+
+        var testWsRoute = new TestWebSocketRoute
+        {
+            OnCloseAsync = _ => Task.FromException(new SocketException((int)SocketError.ConnectionReset))
+        };
+
+        tracker.HandleRoute(testWsRoute);
+
+        var faulted = await Task.WhenAny(failureObserved.Task, Task.Delay(2000));
+        Assert.Same(failureObserved.Task, faulted);
+        Assert.True(await failureObserved.Task);
+
+        Assert.Equal(1, tracker.InterceptedCount);
+        Assert.Equal(1, tracker.FailedCount);
+        Assert.Equal(0, tracker.ClosedCount);
+        Assert.Equal(0, tracker.ActivePendingCount);
+    }
+
+    [Fact]
+    public async Task Scenario19_WebSocket_tracker_drain_respects_bounded_timeout_when_close_is_slow()
+    {
+        await using var tracker = new WebSocketRouteTracker();
+        var neverEndingTcs = new TaskCompletionSource<bool>();
+
+        var testWsRoute = new TestWebSocketRoute
+        {
+            OnCloseAsync = _ => neverEndingTcs.Task
+        };
+
+        tracker.HandleRoute(testWsRoute);
+
+        Assert.Equal(1, tracker.InterceptedCount);
+        Assert.Equal(1, tracker.ActivePendingCount);
+
+        // Draining with a short timeout must complete promptly without hanging
+        var drainTask = tracker.DrainPendingClosuresAsync(TimeSpan.FromMilliseconds(50));
+        var completed = await Task.WhenAny(drainTask, Task.Delay(1000));
+        Assert.Same(drainTask, completed);
+        await drainTask;
+
+        neverEndingTcs.TrySetResult(true);
+    }
+
+    [Fact]
+    public async Task Scenario20_WebSocket_tracker_dispose_cancels_and_drains_safely()
+    {
+        var tracker = new WebSocketRouteTracker();
+        var fastTcs = new TaskCompletionSource<bool>();
+
+        var testWsRoute = new TestWebSocketRoute
+        {
+            OnCloseAsync = _ => fastTcs.Task
+        };
+
+        tracker.HandleRoute(testWsRoute);
+        Assert.Equal(1, tracker.ActivePendingCount);
+
+        fastTcs.TrySetResult(true);
+        await tracker.DisposeAsync();
+
+        Assert.Equal(0, tracker.ActivePendingCount);
     }
 
     [Fact]
@@ -713,10 +871,14 @@ public sealed class BrowserAssessmentSecurityTests
     {
         public bool Closed { get; private set; }
         public bool ConnectedToServerCalled { get; private set; }
+        public WebSocketRouteCloseOptions? CloseOptions { get; private set; }
+        public Func<WebSocketRouteCloseOptions?, Task>? OnCloseAsync { get; set; }
         public string Url => "wss://allowed.test/ws";
         public Task CloseAsync(WebSocketRouteCloseOptions? options = null)
         {
             Closed = true;
+            CloseOptions = options;
+            if (OnCloseAsync is not null) return OnCloseAsync(options);
             return Task.CompletedTask;
         }
         public IWebSocketRoute ConnectToServer()

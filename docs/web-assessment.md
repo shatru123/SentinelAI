@@ -62,3 +62,18 @@ Built-in screenshot redaction selectors are always applied. Configured selectors
 Browser navigation performs a bounded, read-only redirect preflight with the same live worker authorization, lease check, DNS-pinned connection and path-boundary validation used by execution. The browser is opened only at the validated final URL, preventing a redirect inside an established HTTPS CONNECT tunnel from bypassing path authorization. Authorization revocation cancels the linked session, closes the page/context and stops the policy proxy; it is persisted and audited separately from ordinary cancellation and lease loss.
 
 Request budgets use an injectable clock in tests and keep rolling-window admission, total accepted requests and attempted requests independent. Waiting admission observes cancellation and lease loss. Genuine HTTPS browser fixtures use an ephemeral certificate only under the explicit browser-test environment flag; production contexts keep normal certificate validation enabled.
+
+## Phase 3.1.5 WebSocket security assurance and production readiness
+
+WebSocket attempts during browser assessment execution are intercepted and terminated at two independent security boundaries:
+
+1. **Proxy boundary**: `BrowserPolicyProxy` inspects HTTP request headers before upstream forwarding. Any request attempting an HTTP Upgrade handshake (`Upgrade: websocket`, `Connection: Upgrade`, or `Sec-WebSocket-*` headers) is terminated immediately at the TCP boundary, preventing the server from receiving the connection.
+2. **Browser route boundary**: Playwright's `RouteWebSocketAsync` intercepts all browser-level WebSocket connection attempts via `WebSocketRouteTracker`. Rather than relying on unobserved fire-and-forget closures, the tracker maintains deterministic task ownership, issues an RFC 6455 policy violation close frame (status code `1008`, reason `"WebSocket connections are disabled by SentinelAI security policy."`), and attaches continuations that observe task completion and log diagnostic metrics.
+
+Browser shutdown and WebSocket closure safely overlap: during session termination, authorization revocation, or lease loss, `DrainPendingClosuresAsync` awaits all in-flight closure operations with a bounded 2-second timeout, ensuring clean closure without blocking shutdown or masking security exceptions.
+
+Playwright operation ownership guarantees that Chromium launch, context creation, page creation, navigation, and screenshot operations drain safely when cancellation wins a race. Any late-arriving `IBrowser`, `IBrowserContext`, or `IPage` resource is immediately disposed by `DisposeResourceAsync`, preventing process or resource leaks.
+
+Structured operational diagnostics log assessment startup, WebSocket interception and closure, browser session lifecycle, authorization checks, report staging, and publication without capturing credentials, authorization tokens, session cookies, or sensitive page selectors.
+
+Testing requirements: Genuine browser security tests execute against an ephemeral HTTPS/WSS fixture server with `SENTINELAI_RUN_BROWSER_TESTS=true`. The test suite verifies handler invocation, close task completion, browser-observed closure with status code 1008, and zero server-side WebSocket requests. All 199 security, architecture, integration, and unit tests pass with zero skipped tests.

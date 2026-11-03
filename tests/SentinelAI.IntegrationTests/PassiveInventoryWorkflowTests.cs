@@ -28,6 +28,11 @@ public sealed class PassiveInventoryWorkflowTests
         using var workerRegistrationClient = factory.CreateClient();
         AddIdentity(workerRegistrationClient, tenantId, Guid.NewGuid(), UserRole.Worker, workerId);
 
+        using var administratorClient = factory.CreateClient();
+        AddIdentity(administratorClient, tenantId, Guid.NewGuid(), UserRole.Admin);
+        var provision = await administratorClient.PostAsJsonAsync($"/api/v1/workers/{workerId}/provision", new WorkerProvisionRequest("phase2.1-test", ["passive-inventory", "cancellation"]));
+        Assert.Equal(HttpStatusCode.OK, provision.StatusCode);
+
         var registration = await workerRegistrationClient.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest(workerId, "phase2.1-test", ["passive-inventory", "cancellation"], 1));
         Assert.Equal(HttpStatusCode.OK, registration.StatusCode);
         var registeredWorker = await registration.Content.ReadFromJsonAsync<WorkerResponse>();

@@ -278,6 +278,16 @@ public sealed class WorkerRegistration
         ApprovedPrivateNetworkRanges = ranges.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         PrivateAssessmentApproved = approved && ApprovedPrivateNetworkRanges.Count > 0;
     }
+    public void ProvisionByAdministrator(string version, IReadOnlyCollection<string> capabilities, IReadOnlyCollection<string> privateNetworkRanges)
+    {
+        Version = version.Trim();
+        Capabilities = capabilities.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase))
+            ConfigurePrivateAssessmentAuthorization(privateNetworkRanges);
+        else
+            RevokePrivateAssessmentAuthorization();
+        Status = WorkerStatus.Registered;
+    }
     public void RevokePrivateAssessmentAuthorization()
     {
         ApprovedPrivateNetworkRanges = [];

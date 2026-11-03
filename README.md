@@ -119,6 +119,8 @@ Phase 1.2.2 adds lease-loss cancellation, tenant-and-exact-worker cancellation r
 
 Phase 3.1 adds the separate authorized web assessment engine. Phase 3.1.1 hardens it with an assessment-scoped policy proxy for Playwright, pinned DNS destinations, cancellation/lease shutdown, administrator-provisioned private CIDR ranges, exact public authorization matching, configurable screenshot redaction, request budgets, idempotent findings, check coverage and complete offline report summaries. Public targets reuse the administrator-approved authorization workflow; private targets require a tenant-enrolled worker with an exact identity, `web-assessment` and `private-web-assessment` capabilities, and an approved network-range intersection. It does not perform destructive exploitation, credential attacks, arbitrary form submissions, active network discovery or CVE correlation. See [web assessment development notes](docs/development.md#phase-31-authorized-web-assessment).
 
+Phase 3.1.2 repairs genuine Playwright CI installation, blocks browser service-worker/WebSocket bypasses behind a loopback-only policy proxy, makes worker enrollment administrator-controlled, and finalizes assessments transactionally under the active lease. Finding-specific screenshots carry URL, type, timestamp and SHA-256 metadata; unavailable evidence is reported as an explicit coverage limitation. See [web assessment development notes](docs/development.md#phase-312-integrity-hardening).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). All contributions must preserve the authorization and execution boundaries.

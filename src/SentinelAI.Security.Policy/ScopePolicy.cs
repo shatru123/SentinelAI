@@ -369,7 +369,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     private static IPAddress NormalizeAddress(IPAddress address) => address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 
     public static bool IsValidPrivateNetworkRange(string value)
-        => TryParseCidr(value.Trim(), out var address, out _) && IsPrivateAddress(address) && !IsDisallowedAddress(address) && !CidrIntersectsDisallowed(value.Trim());
+        => TryParseCidr(value.Trim(), out _, out _) && CidrContainedByAny(value.Trim(), ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]) && !CidrIntersectsDisallowed(value.Trim());
 
     public static bool IsNetworkRangeContainedBy(string candidate, string approved) => CidrContains(approved.Trim(), candidate.Trim());
 }

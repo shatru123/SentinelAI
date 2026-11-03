@@ -231,14 +231,37 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             {
                 if (webAssessmentEngine is null) throw new InvalidOperationException("Web assessment execution is not configured.");
                 var assessment = await db.WebAssessments.SingleAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, timeout.Token);
-                await webAssessmentEngine.ExecuteAsync(assessment, job, scopeDefinition, effectiveWorkerIdentity, workerCapabilities, workerPrivateNetworkRanges,
+                var result = await webAssessmentEngine.ExecuteAsync(assessment, job, scopeDefinition, effectiveWorkerIdentity, workerCapabilities, workerPrivateNetworkRanges,
                     token => HasActiveLeaseAsync(job.Id, effectiveWorkerIdentity, token), timeout.Token);
                 await db.Entry(job).ReloadAsync(timeout.Token);
-                if (workerIdentity is not null && !job.IsLeaseOwnedBy(workerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
-                if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled) { execution.Cancel(); await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Cancelled; }
-                execution.Complete(); job.Complete();
+                await db.Entry(execution).ReloadAsync(timeout.Token);
+                await db.Entry(assessment).ReloadAsync(timeout.Token);
+                if (!job.IsLeaseOwnedBy(effectiveWorkerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled)
+                {
+                    execution.Cancel(); assessment.Cancel();
+                    await db.SaveChangesAsync(CancellationToken.None);
+                    return ScanExecutionOutcome.Cancelled;
+                }
+                if (string.IsNullOrWhiteSpace(result.ReportStorageKey)) throw new InvalidOperationException("A completed web assessment requires a persisted report artifact pointer.");
+                await using var completionTransaction = await db.BeginTransactionAsync(timeout.Token);
+                await db.Entry(job).ReloadAsync(timeout.Token);
+                await db.Entry(execution).ReloadAsync(timeout.Token);
+                await db.Entry(assessment).ReloadAsync(timeout.Token);
+                if (!job.IsLeaseOwnedBy(effectiveWorkerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                if (job.IsCancellationRequested || job.Status != ScanJobStatus.Running)
+                {
+                    execution.Cancel(); assessment.Cancel();
+                    await db.SaveChangesAsync(CancellationToken.None);
+                    await completionTransaction.CommitAsync(CancellationToken.None);
+                    return ScanExecutionOutcome.Cancelled;
+                }
+                execution.Complete();
+                job.Complete();
+                assessment.Complete(result.ReportStorageKey, result.EndpointCount);
                 db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "web-assessment.completed", nameof(WebAssessment), assessment.Id, "Authorized web assessment completed with bounded, non-destructive checks."));
                 await db.SaveChangesAsync(timeout.Token);
+                await completionTransaction.CommitAsync(timeout.Token);
                 return ScanExecutionOutcome.Completed;
             }
             var authorizedTargets = new List<AuthorizedInventoryTarget>(scopeDefinition.Targets.Count);
@@ -296,6 +319,15 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         catch (WebAssessmentLeaseLostException)
         {
             await db.Entry(job).ReloadAsync(CancellationToken.None);
+            await db.Entry(execution).ReloadAsync(CancellationToken.None);
+            var webAssessment = await db.WebAssessments.SingleOrDefaultAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, CancellationToken.None);
+            if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled)
+            {
+                execution.Cancel();
+                webAssessment?.Cancel();
+                await db.SaveChangesAsync(CancellationToken.None);
+                return ScanExecutionOutcome.Cancelled;
+            }
             return ScanExecutionOutcome.ClaimedByAnotherWorker;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)

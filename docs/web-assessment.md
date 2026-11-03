@@ -40,3 +40,11 @@ Private execution requires administrator provisioning at `POST /api/v1/workers/{
 Public authorization IDs are selected from the authenticated dashboard and are matched to the assessment's scheme, effective port, hostname and path boundary. A free-text evidence description does not authorize a public target. The dashboard also exposes approved worker health, capabilities and ranges for private assessment selection.
 
 Each assessment stores idempotent findings, request-budget limits and a check coverage matrix. Reports include severity distribution, confirmed/potential/informational counts, check statuses, skipped/unsupported reasons and finding-specific screenshot metadata. Sensitive screenshot selectors are configurable through the assessment context; the default policy covers password, hidden, token, secret, API-key, session, payment, email and phone fields plus explicit sensitive markers.
+
+## Phase 3.1.2 integrity hardening
+
+CI installs the exact central `Microsoft.Playwright` package version from the UnitTests output, verifies the Playwright assembly/script pair and a real Chromium executable, then runs genuine screenshot coverage. The browser context blocks service workers and WebSockets. The loopback-only proxy independently rejects WebSocket handshakes, mismatched Host headers, malformed authorities, unauthorized schemes, and destinations outside the validated scheme/hostname/effective-port/path boundary. It pins resolved addresses and terminates active connections during shutdown.
+
+Worker registration is not enrollment. An administrator must provision the identity and capabilities first; registration and heartbeat cannot self-grant `web-assessment`, `private-web-assessment` or private ranges. Capability updates and private authorization changes are audited atomically, and revocation takes effect on the next execution-time authorization check.
+
+Reports are published only by the worker completion transaction after the job, execution and assessment still share the active lease. Report storage may contain an orphaned temporary artifact after an interrupted run, but no database report pointer is published. Finding-specific screenshots are associated with their actual finding URL and ID; if safe capture is unavailable, the coverage matrix records `FailedToExecute` and no placeholder image is stored.

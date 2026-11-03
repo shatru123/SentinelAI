@@ -53,6 +53,22 @@ public sealed class ScopeValidatorTests
     }
 
     [Theory]
+    [InlineData("10.0.0.0/8")]
+    [InlineData("172.16.0.0/12")]
+    [InlineData("192.168.0.0/16")]
+    [InlineData("fd00::/8")]
+    public void Administrator_private_ranges_must_be_entirely_private(string range)
+        => Assert.True(TargetScopeValidator.IsValidPrivateNetworkRange(range));
+
+    [Theory]
+    [InlineData("10.0.0.0/7")]
+    [InlineData("192.168.0.0/15")]
+    [InlineData("::ffff:10.0.0.0/104")]
+    [InlineData("169.254.0.0/16")]
+    public void Mixed_or_special_private_ranges_are_rejected(string range)
+        => Assert.False(TargetScopeValidator.IsValidPrivateNetworkRange(range));
+
+    [Theory]
     [InlineData("127.0.0.1")]
     [InlineData("169.254.1.1")]
     [InlineData("::1")]

@@ -261,18 +261,15 @@ var workers = app.MapGroup("/api/v1/workers").RequireAuthorization("Worker");
 workers.MapPost("/register", async (HttpContext context, WorkerRegistrationRequest request, IAppDbContext db, CancellationToken cancellationToken) =>
 {
     var principal = ToPrincipal(context);
-    var identity = request.Identity.Trim();
-    if (identity.Length is 0 or > 128 || request.Capabilities is null || request.Capabilities.Count is 0 or > 32 || request.Capacity is < 1 or > 256 || !request.Capabilities.Any(capability => capability.Equals("passive-mock", StringComparison.OrdinalIgnoreCase) || capability.Equals("passive-inventory", StringComparison.OrdinalIgnoreCase) || capability.Equals("web-assessment", StringComparison.OrdinalIgnoreCase) || capability.Equals("private-web-assessment", StringComparison.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker identity, capacity or capabilities.");
+    var identity = request.Identity?.Trim() ?? string.Empty;
+    var requestedCapabilities = request.Capabilities?.Select(capability => capability?.Trim()).ToArray() ?? [];
+    if (identity.Length is 0 or > 128 || string.IsNullOrWhiteSpace(request.Version) || requestedCapabilities.Length is 0 or > 32 || requestedCapabilities.Any(string.IsNullOrWhiteSpace) || request.Capacity is < 1 or > 256 || !requestedCapabilities.Any(capability => capability!.Equals("passive-mock", StringComparison.OrdinalIgnoreCase) || capability.Equals("passive-inventory", StringComparison.OrdinalIgnoreCase) || capability.Equals("web-assessment", StringComparison.OrdinalIgnoreCase) || capability.Equals("private-web-assessment", StringComparison.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker identity, version, capacity or capabilities.");
     if (!identity.Equals(context.User.FindFirstValue("worker_id"), StringComparison.Ordinal)) return Results.Unauthorized();
     var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == identity, cancellationToken);
-    if (worker is null)
-    {
-        if (request.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase) &&
-            !context.RequestServices.GetRequiredService<IConfiguration>().GetValue("Worker:AllowDevelopmentPrivateEnrollment", false))
-            return Results.Forbid();
-        worker = new WorkerRegistration(principal.TenantId, identity, request.Version.Trim(), request.Capabilities); db.Workers.Add(worker);
-    }
+    if (worker is null) return Results.NotFound();
     if (worker.Status == WorkerStatus.Disabled) return Results.Forbid();
+    if (requestedCapabilities.Any(capability => !worker.Capabilities.Contains(capability!, StringComparer.OrdinalIgnoreCase)))
+        return Results.Forbid();
     worker.Heartbeat(0, request.Capacity);
     await db.SaveChangesAsync(cancellationToken);
     return Results.Ok(ToWorkerResponse(worker));
@@ -285,10 +282,14 @@ api.MapPost("/workers/{identity}/private-authorization", async (HttpContext cont
         return Results.BadRequest("Only valid private IPv4/IPv6 CIDR ranges may be approved.");
     var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == identity.Trim(), cancellationToken);
     if (worker is null) return Results.NotFound();
+    if (request.Enabled && !worker.Capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase))
+        return Results.BadRequest("Private authorization requires the web-assessment capability.");
+    await using var transaction = await db.BeginTransactionAsync(cancellationToken);
     if (request.Enabled) worker.ConfigurePrivateAssessmentAuthorization(request.NetworkRanges);
     else worker.RevokePrivateAssessmentAuthorization();
     db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, request.Enabled ? "worker.private-authorization.approved" : "worker.private-authorization.revoked", nameof(WorkerRegistration), worker.Id, "Administrator-controlled private web assessment authorization changed."));
     await db.SaveChangesAsync(cancellationToken);
+    await transaction.CommitAsync(cancellationToken);
     return Results.Ok(ToWorkerResponse(worker));
 }).RequireAuthorization("Admin");
 workers.MapPost("/heartbeat", async (HttpContext context, WorkerHeartbeatRequest request, IAppDbContext db, CancellationToken cancellationToken) =>
@@ -320,15 +321,19 @@ api.MapPost("/workers/{identity}/provision", async (HttpContext context, string 
     var normalizedIdentity = identity.Trim();
     var capabilities = request.Capabilities?.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
     var allowedCapabilities = new[] { "passive-mock", "passive-inventory", "web-assessment", "private-web-assessment", "cancellation", "scope-validation", "bounded-concurrency" };
-    if (normalizedIdentity.Length is 0 or > 128 || capabilities.Length == 0 || capabilities.Any(capability => !allowedCapabilities.Contains(capability, StringComparer.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker provisioning request.");
+    if (normalizedIdentity.Length is 0 or > 128 || string.IsNullOrWhiteSpace(request.Version) || capabilities.Length == 0 || capabilities.Any(capability => !allowedCapabilities.Contains(capability, StringComparer.OrdinalIgnoreCase))) return Results.BadRequest("Invalid worker provisioning request.");
     var ranges = request.PrivateNetworkRanges?.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
-    if (capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase) && (ranges.Length == 0 || ranges.Any(range => !TargetScopeValidator.IsValidPrivateNetworkRange(range)))) return Results.BadRequest("Private web capability requires approved private IPv4/IPv6 CIDR ranges.");
+    if (capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase) && (!capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase) || ranges.Length == 0 || ranges.Any(range => !TargetScopeValidator.IsValidPrivateNetworkRange(range)))) return Results.BadRequest("Private web capability requires web-assessment and approved private IPv4/IPv6 CIDR ranges.");
+    if (!capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase) && ranges.Length > 0) return Results.BadRequest("Private network ranges require private-web-assessment capability.");
+    await using var transaction = await db.BeginTransactionAsync(cancellationToken);
     var worker = await db.Workers.SingleOrDefaultAsync(x => x.TenantId == principal.TenantId && x.Identity == normalizedIdentity, cancellationToken);
-    if (worker is null) { worker = new WorkerRegistration(principal.TenantId, normalizedIdentity, request.Version.Trim(), capabilities); db.Workers.Add(worker); }
-    if (capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase)) worker.ConfigurePrivateAssessmentAuthorization(ranges);
+    if (worker is null) { worker = new WorkerRegistration(principal.TenantId, normalizedIdentity, request.Version.Trim(), []); db.Workers.Add(worker); }
+    worker.ProvisionByAdministrator(request.Version, capabilities, ranges);
     await db.SaveChangesAsync(cancellationToken);
-    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "worker.provisioned", nameof(WorkerRegistration), worker.Id, "Administrator provisioned worker capabilities and private network authorization."));
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, worker.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase) ? "worker.provisioned.private" : "worker.provisioned", nameof(WorkerRegistration), worker.Id, "Administrator provisioned worker capabilities and private network authorization."));
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "worker.capabilities.changed", nameof(WorkerRegistration), worker.Id, "Administrator-controlled worker capabilities replaced atomically."));
     await db.SaveChangesAsync(cancellationToken);
+    await transaction.CommitAsync(cancellationToken);
     return Results.Ok(ToWorkerResponse(worker));
 }).RequireAuthorization("Admin");
 

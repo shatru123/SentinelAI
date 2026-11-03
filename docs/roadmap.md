@@ -42,6 +42,15 @@ Coverage is intentionally limited to the checks documented in `docs/web-assessme
 
 This milestone does not add destructive attacks, credential testing, arbitrary form submission, active network discovery or broader exploitation. Unsupported checks remain explicitly identified in reports.
 
+## Phase 3.1.2 — CI, browser isolation and execution integrity
+- Genuine Playwright installation from the test output with Chromium executable verification in CI
+- Service-worker and WebSocket blocking, loopback proxy shutdown, Host-header validation and exact browser destination enforcement
+- Administrator-only worker provisioning, capability updates, private CIDR authorization and atomic audit/revocation
+- Lease-checked transactional completion for assessment, execution, job, report pointer and audit state
+- Finding-specific screenshot evidence and accurate coverage statuses with no fabricated placeholders
+
+This milestone preserves the passive-only execution boundary and does not add destructive attacks, credential testing, arbitrary form submission, active network discovery or Phase 3.2 vulnerability intelligence.
+
 ## Phase 3 — Vulnerability intelligence
 - CVE/CPE correlation and source attribution
 - Evidence-backed risk scoring

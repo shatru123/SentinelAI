@@ -104,6 +104,9 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     [Fact]
     public async Task Worker_can_register_and_heartbeat_through_authenticated_endpoint()
     {
+        using var administrator = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Admin);
+        var provision = await administrator.PostAsJsonAsync("/api/v1/workers/test-worker/provision", new WorkerProvisionRequest("test", ["passive-mock", "passive-inventory", "cancellation"]));
+        Assert.Equal(HttpStatusCode.OK, provision.StatusCode);
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Tenant-Id", tenantId.ToString());
         client.DefaultRequestHeaders.Add("X-User-Id", Guid.NewGuid().ToString());
@@ -119,16 +122,66 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task Worker_registration_cannot_self_grant_capabilities_and_admin_provisioning_is_authoritative()
+    {
+        var workerId = $"unprovisioned-{Guid.NewGuid():N}";
+        using var worker = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Worker);
+        worker.DefaultRequestHeaders.Add("X-Worker-Id", workerId);
+        var rejected = await worker.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest(workerId, "test", ["web-assessment", "private-web-assessment"]));
+        Assert.Equal(HttpStatusCode.NotFound, rejected.StatusCode);
+
+        using var administrator = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Admin);
+        var provisioned = await administrator.PostAsJsonAsync($"/api/v1/workers/{workerId}/provision", new WorkerProvisionRequest("test", ["web-assessment", "private-web-assessment"], ["10.0.0.0/8"]));
+        Assert.Equal(HttpStatusCode.OK, provisioned.StatusCode);
+        var state = await provisioned.Content.ReadFromJsonAsync<WorkerResponse>();
+        Assert.NotNull(state);
+        Assert.Contains("web-assessment", state!.Capabilities);
+        Assert.True(state.PrivateAssessmentApproved);
+
+        var registration = await worker.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest(workerId, "test", ["web-assessment", "private-web-assessment"]));
+        Assert.Equal(HttpStatusCode.OK, registration.StatusCode);
+        var registered = await registration.Content.ReadFromJsonAsync<WorkerResponse>();
+        Assert.NotNull(registered);
+        Assert.Contains("private-web-assessment", registered!.Capabilities);
+
+        var updated = await administrator.PostAsJsonAsync($"/api/v1/workers/{workerId}/provision", new WorkerProvisionRequest("test-2", ["web-assessment"]));
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        var updatedState = await updated.Content.ReadFromJsonAsync<WorkerResponse>();
+        Assert.NotNull(updatedState);
+        Assert.Contains("web-assessment", updatedState!.Capabilities);
+        Assert.DoesNotContain("private-web-assessment", updatedState.Capabilities);
+        Assert.False(updatedState.PrivateAssessmentApproved);
+    }
+
+    [Fact]
+    public async Task Private_worker_revocation_removes_effective_authorization_immediately()
+    {
+        var workerId = $"revoke-{Guid.NewGuid():N}";
+        using var administrator = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Admin);
+        var provisioned = await administrator.PostAsJsonAsync($"/api/v1/workers/{workerId}/provision", new WorkerProvisionRequest("test", ["web-assessment", "private-web-assessment"], ["10.0.0.0/8"]));
+        Assert.Equal(HttpStatusCode.OK, provisioned.StatusCode);
+        var revoked = await administrator.PostAsJsonAsync($"/api/v1/workers/{workerId}/private-authorization", new PrivateWorkerAuthorizationRequest([], false));
+        Assert.Equal(HttpStatusCode.OK, revoked.StatusCode);
+        var state = await revoked.Content.ReadFromJsonAsync<WorkerResponse>();
+        Assert.NotNull(state);
+        Assert.False(state!.PrivateAssessmentApproved);
+        Assert.Empty(state.ApprovedPrivateNetworkRanges ?? []);
+    }
+
+    [Fact]
     public async Task Private_web_assessment_requires_enrolled_worker_and_is_tenant_scoped()
     {
         var workerId = $"private-web-{Guid.NewGuid():N}";
+        using var administrator = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Admin);
+        var provision = await administrator.PostAsJsonAsync($"/api/v1/workers/{workerId}/provision", new WorkerProvisionRequest("3.1", ["web-assessment", "private-web-assessment", "cancellation"], ["10.0.0.0/8"]));
+        Assert.Equal(HttpStatusCode.OK, provision.StatusCode);
         using var workerClient = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Worker);
         workerClient.DefaultRequestHeaders.Add("X-Worker-Id", workerId);
         var registration = await workerClient.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest(workerId, "3.1", ["web-assessment", "private-web-assessment", "cancellation"]));
         Assert.Equal(HttpStatusCode.OK, registration.StatusCode);
 
         using var operatorClient = CreateAuthenticatedClient(tenantId, userId, UserRole.SecurityAnalyst);
-        var created = await operatorClient.PostAsJsonAsync("/api/v1/web-assessments", new CreateWebAssessmentRequest("private app", "https://myapp.internal", WebHostingMode.Private, workerId, "web-assessment-passive", [], 10, 120, "private-lab-approval", DateTimeOffset.UtcNow.AddHours(1)));
+        var created = await operatorClient.PostAsJsonAsync("/api/v1/web-assessments", new CreateWebAssessmentRequest("private app", "https://myapp.internal", WebHostingMode.Private, workerId, "web-assessment-passive", [], 10, 120, "private-lab-approval", DateTimeOffset.UtcNow.AddHours(1), false, null, ["10.0.0.0/8"]));
         Assert.Equal(HttpStatusCode.Accepted, created.StatusCode);
         var assessment = await created.Content.ReadFromJsonAsync<WebAssessmentResponse>();
         Assert.NotNull(assessment);

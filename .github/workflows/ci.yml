@@ -40,8 +40,30 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore SentinelAI.slnx
       - run: dotnet build SentinelAI.slnx --no-restore --configuration Release
+      - name: Verify Playwright test artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAYWRIGHT_OUTPUT="tests/SentinelAI.UnitTests/bin/Release/net10.0"
+          test -s "$PLAYWRIGHT_OUTPUT/Microsoft.Playwright.dll"
+          test -s "$PLAYWRIGHT_OUTPUT/playwright.ps1"
+          grep -q 'Microsoft.Playwright.*1.56.0\|Version="1.56.0"' Directory.Packages.props
       - name: Install Playwright Chromium for screenshot coverage
-        run: pwsh src/SentinelAI.Agent.Vulnerability/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAYWRIGHT_OUTPUT="tests/SentinelAI.UnitTests/bin/Release/net10.0"
+          pwsh -NoProfile -NonInteractive -File "$PLAYWRIGHT_OUTPUT/playwright.ps1" install --with-deps chromium
+      - name: Verify Playwright Chromium executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          BROWSER_ROOT="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+          test -d "$BROWSER_ROOT"
+          executable="$(find "$BROWSER_ROOT" -type f \( -name chrome -o -name chrome-headless-shell \) -perm -111 -print -quit)"
+          test -n "$executable"
+          test -x "$executable"
+          echo "Using Playwright Chromium executable: $executable"
       - run: dotnet test SentinelAI.slnx --no-build --configuration Release --logger trx
         env:
           SENTINELAI_RABBITMQ_TEST: "true"

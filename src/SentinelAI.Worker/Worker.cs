@@ -24,6 +24,14 @@ public sealed class WorkerControlPlaneClient(HttpClient httpClient, WorkerOption
             {
                 using var response = await httpClient.PostAsJsonAsync("/api/v1/workers/register", new WorkerRegistrationRequest(options.Identity, options.Version, options.Capabilities, options.Concurrency), cancellationToken);
                 response.EnsureSuccessStatusCode();
+                var registration = await response.Content.ReadFromJsonAsync<WorkerResponse>(cancellationToken: cancellationToken)
+                    ?? throw new InvalidOperationException("The control plane returned no worker registration state.");
+                if (registration.Id == Guid.Empty || !registration.Identity.Equals(options.Identity, StringComparison.Ordinal) ||
+                    options.Capabilities.Any(capability => !registration.Capabilities.Contains(capability, StringComparer.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException("The control plane did not apply the administrator-provisioned worker capabilities.");
+                if (options.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase) &&
+                    (!registration.PrivateAssessmentApproved || registration.ApprovedPrivateNetworkRanges is null || registration.ApprovedPrivateNetworkRanges.Count == 0))
+                    throw new InvalidOperationException("The control plane did not return administrator-approved private worker authorization.");
                 Volatile.Write(ref healthy, 1);
                 logger.LogInformation("Worker {Identity} registered with the control plane.", options.Identity);
                 return;

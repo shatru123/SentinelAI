@@ -225,7 +225,7 @@ public sealed class ScanService(IAppDbContext db, ITargetScopeValidator validato
     private static ScanResponse ToResponse(AgentJob job) => new(job.Id, job.ScopeId, job.Status, job.CreatedAt, job.ExpiresAt, job.OperationProfile);
 }
 
-public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes, IScanService scans, IConfiguration configuration, IHostEnvironment environment) : IWebAssessmentService
+public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes, IScanService scans) : IWebAssessmentService
 {
     public async Task<WebAssessmentResponse> CreateAsync(PrincipalContext principal, CreateWebAssessmentRequest request, CancellationToken cancellationToken)
     {
@@ -240,7 +240,7 @@ public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes,
             if (privateWorker is null || privateWorker.Status == WorkerStatus.Disabled || !privateWorker.Capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase) || !privateWorker.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase))
                 throw new ScopeValidationException(["The selected private worker is not enrolled with the required web assessment capabilities."]);
             var ranges = request.PrivateNetworkRanges?.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
-            if (ranges.Length == 0 && !IsDevelopmentPrivateEnrollmentAllowed())
+            if (ranges.Length == 0)
                 throw new ScopeValidationException(["Private web assessments require administrator-approved private network ranges."]);
             if (ranges.Length > 0 && !privateWorker.PrivateAssessmentApproved)
                 throw new ScopeValidationException(["The selected private worker has no valid administrator-approved private network authorization."]);
@@ -270,8 +270,6 @@ public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes,
     private static WebAssessmentResponse ToResponse(WebAssessment assessment, ScanResponse scan)
         => new(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, scan.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey);
 
-    private bool IsDevelopmentPrivateEnrollmentAllowed()
-        => environment.IsDevelopment() && configuration.GetValue("Worker:AllowDevelopmentPrivateEnrollment", false);
 }
 
 public static class OutboxMessageTypes

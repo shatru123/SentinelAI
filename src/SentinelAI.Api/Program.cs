@@ -507,6 +507,8 @@ api.MapGet("/monitoring/health", async (
     var engineRegistered = services.GetService<IWebAssessmentEngine>() is not null
         && services.GetService<IScreenshotCaptureService>() is not null;
     var engineStatus = engineRegistered ? "registered" : "not-registered";
+    var inProcessWorkerRegistered = queue is InMemoryScanJobQueue
+        && configuration.GetValue<bool>("Worker:RunInProcess");
     var messagingReady = messagingStatus is "connected" or "configured-in-memory";
     var overallStatus = databaseConnected && messagingReady && engineRegistered ? "healthy" : "degraded";
 
@@ -516,7 +518,7 @@ api.MapGet("/monitoring/health", async (
         databaseStatus = databaseConnected ? "connected" : "unavailable",
         messagingStatus,
         assessmentEngineStatus = engineStatus,
-        workerExecutionMode = configuration.GetValue<bool>("Worker:RunInProcess") ? "in-process" : "external",
+        workerExecutionMode = inProcessWorkerRegistered ? "in-process" : "external",
         configuredWorkerIdentity = configuration["Worker:Identity"] ?? "compose-worker",
         activeProbing = false,
         checkedAt = DateTimeOffset.UtcNow

@@ -26,10 +26,11 @@
                 Icon="●"
                 StatusClass="@(passedChecks == 7 ? "healthy" : "warning")"
                 Subtitle="Overall environment operational state" />
-    <MetricCard Title="Enrolled Workers"
-                Value="@workersCount.ToString("N0")"
+    <MetricCard Title="Worker Execution Mode"
+                Value="@workerExecutionModeLabel"
                 Icon="◈"
-                Subtitle="Worker nodes registered to tenant" />
+                StatusClass="@(inProcessWorkerEnabled ? "healthy" : (workersCount > 0 ? "warning" : "neutral"))"
+                Subtitle="In-process consumer or external RabbitMQ worker" />
     <MetricCard Title="Assessment Components"
                 Value="@(checkEngineReady == true ? "Registered" : (checkEngineReady == false ? "Missing" : "Checking"))"
                 Icon="🛡"
@@ -123,15 +124,15 @@
             </div>
             <div style="flex: 1;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
-                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">4. Worker Identity & Capabilities Provisioned</strong>
+                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">@(inProcessWorkerEnabled ? "4. In-process Job Consumer" : "4. External Worker Provisioned")</strong>
                     <span class="soc-badge @(checkWorkerProvisioned == true ? "soc-badge-success" : (checkWorkerProvisioned == false ? "soc-badge-warning" : "soc-badge-neutral"))">
-                        @(checkWorkerProvisioned == true ? "Provisioned" : "Action Needed")
+                        @(checkWorkerProvisioned == true ? (inProcessWorkerEnabled ? "Configured" : "Provisioned") : "Action Needed")
                     </span>
                 </div>
                 <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-2);">
-                    At least one worker node must be registered in the tenant registry with assigned capabilities (e.g. <code>passive-inventory</code>, <code>web-assessment</code>).
+                    @(inProcessWorkerEnabled ? "The API hosts the in-memory queue consumer in Development. Keep the API process running while testing scans; no external worker record is required." : "The external worker identity must be provisioned with the capabilities it will register (for example passive-inventory and web-assessment).")
                 </p>
-                @if (checkWorkerProvisioned == false)
+                @if (checkWorkerProvisioned == false && !inProcessWorkerEnabled)
                 {
                     <AuthorizeView Roles="Admin">
                         <Authorized>
@@ -156,13 +157,13 @@
             </div>
             <div style="flex: 1;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
-                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">5. Worker Capability Enrollment</strong>
+                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">@(inProcessWorkerEnabled ? "5. In-process Execution Service" : "5. External Worker Registration")</strong>
                     <span class="soc-badge @(checkWorkerRegistered == true ? "soc-badge-success" : (checkWorkerRegistered == false ? "soc-badge-warning" : "soc-badge-neutral"))">
-                        @(checkWorkerRegistered == true ? "Active" : "Pending Registration")
+                        @(checkWorkerRegistered == true ? (inProcessWorkerEnabled ? "Configured" : "Registered") : "Pending Registration")
                     </span>
                 </div>
                 <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
-                    Verifies that at least one non-disabled worker identity has capabilities assigned. This does not prove that its worker process is running.
+                    @(inProcessWorkerEnabled ? "The in-process ScanJobProcessor is registered as a hosted service in the API." : "Verifies an external worker has authenticated successfully and is registered with the control plane.")
                 </p>
             </div>
         </div>
@@ -176,13 +177,13 @@
             </div>
             <div style="flex: 1;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
-                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">6. Worker Heartbeat Freshness</strong>
+                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">@(inProcessWorkerEnabled ? "6. In-process Queue Consumer" : "6. External Worker Heartbeat")</strong>
                     <span class="soc-badge @(checkWorkerHeartbeat == true ? "soc-badge-success" : (checkWorkerHeartbeat == false ? "soc-badge-warning" : "soc-badge-neutral"))">
-                        @(checkWorkerHeartbeat == true ? "Healthy" : "Stale / Not Started")
+                        @(checkWorkerHeartbeat == true ? (inProcessWorkerEnabled ? "Hosted" : "Healthy") : "Stale / Not Started")
                     </span>
                 </div>
                 <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
-                    Validates that heartbeats are received within the 45-second freshness window to safely assign assessment leases.
+                    @(inProcessWorkerEnabled ? "The API is configured to consume queued jobs in-process. Restart the API after changing Worker:RunInProcess." : "Validates that the external worker heartbeat is fresh within the 45-second lease-admission window.")
                 </p>
             </div>
         </div>
@@ -229,6 +230,9 @@
     private bool provisioningWorker;
     private int passedChecks;
     private int workersCount;
+    private bool inProcessWorkerEnabled;
+    private string configuredWorkerIdentity = "compose-worker";
+    private string workerExecutionModeLabel = "Unknown";
     private string? diagnosticError;
     private string? provisioningMessage;
     private string messagingStatusText = "Not checked";
@@ -264,6 +268,9 @@
         {
             var health = await ApiClient.GetJsonAsync<HealthResponse>("/api/v1/monitoring/health");
             checkApiStatus = true;
+            inProcessWorkerEnabled = string.Equals(health.WorkerExecutionMode, "in-process", StringComparison.OrdinalIgnoreCase);
+            configuredWorkerIdentity = string.IsNullOrWhiteSpace(health.ConfiguredWorkerIdentity) ? "compose-worker" : health.ConfiguredWorkerIdentity;
+            workerExecutionModeLabel = inProcessWorkerEnabled ? "In-process" : "External";
             checkDbStatus = string.Equals(health.DatabaseStatus, "connected", StringComparison.OrdinalIgnoreCase);
             checkBrokerStatus = health.MessagingStatus is "connected" or "configured-in-memory";
             messagingStatusText = health.MessagingStatus switch
@@ -273,6 +280,13 @@
                 _ => "Unavailable"
             };
             checkEngineReady = string.Equals(health.AssessmentEngineStatus, "registered", StringComparison.OrdinalIgnoreCase);
+            if (inProcessWorkerEnabled)
+            {
+                workersCount = 0;
+                checkWorkerProvisioned = true;
+                checkWorkerRegistered = true;
+                checkWorkerHeartbeat = true;
+            }
         }
         catch (SentinelApiException ex)
         {
@@ -284,25 +298,28 @@
             messagingStatusText = "Not verified";
         }
 
-        try
+        if (!inProcessWorkerEnabled)
         {
-            var workers = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers") ?? [];
-            workersCount = workers.Count;
-            checkWorkerProvisioned = workers.Count > 0;
-            checkWorkerRegistered = workers.Any(w => w.Status != WorkerStatus.Disabled && w.Capabilities.Count > 0);
-            var now = DateTimeOffset.UtcNow;
-            checkWorkerHeartbeat = workers.Any(w =>
-                w.Status == WorkerStatus.Healthy
-                && w.LastHeartbeatAt != default
-                && now - w.LastHeartbeatAt <= TimeSpan.FromSeconds(45));
-        }
-        catch (SentinelApiException ex)
-        {
-            diagnosticError ??= ex.UserMessage;
-            workersCount = 0;
-            checkWorkerProvisioned = false;
-            checkWorkerRegistered = false;
-            checkWorkerHeartbeat = false;
+            try
+            {
+                var workers = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers") ?? [];
+                workersCount = workers.Count;
+                checkWorkerProvisioned = workers.Count > 0;
+                checkWorkerRegistered = workers.Any(w => w.Status == WorkerStatus.Healthy && w.Capabilities.Count > 0);
+                var now = DateTimeOffset.UtcNow;
+                checkWorkerHeartbeat = workers.Any(w =>
+                    w.Status == WorkerStatus.Healthy
+                    && w.LastHeartbeatAt != default
+                    && now - w.LastHeartbeatAt <= TimeSpan.FromSeconds(45));
+            }
+            catch (SentinelApiException ex)
+            {
+                diagnosticError ??= ex.UserMessage;
+                workersCount = 0;
+                checkWorkerProvisioned = false;
+                checkWorkerRegistered = false;
+                checkWorkerHeartbeat = false;
+            }
         }
 
         passedChecks = new[]
@@ -322,10 +339,10 @@
         {
             var request = new WorkerProvisionRequest(
                 "1.0.0",
-                ["passive-inventory", "passive-mock", "bounded-concurrency", "scope-validation"]);
+                ["passive-inventory", "passive-mock", "web-assessment", "cancellation", "bounded-concurrency", "scope-validation"]);
             await ApiClient.PostJsonAsync<WorkerProvisionRequest, WorkerResponse>(
-                "/api/v1/workers/worker-primary/provision", request);
-            provisioningMessage = "Worker identity provisioned. Start the worker process separately; provisioning does not mean a worker is running.";
+                $"/api/v1/workers/{Uri.EscapeDataString(configuredWorkerIdentity)}/provision", request);
+            provisioningMessage = $"Worker identity '{configuredWorkerIdentity}' provisioned. The standalone worker must be running with the same identity and control-plane token before it will report a healthy heartbeat.";
             await RunDiagnosticsAsync();
         }
         catch (SentinelApiException ex)
@@ -343,5 +360,7 @@
         string DatabaseStatus,
         string MessagingStatus,
         string AssessmentEngineStatus,
+        string WorkerExecutionMode,
+        string ConfiguredWorkerIdentity,
         bool ActiveProbing);
 }

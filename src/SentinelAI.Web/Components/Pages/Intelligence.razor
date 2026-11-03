@@ -48,6 +48,40 @@
     <MetricCard Title="Inconclusive" Value="@matches.Count(x => x.Status == VulnerabilityMatchStatus.Inconclusive).ToString("N0")" Icon="…" Subtitle="Unsupported or incomplete applicability" />
 </div>
 
+<section class="soc-panel" style="margin-bottom:var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <div class="eyebrow">Feed Operations</div>
+            <h2 class="soc-panel-title">Source Sync Status</h2>
+        </div>
+        <button class="soc-btn soc-btn-secondary" @onclick="LoadSyncStatusesAsync" disabled="@busy">Refresh status</button>
+    </div>
+    @if (syncStatuses.Count == 0)
+    {
+        <p class="text-muted" style="font-size:.8rem;">No feed sync has run yet.</p>
+    }
+    else
+    {
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead><tr><th>Source</th><th>Last success</th><th>Records</th><th>Cursor</th><th>Last error</th></tr></thead>
+                <tbody>
+                    @foreach (var checkpoint in syncStatuses)
+                    {
+                        <tr>
+                            <td><strong>@checkpoint.Source</strong></td>
+                            <td class="text-muted">@((checkpoint.LastSucceededAt)?.ToLocalTime().ToString("g") ?? "Never")</td>
+                            <td>@checkpoint.RecordsProcessed.ToString("N0")</td>
+                            <td>@(string.IsNullOrWhiteSpace(checkpoint.Cursor) ? "Complete" : $"Offset {checkpoint.Cursor}")</td>
+                            <td class="text-muted">@(checkpoint.LastErrorCategory ?? "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
 <div class="content-grid">
     <section class="soc-panel">
         <div class="soc-panel-header">
@@ -472,6 +506,7 @@
     private List<SoftwareComponentResponse> components = [];
     private List<VulnerabilityCatalogListItem> catalog = [];
     private List<AssetVulnerabilityMatchResponse> matches = [];
+    private List<VulnerabilitySyncCheckpointResponse> syncStatuses = [];
     private VulnerabilityCatalogResponse? selectedCve;
     private DateTimeOffset nvdWindowStart = DateTimeOffset.UtcNow.AddDays(-7);
     private DateTimeOffset nvdWindowEnd = DateTimeOffset.UtcNow;
@@ -494,7 +529,7 @@
         error = null;
         try
         {
-            await Task.WhenAll(LoadAssetsAsync(), SearchCatalogAsync(), LoadMatchesAsync());
+            await Task.WhenAll(LoadAssetsAsync(), SearchCatalogAsync(), LoadMatchesAsync(), LoadSyncStatusesAsync());
         }
         catch (SentinelApiException exception) { error = exception.UserMessage; }
         finally { loading = false; }
@@ -521,6 +556,26 @@
     {
         matches = await ApiClient.GetJsonAsync<List<AssetVulnerabilityMatchResponse>>("/api/v1/vulnerability-intelligence/matches?limit=250");
     }
+
+    private async Task LoadSyncStatusesAsync()
+    {
+        syncStatuses = await ApiClient.GetJsonAsync<List<VulnerabilitySyncCheckpointResponse>>(
+            "/api/v1/vulnerability-intelligence/sync-status");
+        var checkpoint = syncStatuses.SingleOrDefault(x => x.Source == "NVD-CVE-MODIFIED");
+        nvdHasMore = !string.IsNullOrWhiteSpace(checkpoint?.Cursor);
+        if (nvdHasMore && checkpoint?.FeedVersion is { } key)
+        {
+            var parts = key.Split('|', 2);
+            if (parts.Length == 2
+                && DateTimeOffset.TryParse(parts[0], out var start)
+                && DateTimeOffset.TryParse(parts[1], out var end))
+            {
+                nvdWindowStart = start;
+                nvdWindowEnd = end;
+            }
+        }
+    }
+
 
     private async Task LoadCveAsync(string cveId)
     {
@@ -583,7 +638,7 @@
                 nvdWindowEnd = DateTimeOffset.UtcNow;
                 nvdWindowStart = nvdWindowEnd.AddDays(-7);
             }
-            await SearchCatalogAsync();
+            await Task.WhenAll(SearchCatalogAsync(), LoadSyncStatusesAsync());
             message = nvdHasMore
                 ? $"Imported {result.ProcessedThisRun:N0} CVEs. More records remain; select Continue NVD sync to resume at offset {result.NextStartIndex:N0}."
                 : $"NVD modified-date sync completed. Imported {result.ProcessedThisRun:N0} CVEs in this run; {result.TotalProcessedInWindow:N0} in the window.";
@@ -600,7 +655,7 @@
         {
             await ApiClient.PostAsync("/api/v1/vulnerability-intelligence/kev/sync");
             if (selectedCve is not null) await LoadCveAsync(selectedCve.CveId);
-            await SearchCatalogAsync();
+            await Task.WhenAll(SearchCatalogAsync(), LoadSyncStatusesAsync());
             message = "CISA KEV catalog synchronization completed.";
         }
         catch (SentinelApiException exception) { error = exception.UserMessage; }

@@ -53,7 +53,7 @@ This milestone preserves the passive-only execution boundary and does not add de
 
 ## Phase 3 — Vulnerability intelligence
 
-**Status: In progress — core feed, correlation, triage and lifecycle workflows are implemented on PR #3.** The implementation plan and limits are in [phase3-vulnerability-intelligence.md](phase3-vulnerability-intelligence.md).
+**Status: Core Phase 3 complete and CI-verified on PR #3.** Release build, 220 unit tests, 28 integration tests, 10 security tests, 2 architecture tests, Playwright browser setup and Docker Compose validation passed. Deferred non-blocking polish is documented in [phase3-vulnerability-intelligence.md](phase3-vulnerability-intelligence.md).
 
 - CVE/CPE correlation and source attribution
 - Evidence-backed risk scoring

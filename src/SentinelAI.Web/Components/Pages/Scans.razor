@@ -341,7 +341,7 @@
         @if (selectedScan.Status == ScanJobStatus.Queued || selectedScan.Status == ScanJobStatus.Running)
         {
             <div style="margin-top: var(--space-6); text-align: right;">
-                <AuthorizeView Roles="Admin,Operator">
+                <AuthorizeView Roles="Admin,SecurityAnalyst">
                     <Authorized>
                         <button class="soc-btn soc-btn-danger" @onclick="() => PromptCancel(selectedScan)">
                             Cancel Active Execution

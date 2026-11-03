@@ -629,6 +629,34 @@ api.MapPost("/vulnerability-intelligence/cves/{cveId}/sync", async (
     return Results.Ok(new { cveId = parsed.Value, recordsProcessed = processed });
 }).RequireAuthorization("Admin");
 
+api.MapPost("/vulnerability-intelligence/nvd/modified-sync", async (
+    HttpContext context,
+    SyncNvdModifiedRequest request,
+    VulnerabilityIntelligenceSyncService sync,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var window = request.ModifiedEnd.ToUniversalTime() - request.ModifiedStart.ToUniversalTime();
+    if (request.ModifiedEnd <= request.ModifiedStart || window > TimeSpan.FromDays(120))
+        return Results.BadRequest("The NVD modified-date window must be positive and no longer than 120 days.");
+    if (request.PageSize is < 1 or > 2000)
+        return Results.BadRequest("NVD page size must be between 1 and 2000.");
+    if (request.MaxRecords is < 1 or > 20_000)
+        return Results.BadRequest("NVD sync is capped at 20,000 CVE records per invocation.");
+
+    var principal = ToPrincipal(context);
+    var result = await sync.SyncNvdModifiedWindowAsync(
+        request.ModifiedStart, request.ModifiedEnd, request.PageSize, request.MaxRecords, request.Resume, cancellationToken);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "vulnerability-intelligence.nvd.modified-sync",
+        "NvdCveCatalog", null,
+        $"NVD modified window processed {result.ProcessedThisRun} CVEs; {result.TotalProcessedInWindow} total in the window; resume required: {result.HasMore}."));
+    await db.SaveChangesAsync(cancellationToken);
+
+    return Results.Ok(new SyncNvdModifiedResponse(
+        result.ProcessedThisRun, result.TotalProcessedInWindow, result.NextStartIndex,
+        result.TotalResults, result.HasMore, result.WindowKey));
+}).RequireAuthorization("Admin");
+
 api.MapPost("/vulnerability-intelligence/kev/sync", async (
     HttpContext context,
     VulnerabilityIntelligenceSyncService sync,

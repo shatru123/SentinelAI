@@ -2,10 +2,17 @@
     <div class="empty-icon">@(Icon ?? "🛡️")</div>
     <strong>@Title</strong>
     <p>@Message</p>
-    @if (!string.IsNullOrWhiteSpace(ActionText) && OnAction.HasDelegate)
+    @if (!string.IsNullOrWhiteSpace(ActionText))
     {
         <div style="margin-top: 14px;">
-            <button class="primary-button" @onclick="OnAction">@ActionText</button>
+            @if (OnAction.HasDelegate)
+            {
+                <button type="button" class="primary-button" @onclick="OnAction">@ActionText</button>
+            }
+            else if (!string.IsNullOrWhiteSpace(ActionUrl))
+            {
+                <a class="primary-button" href="@ActionUrl">@ActionText</a>
+            }
         </div>
     }
 </div>
@@ -15,5 +22,6 @@
     [Parameter] public string Title { get; set; } = "No records observed";
     [Parameter] public string Message { get; set; } = "No operational records match the current criteria.";
     [Parameter] public string? ActionText { get; set; }
+    [Parameter] public string? ActionUrl { get; set; }
     [Parameter] public EventCallback OnAction { get; set; }
 }

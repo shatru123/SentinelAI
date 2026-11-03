@@ -148,3 +148,79 @@ public sealed record FindingDetailResponse(
     DateTimeOffset CreatedAt,
     IReadOnlyCollection<EvidenceResponse> Evidence,
     IReadOnlyCollection<ScreenshotResponse> Screenshots);
+
+
+public sealed record SyncEpssRequest(IReadOnlyCollection<string> CveIds);
+
+public sealed record CreateSoftwareComponentRequest(
+    string Vendor,
+    string Product,
+    string? Version,
+    string CpeName,
+    string IdentificationMethod,
+    Guid EvidenceId,
+    decimal Confidence);
+
+public sealed record ConfirmSoftwareComponentRequest(Guid EvidenceId, decimal Confidence);
+
+public sealed record SoftwareComponentResponse(
+    Guid Id,
+    Guid AssetId,
+    string Vendor,
+    string Product,
+    string? Version,
+    string CpeName,
+    string IdentificationMethod,
+    Guid EvidenceId,
+    decimal Confidence,
+    bool IsOperatorConfirmed,
+    DateTimeOffset FirstObservedAt,
+    DateTimeOffset LastObservedAt);
+
+public sealed record AssetVulnerabilityMatchResponse(
+    Guid Id,
+    Guid AssetId,
+    Guid SoftwareComponentId,
+    string CveId,
+    VulnerabilityMatchStatus Status,
+    string Explanation,
+    string? CriteriaId,
+    DateTimeOffset FirstObservedAt,
+    DateTimeOffset LastObservedAt);
+
+public sealed record VulnerabilityCvssResponse(
+    string Version,
+    string Vector,
+    decimal BaseScore,
+    string Severity,
+    string Source,
+    DateTimeOffset ObservedAt);
+
+public sealed record VulnerabilityEpssResponse(
+    decimal Score,
+    decimal Percentile,
+    DateOnly AsOfDate,
+    DateTimeOffset ImportedAt);
+
+public sealed record VulnerabilityKevResponse(
+    bool IsListed,
+    string CatalogVersion,
+    DateTimeOffset CatalogReleasedAt,
+    string VendorProject,
+    string Product,
+    DateOnly DateAdded,
+    DateOnly DueDate,
+    string RequiredAction,
+    bool? KnownRansomwareCampaignUse);
+
+public sealed record VulnerabilityCatalogResponse(
+    string CveId,
+    string Status,
+    DateTimeOffset PublishedAt,
+    DateTimeOffset LastModifiedAt,
+    string Description,
+    IReadOnlyCollection<string> CweIds,
+    IReadOnlyCollection<string> References,
+    IReadOnlyCollection<VulnerabilityCvssResponse> Cvss,
+    VulnerabilityEpssResponse? Epss,
+    VulnerabilityKevResponse? Kev);

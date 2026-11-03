@@ -11,6 +11,8 @@ services:
       Database__ApplyMigrations: "true"
       Messaging__Mode: RabbitMq
       Messaging__RunOutboxDispatcher: "true"
+      Worker__RunInProcess: "false"
+      Worker__Identity: ${WORKER_IDENTITY:-compose-worker}
       RabbitMQ__Host: rabbitmq
       RabbitMQ__Username: ${RABBITMQ_USER}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD}
@@ -52,7 +54,8 @@ services:
       Dashboard__TenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
       Dashboard__UserId: 00000000-0000-0000-0000-000000000002
       Dashboard__UserName: compose-operator
-      Dashboard__Role: SecurityAnalyst
+      # Compose is a local Development environment. Use DASHBOARD_ROLE=SecurityAnalyst to test a non-admin view.
+      Dashboard__Role: ${DASHBOARD_ROLE:-Admin}
       Web__EnableHttpsRedirection: "false"
     ports: ["127.0.0.1:5081:8080"]
     depends_on: { api: { condition: service_healthy } }
@@ -75,7 +78,7 @@ services:
       Worker__ControlPlaneUrl: http://api:8080
       Worker__ControlPlaneToken: ${WORKER_CONTROL_PLANE_TOKEN:-local-worker-token-change-me}
       Worker__TenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
-      Worker__Identity: compose-worker
+      Worker__Identity: ${WORKER_IDENTITY:-compose-worker}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       postgres: { condition: service_healthy }

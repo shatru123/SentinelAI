@@ -7,7 +7,7 @@
 
 <PageHeader Title="First-Run Setup & Readiness Checklist"
             Eyebrow="Getting Started / System Health Verification"
-            Description="Interactive 7-point diagnostic health check to verify backend APIs, database connectivity, worker fleet enrollment, and assessment engine readiness.">
+            Description="Live dependency checks and tenant-scoped worker readiness. Component registration is reported separately from a running worker or live browser execution test.">
     <Actions>
         <button class="soc-btn soc-btn-primary" @onclick="RunDiagnosticsAsync" disabled="@checking">
             <span class="icon">↻</span> @(checking ? "Running Diagnostics…" : "Run Diagnostic Check")
@@ -30,11 +30,11 @@
                 Value="@workersCount.ToString("N0")"
                 Icon="◈"
                 Subtitle="Worker nodes registered to tenant" />
-    <MetricCard Title="Assessment Engine"
-                Value="Strict Bounded"
+    <MetricCard Title="Assessment Components"
+                Value="Registered / Unavailable"
                 Icon="🛡"
                 StatusClass="healthy"
-                Subtitle="Playwright & DNS pinning active" />
+                Subtitle="Dependency registration only · no live browser run" />
 </div>
 
 <section class="soc-panel" style="margin-bottom: var(--space-6);">
@@ -83,7 +83,7 @@
             </div>
             <div style="flex: 1;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
-                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">2. PostgreSQL Database & Multi-Tenant EF Core</strong>
+                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">2. Database Connectivity</strong>
                     <span class="soc-badge @(checkDbStatus == true ? "soc-badge-success" : (checkDbStatus == false ? "soc-badge-danger" : "soc-badge-neutral"))">
                         @(checkDbStatus == true ? "Connected" : (checkDbStatus == false ? "Connection Failed" : "Pending"))
                     </span>
@@ -105,7 +105,7 @@
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
                     <strong style="font-size: 0.9375rem; color: var(--text-primary);">3. Asynchronous Messaging Broker (RabbitMQ / InMemory)</strong>
                     <span class="soc-badge @(checkBrokerStatus == true ? "soc-badge-success" : (checkBrokerStatus == false ? "soc-badge-danger" : "soc-badge-neutral"))">
-                        @(checkBrokerStatus == true ? "Operational" : "Check Config")
+                        @messagingStatusText
                     </span>
                 </div>
                 <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
@@ -133,9 +133,16 @@
                 </p>
                 @if (checkWorkerProvisioned == false)
                 {
-                    <button class="soc-btn soc-btn-primary" style="font-size: 0.75rem; padding: var(--space-1) var(--space-3);" @onclick="ProvisionDefaultWorkerAsync">
-                        + Provision Default Development Worker (worker-primary)
-                    </button>
+                    <AuthorizeView Roles="Admin">
+                        <Authorized>
+                            <button class="soc-btn soc-btn-primary" style="font-size: 0.75rem; padding: var(--space-1) var(--space-3);" @onclick="ProvisionDefaultWorkerAsync" disabled="@provisioningWorker">
+                                @(provisioningWorker ? "Provisioning…" : "+ Provision Passive Development Worker")
+                            </button>
+                        </Authorized>
+                        <NotAuthorized>
+                            <span class="text-muted" style="font-size: 0.75rem;">An administrator must provision a worker identity.</span>
+                        </NotAuthorized>
+                    </AuthorizeView>
                 }
             </div>
         </div>
@@ -149,13 +156,13 @@
             </div>
             <div style="flex: 1;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
-                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">5. Worker Node Active Registration</strong>
+                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">5. Worker Runtime Handshake</strong>
                     <span class="soc-badge @(checkWorkerRegistered == true ? "soc-badge-success" : (checkWorkerRegistered == false ? "soc-badge-warning" : "soc-badge-neutral"))">
                         @(checkWorkerRegistered == true ? "Active" : "Pending Registration")
                     </span>
                 </div>
                 <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
-                    Verifies that the provisioned worker node has performed its initial handshake and registered its concurrency limits.
+                    A worker is runtime-registered only after it reports a healthy authenticated heartbeat. A provisioned database identity alone does not pass this check.
                 </p>
             </div>
         </div>
@@ -189,17 +196,26 @@
             </div>
             <div style="flex: 1;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
-                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">7. Bounded Web Assessment Engine & Browser Policy Proxy</strong>
+                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">7. Web Assessment Component Registration</strong>
                     <span class="soc-badge @(checkEngineReady == true ? "soc-badge-success" : (checkEngineReady == false ? "soc-badge-danger" : "soc-badge-neutral"))">
-                        @(checkEngineReady == true ? "Ready" : "Pending")
+                        @(checkEngineReady == true ? "Registered" : "Not Registered")
                     </span>
                 </div>
                 <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
-                    Confirms that Playwright, DNS pinning, TLS enforcement, WebSocket interception, and rate-limiting modules are initialized.
+                    Confirms the API dependency-injection registrations exist. This is not a live Chromium, TLS, proxy, or WebSocket execution test.
                 </p>
             </div>
         </div>
     </div>
+
+    @if (!string.IsNullOrWhiteSpace(diagnosticError))
+    {
+        <div style="margin-top: var(--space-4);"><ErrorState Message="@diagnosticError" OnRetry="RunDiagnosticsAsync" /></div>
+    }
+    @if (!string.IsNullOrWhiteSpace(provisioningMessage))
+    {
+        <p class="text-muted" style="font-size: 0.8125rem; margin-top: var(--space-3);">@provisioningMessage</p>
+    }
 
     <div style="display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-6);">
         <a href="/" class="soc-btn soc-btn-primary">
@@ -210,8 +226,12 @@
 
 @code {
     private bool checking = true;
+    private bool provisioningWorker;
     private int passedChecks;
     private int workersCount;
+    private string? diagnosticError;
+    private string? provisioningMessage;
+    private string messagingStatusText = "Not checked";
 
     private bool? checkApiStatus;
     private bool? checkDbStatus;
@@ -229,9 +249,9 @@
     private async Task RunDiagnosticsAsync()
     {
         checking = true;
+        diagnosticError = null;
         passedChecks = 0;
 
-        // Reset check indicators
         checkApiStatus = null;
         checkDbStatus = null;
         checkBrokerStatus = null;
@@ -242,84 +262,86 @@
 
         try
         {
-            // 1. API Check
             var health = await ApiClient.GetJsonAsync<HealthResponse>("/api/v1/monitoring/health");
-            checkApiStatus = health.Status == "healthy";
-            if (checkApiStatus == true) passedChecks++;
+            checkApiStatus = true;
+            checkDbStatus = string.Equals(health.DatabaseStatus, "connected", StringComparison.OrdinalIgnoreCase);
+            checkBrokerStatus = health.MessagingStatus is "connected" or "configured-in-memory";
+            messagingStatusText = health.MessagingStatus switch
+            {
+                "connected" => "Connected",
+                "configured-in-memory" => "Configured (InMemory)",
+                _ => "Unavailable"
+            };
+            checkEngineReady = string.Equals(health.AssessmentEngineStatus, "registered", StringComparison.OrdinalIgnoreCase);
         }
-        catch
+        catch (SentinelApiException ex)
         {
+            diagnosticError = ex.UserMessage;
             checkApiStatus = false;
-        }
-
-        try
-        {
-            // 2. Database Check
-            var summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
-            checkDbStatus = summary != null;
-            if (checkDbStatus == true) passedChecks++;
-        }
-        catch
-        {
             checkDbStatus = false;
+            checkBrokerStatus = false;
+            checkEngineReady = false;
+            messagingStatusText = "Not verified";
         }
 
-        // 3. Broker Check
-        checkBrokerStatus = true;
-        passedChecks++;
-
-        // 4, 5, 6. Worker Checks
         try
         {
-            var workers = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers");
-            workersCount = workers?.Count ?? 0;
-
-            if (workers != null && workers.Count > 0)
-            {
-                checkWorkerProvisioned = true;
-                passedChecks++;
-
-                checkWorkerRegistered = workers.Any(w => w.Status != WorkerStatus.Disabled);
-                if (checkWorkerRegistered == true) passedChecks++;
-
-                checkWorkerHeartbeat = workers.Any(w => w.Status == WorkerStatus.Healthy || (DateTimeOffset.UtcNow - w.LastHeartbeatAt).TotalMinutes < 10);
-                if (checkWorkerHeartbeat == true) passedChecks++;
-            }
-            else
-            {
-                checkWorkerProvisioned = false;
-                checkWorkerRegistered = false;
-                checkWorkerHeartbeat = false;
-            }
+            var workers = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers") ?? [];
+            workersCount = workers.Count;
+            checkWorkerProvisioned = workers.Count > 0;
+            checkWorkerRegistered = workers.Any(w => w.Status == WorkerStatus.Healthy);
+            var now = DateTimeOffset.UtcNow;
+            checkWorkerHeartbeat = workers.Any(w =>
+                w.Status == WorkerStatus.Healthy
+                && w.LastHeartbeatAt != default
+                && now - w.LastHeartbeatAt <= TimeSpan.FromSeconds(45));
         }
-        catch
+        catch (SentinelApiException ex)
         {
+            diagnosticError ??= ex.UserMessage;
+            workersCount = 0;
             checkWorkerProvisioned = false;
             checkWorkerRegistered = false;
             checkWorkerHeartbeat = false;
         }
 
-        // 7. Engine Ready
-        checkEngineReady = true;
-        passedChecks++;
+        passedChecks = new[]
+        {
+            checkApiStatus, checkDbStatus, checkBrokerStatus, checkWorkerProvisioned,
+            checkWorkerRegistered, checkWorkerHeartbeat, checkEngineReady
+        }.Count(check => check == true);
 
         checking = false;
     }
 
     private async Task ProvisionDefaultWorkerAsync()
     {
+        provisioningWorker = true;
+        provisioningMessage = null;
         try
         {
             var request = new WorkerProvisionRequest(
                 "1.0.0",
-                ["passive-inventory", "web-assessment", "private-web-assessment", "bounded-concurrency", "scope-validation", "passive-mock"],
-                ["10.20.0.0/16", "172.16.0.0/12"]);
-
-            await ApiClient.PostJsonAsync<WorkerProvisionRequest, WorkerResponse>("/api/v1/workers/worker-primary/provision", request);
+                ["passive-inventory", "passive-mock", "bounded-concurrency", "scope-validation"]);
+            await ApiClient.PostJsonAsync<WorkerProvisionRequest, WorkerResponse>(
+                "/api/v1/workers/worker-primary/provision", request);
+            provisioningMessage = "Worker identity provisioned. Start the worker process separately; provisioning does not mean a worker is running.";
             await RunDiagnosticsAsync();
         }
-        catch { }
+        catch (SentinelApiException ex)
+        {
+            provisioningMessage = $"Worker provisioning failed: {ex.UserMessage}";
+        }
+        finally
+        {
+            provisioningWorker = false;
+        }
     }
 
-    private sealed record HealthResponse(string Status, bool ActiveProbing);
+    private sealed record HealthResponse(
+        string Status,
+        string DatabaseStatus,
+        string MessagingStatus,
+        string AssessmentEngineStatus,
+        bool ActiveProbing);
 }

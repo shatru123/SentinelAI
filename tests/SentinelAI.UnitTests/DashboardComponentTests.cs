@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.JSInterop;
 using SentinelAI.Web.Components.Shared;
 
 namespace SentinelAI.UnitTests;
@@ -62,5 +63,41 @@ public sealed class DashboardComponentTests
         });
         Assert.Contains("href=\"/web-assessments\"", html);
         Assert.Contains("Launch Assessment", html);
+    }
+
+    [Fact]
+    public async Task CreatorProfile_renders_visible_creator_credit_and_profile_dialog()
+    {
+        await using var services = new ServiceCollection()
+            .AddLogging()
+            .AddSingleton<IJSRuntime, NoopJsRuntime>()
+            .BuildServiceProvider();
+
+        await using var renderer = new HtmlRenderer(
+            services,
+            services.GetRequiredService<ILoggerFactory>());
+
+        var html = await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            var component = await renderer.RenderComponentAsync<CreatorProfile>();
+            return component.ToHtmlString();
+        });
+
+        Assert.Contains("Created by", html);
+        Assert.Contains("Shatrughna Ambhore", html);
+        Assert.Contains("id=\\"modal-profile\\"", html);
+        Assert.Contains("aria-hidden=\\"true\\"", html);
+    }
+
+    private sealed class NoopJsRuntime : IJSRuntime
+    {
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args)
+            => ValueTask.FromResult(default(TValue)!);
+
+        public ValueTask<TValue> InvokeAsync<TValue>(
+            string identifier,
+            CancellationToken cancellationToken,
+            object?[]? args)
+            => ValueTask.FromResult(default(TValue)!);
     }
 }

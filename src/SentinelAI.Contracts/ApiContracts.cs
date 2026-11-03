@@ -233,3 +233,37 @@ public sealed record VulnerabilityCatalogListItem(
     string Description);
 
 public sealed record VulnerabilitySyncResponse(int RecordsProcessed);
+
+
+public sealed record AssessVulnerabilityRiskRequest(bool IsInternetFacing, bool IsBusinessCritical);
+
+public sealed record VulnerabilityTriageAssessmentResponse(
+    Guid Id,
+    Guid MatchId,
+    VulnerabilityRiskPriority Priority,
+    decimal? CvssBaseScore,
+    string? CvssVersion,
+    string? CvssVector,
+    DateTimeOffset? CvssObservedAt,
+    decimal? EpssScore,
+    decimal? EpssPercentile,
+    DateOnly? EpssAsOfDate,
+    bool IsKnownExploited,
+    string? KevCatalogVersion,
+    DateTimeOffset? KevCatalogReleasedAt,
+    bool IsInternetFacing,
+    bool IsBusinessCritical,
+    IReadOnlyCollection<string> Reasons,
+    string Disclaimer,
+    DateTimeOffset AssessedAt);
+
+public sealed record TransitionVulnerabilityMatchRequest(VulnerabilityLifecycleStatus Status, string Reason);
+
+public sealed record VulnerabilityMatchTransitionResponse(
+    Guid Id,
+    Guid MatchId,
+    VulnerabilityLifecycleStatus FromStatus,
+    VulnerabilityLifecycleStatus ToStatus,
+    Guid ActorId,
+    string Reason,
+    DateTimeOffset OccurredAt);

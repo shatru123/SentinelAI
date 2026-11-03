@@ -702,6 +702,20 @@ api.MapPost("/vulnerability-intelligence/epss/sync", async (
     return Results.Ok(new { recordsProcessed = processed });
 }).RequireAuthorization("Admin");
 
+api.MapGet("/vulnerability-intelligence/sync-status", async (
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var checkpoints = await db.VulnerabilitySyncCheckpoints.AsNoTracking()
+        .OrderBy(x => x.Source)
+        .Take(100)
+        .Select(x => new VulnerabilitySyncCheckpointResponse(
+            x.Source, x.Cursor, x.FeedVersion, x.LastAttemptAt, x.LastSucceededAt,
+            x.RecordsProcessed, x.LastErrorCategory))
+        .ToListAsync(cancellationToken);
+    return Results.Ok(checkpoints);
+}).RequireAuthorization("Reader");
+
 api.MapGet("/vulnerability-intelligence/cves", async (
     string? search,
     int limit,

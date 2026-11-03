@@ -1,0 +1,67 @@
+@inject IJSRuntime JS
+
+<div class="creator-credit">
+    <span class="creator-credit-label">Created by</span>
+    <button type="button" class="creator-credit-link" @onclick="OpenProfileAsync" aria-haspopup="dialog">
+        <span class="creator-credit-mark">SA</span>
+        <span>Shatrughna Ambhore</span>
+        <span aria-hidden="true">↗</span>
+    </button>
+</div>
+
+<div id="modal-profile"
+     class="creator-modal-backdrop"
+     role="dialog"
+     aria-modal="true"
+     aria-labelledby="profile-modal-title"
+     aria-hidden="true"
+     @onclick="CloseProfileAsync">
+    <div class="creator-profile-content" @onclick:stopPropagation="true">
+        <button type="button"
+                class="creator-modal-close modal-close"
+                @onclick="CloseProfileAsync"
+                title="Close"
+                aria-label="Close creator profile">✕</button>
+
+        <div class="creator-profile-body">
+            <div class="creator-photo-wrap">
+                <div class="creator-photo-glow"></div>
+                <a href="/images/shatrughna.jpg" target="_blank" rel="noopener noreferrer" title="View the full original photo in a new tab">
+                    <img src="/images/shatrughna.jpg" alt="Shatrughna Ambhore" class="creator-photo" />
+                </a>
+                <a href="/images/shatrughna.jpg" target="_blank" rel="noopener noreferrer" class="creator-full-view">
+                    <span aria-hidden="true">🔍</span> Full view
+                </a>
+            </div>
+
+            <h2 id="profile-modal-title">Shatrughna Ambhore</h2>
+            <span class="creator-profile-role">Lead Creator &amp; Software Engineer</span>
+            <p class="creator-profile-description">Architected SentinelAI.</p>
+
+            <div class="creator-profile-links">
+                <a href="mailto:ambhoreshatrughna@gmail.com">
+                    <span aria-hidden="true">✉️</span> ambhoreshatrughna@gmail.com
+                </a>
+                <a href="tel:+919604466334">
+                    <span aria-hidden="true">📞</span> +91 9604466334
+                </a>
+                <a href="https://github.com/shatru123/SentinelAI" target="_blank" rel="noopener noreferrer">
+                    <span aria-hidden="true">🐙</span> GitHub Repository
+                </a>
+            </div>
+
+            <div class="creator-profile-footer">
+                <a href="https://github.com/shatru123/SentinelAI" target="_blank" rel="noopener noreferrer">View SentinelAI on GitHub ↗</a>
+                <button type="button" class="secondary-button" @onclick="CloseProfileAsync">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private const string ModalId = "modal-profile";
+
+    private Task OpenProfileAsync() => JS.InvokeVoidAsync("openModal", ModalId).AsTask();
+
+    private Task CloseProfileAsync() => JS.InvokeVoidAsync("closeModal", ModalId).AsTask();
+}

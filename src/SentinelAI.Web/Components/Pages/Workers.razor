@@ -334,10 +334,10 @@
         isEditingWorker = false;
         modalIdentity = configuredWorkerIdentity;
         modalVersion = "1.0.0";
-        modalPrivateRanges = "10.20.0.0/16";
+        modalPrivateRanges = string.Empty;
         capPassiveInventory = true;
         capWebAssessment = true;
-        capPrivateWebAssessment = true;
+        capPrivateWebAssessment = false;
         capPassiveMock = true;
         capBoundedConcurrency = true;
         capScopeValidation = true;
@@ -368,6 +368,8 @@
     private async Task SubmitProvisionAsync()
     {
         if (string.IsNullOrWhiteSpace(modalIdentity)) { modalError = "Worker identity is required."; return; }
+        if (capPrivateWebAssessment && !capWebAssessment) { modalError = "Private web assessment requires the web-assessment capability."; return; }
+        if (capPrivateWebAssessment && string.IsNullOrWhiteSpace(modalPrivateRanges)) { modalError = "Add at least one administrator-approved private CIDR range."; return; }
         submittingModal = true;
         modalError = null;
 

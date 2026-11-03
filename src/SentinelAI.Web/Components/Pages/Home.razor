@@ -1,36 +1,272 @@
 @page "/"
 @attribute [Authorize]
-@using SentinelAI.Contracts
 @inject SentinelApiClient ApiClient
+@inject NavigationManager Navigation
 
-<PageTitle>Overview · SentinelAI</PageTitle>
-<div class="page-heading"><div><p class="eyebrow">Security operations / overview</p><h1>Good morning, operator.</h1><p class="muted">Your defensive posture at a glance.</p></div><AuthorizeView Roles="Admin,SecurityAnalyst"><Authorized><a class="primary-button" href="scans">+ New assessment</a></Authorized></AuthorizeView></div>
-<div class="metric-grid">
-    <div class="metric-card"><span>Assets observed</span><strong>@AssetCount</strong><small>Passive scope inventory</small></div>
-    <div class="metric-card"><span>Reachable assets</span><strong>—</strong><small>Passive observations do not confirm reachability</small></div>
-    <div class="metric-card"><span>Observed services</span><strong>—</strong><small>Active probing disabled</small></div>
-    <div class="metric-card"><span>Critical findings</span><strong>@FindingCount</strong><small>No findings yet</small></div>
-</div>
-<div class="content-grid">
-    <section class="panel posture-panel"><div class="panel-heading"><div><p class="eyebrow">Security posture</p><h2>Baseline readiness</h2></div><span class="status-pill healthy">FOUNDATION</span></div><div class="posture-score"><span>Phase 1</span><strong>Authorization<br />controls</strong><div class="ring"><span>SAFE</span></div></div><p class="muted">Deterministic scope validation is authoritative. AI remains advisory and no active network probing is enabled.</p></section>
-    <section class="panel activity-panel"><div class="panel-heading"><div><p class="eyebrow">Recent activity</p><h2>Audit stream</h2></div><a href="monitoring">View all</a></div>@if (Loading) { <p class="muted">Loading persisted activity…</p> } else if (!string.IsNullOrWhiteSpace(Error)) { <p class="error-text">@Error</p> } else { <div class="empty-state"><span class="empty-icon">⌁</span><strong>No activity yet</strong><p>Create an authorized scope to begin.</p></div> }</section>
-</div>
+<PageTitle>Security Operations Dashboard · SentinelAI</PageTitle>
+
+<PageHeader Eyebrow="Security Operations Center" Title="Defensive Operations Overview" Description="Real-time defensive posture, authorized assessments, asset inventory, and worker orchestration.">
+    <Actions>
+        <button class="secondary-button btn-sm" @onclick="LoadDashboardAsync" disabled="@loading">
+            <span>↻</span> Refresh Telemetry
+        </button>
+        <AuthorizeView Roles="Admin,SecurityAnalyst">
+            <Authorized>
+                <a class="secondary-button" href="scans">+ New Scan</a>
+                <a class="primary-button" href="web-assessments">+ New Web Assessment</a>
+            </Authorized>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+
+@if (loading)
+{
+    <LoadingState Message="Loading real-time SOC metrics and persisted assessment records..." />
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <ErrorState Message="@errorMessage" OnRetry="LoadDashboardAsync" />
+}
+else if (summary is not null)
+{
+    <!-- Top 8 Live Metric Cards -->
+    <div class="metric-grid">
+        <MetricCard Title="Assets Observed" Value="@summary.AssetsObserved.ToString()" Subtitle="Passive scope declarations" Accent="cyan" Icon="🌐" />
+        <MetricCard Title="Confirmed Reachable" Value="@summary.ReachabilityConfirmedAssets.ToString()" Subtitle="Verified reachability sources" Accent="green" Icon="✓" />
+        <MetricCard Title="Observed Services" Value="@summary.ObservedServices.ToString()" Subtitle="Recorded passive endpoints" Accent="cyan" Icon="🔌" />
+        <MetricCard Title="Total Findings" Value="@summary.TotalFindings.ToString()" Subtitle="@($"{summary.CriticalFindings} critical severity")" Accent="@(summary.CriticalFindings > 0 ? "red" : "amber")" Icon="⚡" />
+    </div>
+
+    <div class="metric-grid">
+        <MetricCard Title="Critical Findings" Value="@summary.CriticalFindings.ToString()" Subtitle="Immediate remediation required" Accent="@(summary.CriticalFindings > 0 ? "red" : "green")" Icon="🚨" />
+        <MetricCard Title="Active Assessments" Value="@summary.ActiveAssessments.ToString()" Subtitle="Web assessments running" Accent="cyan" Icon="🎯" />
+        <MetricCard Title="Running Jobs" Value="@summary.RunningJobs.ToString()" Subtitle="@($"{summary.TotalJobs} total jobs submitted")" Accent="cyan" Icon="⚙️" />
+        <MetricCard Title="Healthy Workers" Value="@($"{summary.HealthyWorkers} / {summary.TotalWorkers}")" Subtitle="Heartbeat &amp; capacity verified" Accent="@(summary.HealthyWorkers > 0 ? "green" : "amber")" Icon="🛡️" />
+    </div>
+
+    <!-- Middle Split: Vulnerability Distribution & Audit Stream -->
+    <div class="content-grid">
+        <!-- Findings Distribution Panel -->
+        <section class="panel">
+            <div class="panel-heading">
+                <div>
+                    <div class="eyebrow">Threats &amp; Exposure</div>
+                    <h2>Vulnerability Distribution</h2>
+                </div>
+                <a href="findings" class="secondary-button btn-sm">Inspect All Findings →</a>
+            </div>
+
+            @if (summary.TotalFindings > 0)
+            {
+                <div class="severity-bar">
+                    @if (summary.CriticalFindings > 0)
+                    {
+                        <div class="severity-bar-segment bg-critical" style="width: @CalculatePct(summary.CriticalFindings, summary.TotalFindings)%" title="Critical: @summary.CriticalFindings"></div>
+                    }
+                    @if (summary.HighFindings > 0)
+                    {
+                        <div class="severity-bar-segment bg-high" style="width: @CalculatePct(summary.HighFindings, summary.TotalFindings)%" title="High: @summary.HighFindings"></div>
+                    }
+                    @if (summary.MediumFindings > 0)
+                    {
+                        <div class="severity-bar-segment bg-medium" style="width: @CalculatePct(summary.MediumFindings, summary.TotalFindings)%" title="Medium: @summary.MediumFindings"></div>
+                    }
+                    @if (summary.LowFindings > 0)
+                    {
+                        <div class="severity-bar-segment bg-low" style="width: @CalculatePct(summary.LowFindings, summary.TotalFindings)%" title="Low: @summary.LowFindings"></div>
+                    }
+                    @if (summary.InfoFindings > 0)
+                    {
+                        <div class="severity-bar-segment bg-info" style="width: @CalculatePct(summary.InfoFindings, summary.TotalFindings)%" title="Informational: @summary.InfoFindings"></div>
+                    }
+                </div>
+
+                <div class="severity-legend">
+                    <div class="legend-item"><span class="legend-color bg-critical"></span><span>Critical: <strong>@summary.CriticalFindings</strong></span></div>
+                    <div class="legend-item"><span class="legend-color bg-high"></span><span>High: <strong>@summary.HighFindings</strong></span></div>
+                    <div class="legend-item"><span class="legend-color bg-medium"></span><span>Medium: <strong>@summary.MediumFindings</strong></span></div>
+                    <div class="legend-item"><span class="legend-color bg-low"></span><span>Low: <strong>@summary.LowFindings</strong></span></div>
+                    <div class="legend-item"><span class="legend-color bg-info"></span><span>Info: <strong>@summary.InfoFindings</strong></span></div>
+                </div>
+            }
+            else
+            {
+                <EmptyState Icon="🛡️" Title="No Vulnerabilities Detected" Message="No security findings have been recorded for your authorized assets or web targets." ActionText="Start Web Assessment" OnAction="@(() => Navigation.NavigateTo("web-assessments"))" />
+            }
+
+            <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line);">
+                <div class="form-hint">
+                    Passive inventory records authorized scope declarations only without active port probing. Web vulnerability checks execute exclusively within authorized scopes and bounded operation profiles.
+                </div>
+            </div>
+        </section>
+
+        <!-- Recent Audit Stream Panel -->
+        <section class="panel">
+            <div class="panel-heading">
+                <div>
+                    <div class="eyebrow">Audit Stream</div>
+                    <h2>Recent Operations</h2>
+                </div>
+                <a href="monitoring" class="secondary-button btn-sm">Monitoring Console →</a>
+            </div>
+
+            @if (summary.RecentEvents.Count > 0)
+            {
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Action</th>
+                                <th>Resource</th>
+                                <th>Timestamp</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var ev in summary.RecentEvents)
+                            {
+                                <tr>
+                                    <td>
+                                        <StatusBadge Status="@ev.Action" />
+                                    </td>
+                                    <td>
+                                        <span class="td-mono">@ev.ResourceType</span>
+                                        @if (!string.IsNullOrWhiteSpace(ev.Detail))
+                                        {
+                                            <div class="muted" style="font-size: 0.7rem;">@ev.Detail</div>
+                                        }
+                                    </td>
+                                    <td class="td-mono muted">@ev.OccurredAt.ToLocalTime().ToString("HH:mm:ss")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else
+            {
+                <EmptyState Icon="📡" Title="Audit Stream Clear" Message="No operational events recorded in this tenant yet. Execute a scan to populate the audit stream." />
+            }
+        </section>
+    </div>
+
+    <!-- Bottom Row: Recent Assessments & Scans -->
+    <div class="content-grid">
+        <section class="panel">
+            <div class="panel-heading">
+                <div>
+                    <div class="eyebrow">Web Security Engine</div>
+                    <h2>Recent Web Assessments</h2>
+                </div>
+                <a href="web-assessments" class="secondary-button btn-sm">All Assessments →</a>
+            </div>
+
+            @if (summary.RecentAssessments.Count > 0)
+            {
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Target URL</th>
+                                <th>Profile</th>
+                                <th>Status</th>
+                                <th>Endpoints</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var a in summary.RecentAssessments)
+                            {
+                                <tr>
+                                    <td><span class="td-mono">@a.TargetUrl</span></td>
+                                    <td><span class="status-pill pill-neutral">@a.Profile</span></td>
+                                    <td><StatusBadge Status="@a.Status.ToString()" /></td>
+                                    <td class="td-mono">@a.DiscoveredEndpointCount</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else
+            {
+                <EmptyState Icon="🎯" Title="No Web Assessments Yet" Message="Launch a non-destructive assessment against an authorized public or private web application." ActionText="Create Assessment" OnAction="@(() => Navigation.NavigateTo("web-assessments"))" />
+            }
+        </section>
+
+        <section class="panel">
+            <div class="panel-heading">
+                <div>
+                    <div class="eyebrow">Passive Network Engine</div>
+                    <h2>Recent Scan Jobs</h2>
+                </div>
+                <a href="scans" class="secondary-button btn-sm">All Scans →</a>
+            </div>
+
+            @if (summary.RecentScans.Count > 0)
+            {
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Scope</th>
+                                <th>Profile</th>
+                                <th>Status</th>
+                                <th>Assigned Worker</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var s in summary.RecentScans)
+                            {
+                                <tr>
+                                    <td><strong>@s.ScopeName</strong></td>
+                                    <td><span class="status-pill pill-neutral">@s.OperationProfile</span></td>
+                                    <td><StatusBadge Status="@s.Status.ToString()" /></td>
+                                    <td><span class="td-mono">@(s.AssignedWorkerIdentity ?? "unassigned")</span></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else
+            {
+                <EmptyState Icon="🛡️" Title="No Scans Submitted" Message="Submit a passive network inventory job against an authorized scope definition." ActionText="Submit Scan" OnAction="@(() => Navigation.NavigateTo("scans"))" />
+            }
+        </section>
+    </div>
+}
 
 @code {
-    private int AssetCount;
-    private int FindingCount;
-    private bool Loading = true;
-    private string? Error;
+    private DashboardSummaryResponse? summary;
+    private bool loading = true;
+    private string? errorMessage;
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadDashboardAsync();
+    }
+
+    private async Task LoadDashboardAsync()
+    {
+        loading = true;
+        errorMessage = null;
         try
         {
-            var assets = await ApiClient.GetPageAsync<AssetResponse>("/api/v1/assets", 1, 1);
-            var findings = await ApiClient.GetPageAsync<FindingResponse>("/api/v1/findings", 1, 1);
-            AssetCount = Math.Max(0, assets.TotalCount); FindingCount = Math.Max(0, findings.TotalCount);
+            summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
         }
-        catch (SentinelApiException exception) { Error = exception.UserMessage; }
-        finally { Loading = false; }
+        catch (SentinelApiException ex)
+        {
+            errorMessage = ex.UserMessage;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = "Failed to load dashboard summary: " + ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
     }
+
+    private static double CalculatePct(int part, int total) => total <= 0 ? 0 : Math.Round((double)part / total * 100, 1);
 }

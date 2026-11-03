@@ -37,11 +37,23 @@ public sealed class SentinelApiClient(
     IConfiguration configuration,
     ILogger<SentinelApiClient> logger)
 {
-    public async Task<PagedResponse<T>> GetPageAsync<T>(string endpoint, int page, int pageSize, CancellationToken cancellationToken = default)
+    public Task<PagedResponse<T>> GetPageAsync<T>(string endpoint, int page, int pageSize, CancellationToken cancellationToken = default)
+        => GetPageAsync<T>(endpoint, page, pageSize, null, cancellationToken);
+
+    public async Task<PagedResponse<T>> GetPageAsync<T>(string endpoint, int page, int pageSize, IDictionary<string, string?>? parameters, CancellationToken cancellationToken = default)
     {
         var normalizedPage = Math.Max(1, page);
         var normalizedPageSize = Math.Clamp(pageSize, 1, 100);
-        var requestPath = $"{endpoint}?page={normalizedPage}&pageSize={normalizedPageSize}";
+        var query = new System.Text.StringBuilder($"{endpoint}?page={normalizedPage}&pageSize={normalizedPageSize}");
+        if (parameters is not null)
+        {
+            foreach (var (key, value) in parameters)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                    query.Append('&').Append(Uri.EscapeDataString(key)).Append('=').Append(Uri.EscapeDataString(value));
+            }
+        }
+        var requestPath = query.ToString();
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, requestPath);

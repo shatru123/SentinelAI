@@ -267,6 +267,85 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal(HttpStatusCode.OK, (await reader.GetAsync("/api/v1/findings")).StatusCode);
     }
 
+    [Fact]
+    public async Task Dashboard_summary_returns_live_tenant_metrics()
+    {
+        var testTenant = Guid.NewGuid();
+        var otherTenant = Guid.NewGuid();
+        await SeedInventoryAsync(testTenant, otherTenant);
+
+        using var client = CreateAuthenticatedClient(testTenant, Guid.NewGuid(), UserRole.Viewer);
+        var response = await client.GetAsync("/api/v1/dashboard/summary");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var summary = await response.Content.ReadFromJsonAsync<DashboardSummaryResponse>();
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.AssetsObserved);
+        Assert.Equal(1, summary.ReachabilityConfirmedAssets);
+        Assert.Equal(1, summary.ObservedServices);
+        Assert.Equal(1, summary.TotalFindings);
+        Assert.Equal(1, summary.HighFindings);
+        Assert.Equal(0, summary.CriticalFindings);
+    }
+
+    [Fact]
+    public async Task Scans_endpoint_returns_paginated_summary_for_tenant()
+    {
+        var testTenant = Guid.NewGuid();
+        using var client = CreateAuthenticatedClient(testTenant, userId, UserRole.SecurityAnalyst);
+
+        var scope = new CreateScopeRequest("scans-test-scope", [new TargetDefinition(TargetKind.Network, "10.0.0.0/24")], [], ["mock-passive"], 30, 300, "ticket-scans", DateTimeOffset.UtcNow.AddHours(1));
+        var scopeResp = await client.PostAsJsonAsync("/api/v1/scopes", scope);
+        Assert.Equal(HttpStatusCode.Created, scopeResp.StatusCode);
+        var createdScope = await scopeResp.Content.ReadFromJsonAsync<ScopeResponse>();
+
+        var scanResp = await client.PostAsJsonAsync("/api/v1/scans", new CreateScanRequest(createdScope!.Id, "mock-passive"));
+        Assert.Equal(HttpStatusCode.Accepted, scanResp.StatusCode);
+
+        var listResp = await client.GetAsync("/api/v1/scans?page=1&pageSize=25");
+        Assert.Equal(HttpStatusCode.OK, listResp.StatusCode);
+
+        var pagedScans = await listResp.Content.ReadFromJsonAsync<PagedResponse<ScanJobSummaryResponse>>();
+        Assert.NotNull(pagedScans);
+        Assert.True(pagedScans.TotalCount >= 1);
+        Assert.Contains(pagedScans.Items, s => s.ScopeName == "scans-test-scope");
+    }
+
+    [Fact]
+    public async Task Finding_detail_returns_complete_evidence_and_context()
+    {
+        var testTenant = Guid.NewGuid();
+        var testUser = Guid.NewGuid();
+        Guid findingId;
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var targetScope = new TargetScope(testTenant, "finding-test-scope", testUser, DateTimeOffset.UtcNow.AddHours(1));
+            var finding = new Finding(testTenant, null, "Test Injection Flaw", FindingSeverity.Critical);
+            var evidence = new Evidence(testTenant, finding.Id, "http-traffic", "Injected canary observed in response body", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+
+            db.AddRange(targetScope, finding, evidence);
+            await db.SaveChangesAsync();
+            findingId = finding.Id;
+        }
+
+        using var client = CreateAuthenticatedClient(testTenant, testUser, UserRole.Viewer);
+        var response = await client.GetAsync($"/api/v1/findings/{findingId}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var detail = await response.Content.ReadFromJsonAsync<FindingDetailResponse>();
+        Assert.NotNull(detail);
+        Assert.Equal("Test Injection Flaw", detail.Title);
+        Assert.Equal(FindingSeverity.Critical, detail.Severity);
+        Assert.Single(detail.Evidence);
+        Assert.Equal("http-traffic", detail.Evidence.First().Source);
+
+        using var otherClient = CreateAuthenticatedClient(Guid.NewGuid(), Guid.NewGuid(), UserRole.Viewer);
+        var forbiddenResp = await otherClient.GetAsync($"/api/v1/findings/{findingId}");
+        Assert.Equal(HttpStatusCode.NotFound, forbiddenResp.StatusCode);
+    }
+
     private HttpClient CreateAuthenticatedClient(Guid tenant, Guid user, UserRole role)
     {
         var client = factory.CreateClient();

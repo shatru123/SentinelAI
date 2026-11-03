@@ -1,52 +1,315 @@
 @page "/findings"
 @attribute [Authorize]
 @using SentinelAI.Contracts
+@using SentinelAI.Domain
 @inject SentinelApiClient ApiClient
-<PageTitle>Vulnerabilities · SentinelAI</PageTitle>
+<PageTitle>Vulnerabilities · SentinelAI SOC</PageTitle>
 
-<div class="page-heading"><div><p class="eyebrow">Risk / evidence-backed</p><h1>Vulnerabilities</h1><p class="muted">Findings become available when deterministic checks produce evidence.</p></div></div>
-<section class="panel">
-    <div class="panel-heading"><h2>Findings queue</h2><span class="status-pill healthy">NO ACTIVE SCANS</span></div>
-    @if (loading)
+<PageHeader Title="Vulnerability & Posture Registry"
+            Eyebrow="Risk / Evidence-Backed"
+            Description="Evidence-backed vulnerability findings produced by authorized assessment checks. Every finding is verifiable with cryptographic hashes and redacted proof-of-observation.">
+    <Actions>
+        <button class="soc-btn soc-btn-secondary" @onclick="RefreshAsync" disabled="@loading">
+            <span class="icon">↻</span> Refresh
+        </button>
+        <a href="/web-assessments" class="soc-btn soc-btn-primary">
+            <span class="icon">+</span> Launch Assessment
+        </a>
+    </Actions>
+</PageHeader>
+
+<div class="metrics-grid" style="margin-bottom: var(--space-6);">
+    <MetricCard Title="Critical Severity"
+                Value="@criticalCount.ToString("N0")"
+                Icon="▲"
+                StatusClass="@(criticalCount > 0 ? "critical" : "neutral")"
+                Subtitle="Immediate remediation required" />
+    <MetricCard Title="High Severity"
+                Value="@highCount.ToString("N0")"
+                Icon="●"
+                StatusClass="@(highCount > 0 ? "danger" : "neutral")"
+                Subtitle="Elevated attack surface risk" />
+    <MetricCard Title="Medium Severity"
+                Value="@mediumCount.ToString("N0")"
+                Icon="◆"
+                StatusClass="@(mediumCount > 0 ? "warning" : "neutral")"
+                Subtitle="Configuration & hygiene flaws" />
+    <MetricCard Title="Low & Info"
+                Value="@((lowCount + infoCount).ToString("N0"))"
+                Icon="■"
+                StatusClass="neutral"
+                Subtitle="Hardening observations" />
+</div>
+
+<section class="soc-panel">
+    <div class="soc-panel-header">
+        <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+            <h2 class="soc-panel-title">Findings Registry</h2>
+            <span class="soc-badge soc-badge-neutral">@totalCount total</span>
+        </div>
+        <div style="display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center;">
+            <input type="search"
+                   class="soc-input"
+                   placeholder="Search finding title or target…"
+                   style="max-width: 240px;"
+                   value="@searchTerm"
+                   @onchange="OnSearchChanged" />
+
+            <select class="soc-select" value="@selectedSeverity" @onchange="OnSeverityChanged" style="width: auto;">
+                <option value="All">All Severities</option>
+                <option value="Critical">Critical</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+                <option value="Informational">Informational</option>
+            </select>
+        </div>
+    </div>
+
+    @if (loading && findings.Count == 0)
     {
-        <p class="muted">Loading persisted findings…</p>
+        <LoadingState Message="Querying vulnerability registry…" />
     }
     else if (error is not null)
     {
-        <div class="error-state"><p class="error-text">@error</p><button class="secondary-button" @onclick="RetryAsync">Retry</button></div>
+        <ErrorState Message="@error" OnRetry="RetryAsync" />
     }
     else if (findings.Count == 0)
     {
-        <div class="empty-state"><span class="empty-icon">◌</span><strong>No findings yet</strong><p>Phase 1 does not perform active probing or vulnerability exploitation.</p></div>
+        <EmptyState Title="No Findings Detected"
+                    Message="@(string.IsNullOrWhiteSpace(searchTerm) ? "The vulnerability registry is currently clean. Run an authorized web assessment to discover posture issues." : "No findings match your search and filter criteria.")"
+                    ActionText="Launch Web Assessment"
+                    ActionUrl="/web-assessments" />
     }
     else
     {
-        <table><thead><tr><th>Title</th><th>Severity</th><th>Asset</th><th>Created</th></tr></thead><tbody>
-        @foreach (var finding in findings)
-        {
-            <tr><td>@DisplayTitle(finding)</td><td>@finding.Severity</td><td>@DisplayAsset(finding)</td><td>@DisplayTime(finding.CreatedAt)</td></tr>
-        }
-        </tbody></table>
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead>
+                    <tr>
+                        <th style="width: 120px;">Severity</th>
+                        <th>Finding Title</th>
+                        <th>Target Context</th>
+                        <th>Discovered</th>
+                        <th style="text-align: right;">Evidence & Remediation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var finding in findings)
+                    {
+                        <tr>
+                            <td>
+                                <SeverityBadge Severity="@finding.Severity" />
+                            </td>
+                            <td>
+                                <strong style="color: var(--text-primary); font-size: 0.9375rem;">
+                                    @DisplayTitle(finding)
+                                </strong>
+                            </td>
+                            <td>
+                                @if (finding.AssetId is not null)
+                                {
+                                    <span class="text-muted" style="font-family: var(--font-mono); font-size: 0.8125rem;">
+                                        Asset @finding.AssetId.Value.ToString().Substring(0, 8)…
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span class="soc-badge soc-badge-neutral">Web Target</span>
+                                }
+                            </td>
+                            <td class="text-muted" style="font-size: 0.8125rem;">
+                                @DisplayTime(finding.CreatedAt)
+                            </td>
+                            <td style="text-align: right;">
+                                <button class="soc-btn soc-btn-secondary"
+                                        style="padding: var(--space-1) var(--space-3); font-size: 0.75rem;"
+                                        @onclick="() => InspectFindingAsync(finding.Id)">
+                                    Inspect Evidence
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <Pagination CurrentPage="page"
+                    TotalCount="totalCount"
+                    PageSize="PageSize"
+                    OnPageChange="GoToPageAsync" />
     }
-    <div class="pagination" aria-label="Finding pages">
-        <button class="secondary-button" @onclick="PreviousPageAsync" disabled="@(loading || page <= 1)">Previous</button>
-        <span class="muted">Page @this.page of @PageCount</span>
-        <button class="secondary-button" @onclick="NextPageAsync" disabled="@(loading || !HasNextPage)">Next</button>
-    </div>
 </section>
+
+<DetailDrawer Title="Vulnerability Dossier"
+              IsOpen="isDrawerOpen"
+              OnClose="CloseDrawer">
+    @if (loadingDetail)
+    {
+        <LoadingState Message="Loading cryptographic evidence and remediation dossier…" />
+    }
+    else if (detailError is not null)
+    {
+        <ErrorState Message="@detailError" OnRetry="() => InspectFindingAsync(selectedFindingId)" />
+    }
+    else if (findingDetail is not null)
+    {
+        <div style="margin-bottom: var(--space-4); padding-bottom: var(--space-4); border-bottom: 1px solid var(--border-subtle);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: var(--space-2);">
+                <h3 style="font-size: 1.125rem; color: var(--text-primary); margin: 0;">@findingDetail.Title</h3>
+                <SeverityBadge Severity="@findingDetail.Severity" />
+            </div>
+            <div style="display: flex; gap: var(--space-3); font-size: 0.8125rem; color: var(--text-muted); flex-wrap: wrap;">
+                <span>Category: <strong>@(findingDetail.Category ?? "General")</strong></span>
+                <span>Confidence: <strong>@(findingDetail.Confidence ?? "Medium")</strong></span>
+                <span>Status: <span class="soc-badge soc-badge-neutral">@findingDetail.CheckStatus</span></span>
+                <span>Observed: @DisplayTime(findingDetail.CreatedAt)</span>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(findingDetail.AffectedUrl))
+        {
+            <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-4);">
+                <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: var(--space-1);">Affected Endpoint</div>
+                <div style="font-family: var(--font-mono); font-size: 0.875rem; color: var(--primary-accent); word-break: break-all;">
+                    @if (!string.IsNullOrWhiteSpace(findingDetail.HttpMethod))
+                    {
+                        <span class="soc-badge soc-badge-neutral" style="margin-right: var(--space-2);">@findingDetail.HttpMethod</span>
+                    }
+                    @findingDetail.AffectedUrl
+                </div>
+                @if (!string.IsNullOrWhiteSpace(findingDetail.Parameter))
+                {
+                    <div style="margin-top: var(--space-2); font-size: 0.8125rem; color: var(--text-muted);">
+                        Parameter: <code>@findingDetail.Parameter</code>
+                    </div>
+                }
+            </div>
+        }
+
+        <div style="margin-bottom: var(--space-4);">
+            <h4 style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: var(--space-2);">Description & Impact</h4>
+            <p style="font-size: 0.875rem; color: var(--text-primary); line-height: 1.6; margin-bottom: var(--space-3);">
+                @findingDetail.Description
+            </p>
+            @if (!string.IsNullOrWhiteSpace(findingDetail.Impact))
+            {
+                <div style="background: rgba(255, 127, 135, 0.06); border-left: 3px solid var(--color-danger); padding: var(--space-3); font-size: 0.875rem; color: var(--text-primary);">
+                    <strong>Security Impact:</strong> @findingDetail.Impact
+                </div>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(findingDetail.Remediation))
+        {
+            <div style="margin-bottom: var(--space-4); background: rgba(131, 226, 154, 0.06); border-left: 3px solid var(--color-success); padding: var(--space-3);">
+                <h4 style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-success); margin-bottom: var(--space-1);">Remediation Guidance</h4>
+                <p style="font-size: 0.875rem; color: var(--text-primary); margin: 0; line-height: 1.5;">
+                    @findingDetail.Remediation
+                </p>
+            </div>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(findingDetail.Reproduction))
+        {
+            <div style="margin-bottom: var(--space-4);">
+                <h4 style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: var(--space-2);">Deterministic Reproduction</h4>
+                <pre class="soc-code-block" style="font-size: 0.8125rem; overflow-x: auto;">@findingDetail.Reproduction</pre>
+            </div>
+        }
+
+        <div style="margin-bottom: var(--space-4);">
+            <h4 style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: var(--space-2);">
+                Evidence Artifacts (@findingDetail.Evidence.Count)
+            </h4>
+            @if (findingDetail.Evidence.Count == 0)
+            {
+                <p class="text-muted" style="font-size: 0.8125rem;">No separate cryptographic evidence records attached to this finding.</p>
+            }
+            else
+            {
+                @foreach (var ev in findingDetail.Evidence)
+                {
+                    <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-2);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
+                            <span class="soc-badge soc-badge-neutral">@ev.Source</span>
+                            <span class="text-muted" style="font-size: 0.75rem;">SHA256: @ev.Sha256.Substring(0, 16)…</span>
+                        </div>
+                        <div style="font-size: 0.8125rem; color: var(--text-primary); margin-bottom: var(--space-2);">@ev.Summary</div>
+                        @if (!string.IsNullOrWhiteSpace(ev.RedactedContent))
+                        {
+                            <pre class="soc-code-block" style="font-size: 0.75rem; max-height: 160px; overflow-y: auto;">@ev.RedactedContent</pre>
+                        }
+                    </div>
+                }
+            }
+        </div>
+
+        @if (findingDetail.Screenshots.Count > 0)
+        {
+            <div>
+                <h4 style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: var(--space-2);">
+                    Captured Screenshots (@findingDetail.Screenshots.Count)
+                </h4>
+                @foreach (var shot in findingDetail.Screenshots)
+                {
+                    <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-2);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
+                            <span class="soc-badge soc-badge-neutral">@shot.ScreenshotType</span>
+                            <span class="text-muted" style="font-size: 0.75rem;">@shot.Format.ToUpperInvariant()</span>
+                        </div>
+                        <div style="font-size: 0.75rem; font-family: var(--font-mono); color: var(--text-muted);">
+                            SHA256: @shot.Sha256
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    }
+</DetailDrawer>
 
 @code {
     private const int PageSize = 25;
     private List<FindingResponse> findings = [];
     private int page = 1;
     private int totalCount;
+    private int criticalCount;
+    private int highCount;
+    private int mediumCount;
+    private int lowCount;
+    private int infoCount;
     private bool loading = true;
     private string? error;
 
-    private int PageCount => Math.Max(1, (int)Math.Ceiling(totalCount / (double)PageSize));
-    private bool HasNextPage => page < PageCount;
+    private string searchTerm = string.Empty;
+    private string selectedSeverity = "All";
 
-    protected override async Task OnInitializedAsync() => await LoadPageAsync();
+    // Drawer state
+    private bool isDrawerOpen;
+    private Guid selectedFindingId;
+    private FindingDetailResponse? findingDetail;
+    private bool loadingDetail;
+    private string? detailError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSummaryAsync();
+        await LoadPageAsync();
+    }
+
+    private async Task LoadSummaryAsync()
+    {
+        try
+        {
+            var summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
+            criticalCount = summary.CriticalFindings;
+            highCount = summary.HighFindings;
+            mediumCount = summary.MediumFindings;
+            lowCount = summary.LowFindings;
+            infoCount = summary.InfoFindings;
+        }
+        catch { }
+    }
 
     private async Task LoadPageAsync()
     {
@@ -54,19 +317,78 @@
         error = null;
         try
         {
-            var result = await ApiClient.GetPageAsync<FindingResponse>("/api/v1/findings", page, PageSize);
+            var parameters = new Dictionary<string, string?>();
+            if (!string.IsNullOrWhiteSpace(searchTerm)) parameters["search"] = searchTerm;
+            if (selectedSeverity != "All") parameters["severity"] = selectedSeverity;
+
+            var result = await ApiClient.GetPageAsync<FindingResponse>("/api/v1/findings", page, PageSize, parameters);
             findings = result.Items?.ToList() ?? [];
             totalCount = Math.Max(0, result.TotalCount);
             page = Math.Max(1, result.Page);
         }
-        catch (SentinelApiException exception) { findings = []; totalCount = 0; error = exception.UserMessage; }
-        finally { loading = false; }
+        catch (SentinelApiException exception)
+        {
+            findings = [];
+            totalCount = 0;
+            error = exception.UserMessage;
+        }
+        finally
+        {
+            loading = false;
+        }
     }
 
+    private async Task OnSearchChanged(ChangeEventArgs e)
+    {
+        searchTerm = e.Value?.ToString() ?? string.Empty;
+        page = 1;
+        await LoadPageAsync();
+    }
+
+    private async Task OnSeverityChanged(ChangeEventArgs e)
+    {
+        selectedSeverity = e.Value?.ToString() ?? "All";
+        page = 1;
+        await LoadPageAsync();
+    }
+
+    private Task RefreshAsync() => LoadPageAsync();
     private Task RetryAsync() => LoadPageAsync();
-    private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadPageAsync(); } }
-    private async Task NextPageAsync() { if (HasNextPage) { page++; await LoadPageAsync(); } }
-    private static string DisplayTitle(FindingResponse finding) => string.IsNullOrWhiteSpace(finding.Title) ? "Untitled finding" : finding.Title;
-    private static string DisplayAsset(FindingResponse finding) => finding.AssetId is Guid assetId ? assetId.ToString() : "Unlinked asset";
+
+    private async Task GoToPageAsync(int newPage)
+    {
+        page = newPage;
+        await LoadPageAsync();
+    }
+
+    private async Task InspectFindingAsync(Guid findingId)
+    {
+        selectedFindingId = findingId;
+        isDrawerOpen = true;
+        loadingDetail = true;
+        detailError = null;
+        findingDetail = null;
+
+        try
+        {
+            findingDetail = await ApiClient.GetJsonAsync<FindingDetailResponse>($"/api/v1/findings/{findingId}");
+        }
+        catch (SentinelApiException ex)
+        {
+            detailError = ex.UserMessage;
+        }
+        finally
+        {
+            loadingDetail = false;
+        }
+    }
+
+    private void CloseDrawer()
+    {
+        isDrawerOpen = false;
+        findingDetail = null;
+    }
+
+    private static string DisplayTitle(FindingResponse finding) => string.IsNullOrWhiteSpace(finding.Title) ? "Untitled Finding" : finding.Title;
     private static string DisplayTime(DateTimeOffset value) => value == default ? "Not available" : value.ToLocalTime().ToString("g");
 }

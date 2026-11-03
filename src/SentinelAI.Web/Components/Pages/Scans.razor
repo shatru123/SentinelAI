@@ -3,38 +3,589 @@
 @using SentinelAI.Contracts
 @using SentinelAI.Domain
 @inject SentinelApiClient ApiClient
-@inject NavigationManager Navigation
-<PageTitle>Scans · SentinelAI</PageTitle>
-<div class="page-heading"><div><p class="eyebrow">Assessments / controlled execution</p><h1>Security scans</h1><p class="muted">Every assessment is bound to a validated authorization scope.</p></div></div>
-<AuthorizeView Roles="Admin,SecurityAnalyst"><Authorized>
-<section class="panel assessment-form"><div class="panel-heading"><div><p class="eyebrow">Authorized workflow</p><h2>New passive assessment</h2></div><span class="status-pill healthy">NO ACTIVE PROBING</span></div>
-<div class="form-grid"><label>Assessment name<input @bind="name" maxlength="80" /></label><label>Private target or CIDR<input @bind="target" maxlength="253" /></label><label>Operation profile<select @bind="profile"><option value="network-inventory-passive">network-inventory-passive</option><option value="mock-passive">mock-passive</option></select></label><label>Expires in hours<input type="number" min="1" max="720" @bind="expiryHours" /></label></div>
-<label>Authorization evidence<input @bind="evidence" maxlength="200" /></label><button class="primary-button" @onclick="CreateAssessment" disabled="@submitting">@(submitting ? "Submitting…" : "+ Create authorized assessment")</button>
-@if (!string.IsNullOrWhiteSpace(message)) { <p class="@(failed ? "error-text" : "muted")">@message</p> }</section>
-</Authorized><NotAuthorized><section class="panel"><p class="muted">Your role can view assessments but cannot create them.</p></section></NotAuthorized></AuthorizeView>
-<section class="panel"><div class="empty-state"><span class="empty-icon">◎</span><strong>Passive assessment queue</strong><p>Jobs are delivered to the standalone worker through RabbitMQ. Active network probing remains disabled.</p></div></section>
+<PageTitle>Security Scans · SentinelAI SOC</PageTitle>
+
+<PageHeader Title="Security Scans & Assessments"
+            Eyebrow="Assessments / Controlled Execution"
+            Description="Submit passive inventory jobs and track scheduled background workers. Every assessment is cryptographically bound to an authorized scope.">
+    <Actions>
+        <button class="soc-btn soc-btn-secondary" @onclick="RefreshAsync" disabled="@loading">
+            <span class="icon">↻</span> Refresh
+        </button>
+        <AuthorizeView Roles="Admin,SecurityAnalyst">
+            <Authorized>
+                <button class="soc-btn soc-btn-primary" @onclick="ToggleWizard">
+                    <span class="icon">@(showWizard ? "✕" : "+")</span> @(showWizard ? "Close Wizard" : "New Assessment")
+                </button>
+            </Authorized>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+
+<div class="metrics-grid" style="margin-bottom: var(--space-6);">
+    <MetricCard Title="Total Executed Scans"
+                Value="@totalCount.ToString("N0")"
+                Icon="◎"
+                Subtitle="Lifetime tenant scan jobs" />
+    <MetricCard Title="Active / Queued Jobs"
+                Value="@activeJobsCount.ToString("N0")"
+                Icon="⚙"
+                StatusClass="@(activeJobsCount > 0 ? "warning" : "neutral")"
+                Subtitle="Running or pending workers" />
+    <MetricCard Title="Completed Jobs"
+                Value="@completedJobsCount.ToString("N0")"
+                Icon="✓"
+                StatusClass="healthy"
+                Subtitle="Successfully finished assessments" />
+    <MetricCard Title="Execution Engine"
+                Value="Strict Bounded"
+                Icon="🛡"
+                StatusClass="healthy"
+                Subtitle="Safe passive and mock profiles" />
+</div>
+
+@if (showWizard)
+{
+    <section class="soc-panel" style="margin-bottom: var(--space-6); border-color: var(--primary-accent);">
+        <div class="soc-panel-header">
+            <div>
+                <p class="soc-eyebrow" style="color: var(--primary-accent);">Assessment Provisioning Wizard</p>
+                <h2 class="soc-panel-title">Step @wizardStep of 3: @GetStepTitle(wizardStep)</h2>
+            </div>
+            <div class="soc-wizard-steps">
+                <span class="soc-wizard-step @(wizardStep == 1 ? "active" : (wizardStep > 1 ? "completed" : ""))">1. Parameters</span>
+                <span class="soc-wizard-step @(wizardStep == 2 ? "active" : (wizardStep > 2 ? "completed" : ""))">2. Authorization</span>
+                <span class="soc-wizard-step @(wizardStep == 3 ? "active" : "")">3. Execution</span>
+            </div>
+        </div>
+
+        @if (wizardStep == 1)
+        {
+            <div class="soc-form-grid" style="margin-bottom: var(--space-4);">
+                <div class="soc-form-group">
+                    <label class="soc-label">Scope / Assessment Name</label>
+                    <input class="soc-input" @bind="formName" maxlength="80" placeholder="e.g. corporate-lan-passive" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Target Address or CIDR</label>
+                    <input class="soc-input" @bind="formTarget" maxlength="253" placeholder="e.g. 10.20.0.0/16 or 192.168.1.0/24" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Target Kind</label>
+                    <select class="soc-select" @bind="formTargetKind">
+                        <option value="@TargetKind.Network">Network CIDR / Range</option>
+                        <option value="@TargetKind.Web">Web Application</option>
+                        <option value="@TargetKind.Code">Code Repository</option>
+                    </select>
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Operation Profile</label>
+                    <select class="soc-select" @bind="formProfile">
+                        <option value="network-inventory-passive">network-inventory-passive (Declaration & Passive)</option>
+                        <option value="mock-passive">mock-passive (Development Simulation)</option>
+                    </select>
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Exclusions (Optional, comma-separated)</label>
+                    <input class="soc-input" @bind="formExclusions" placeholder="e.g. 10.20.0.1, 10.20.10.0/24" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Authorization Evidence Reference</label>
+                    <input class="soc-input" @bind="formEvidence" maxlength="200" placeholder="e.g. secops-ticket-8492" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Scope Expiry (Hours)</label>
+                    <input type="number" class="soc-input" min="1" max="720" @bind="formExpiryHours" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Max Concurrency / Request Limit (req/min)</label>
+                    <input type="number" class="soc-input" min="1" max="1000" @bind="formRequestLimit" />
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(wizardError))
+            {
+                <div style="margin-bottom: var(--space-4);">
+                    <ErrorState Message="@wizardError" />
+                </div>
+            }
+
+            <div style="display: flex; justify-content: flex-end; gap: var(--space-3);">
+                <button class="soc-btn soc-btn-secondary" @onclick="ToggleWizard">Cancel</button>
+                <button class="soc-btn soc-btn-primary" @onclick="GoToReviewStep">Next: Review Authorization →</button>
+            </div>
+        }
+        else if (wizardStep == 2)
+        {
+            <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-4);">
+                <h3 style="font-size: 1rem; color: var(--text-primary); margin-bottom: var(--space-3);">Authorization & Safety Review</h3>
+                <dl style="display: grid; grid-template-columns: 180px 1fr; gap: var(--space-2) var(--space-4); font-size: 0.875rem;">
+                    <dt class="text-muted">Assessment Name:</dt>
+                    <dd><strong>@formName</strong></dd>
+
+                    <dt class="text-muted">Target Scope:</dt>
+                    <dd><code style="color: var(--primary-accent);">@formTarget</code> (@formTargetKind)</dd>
+
+                    <dt class="text-muted">Profile Contract:</dt>
+                    <dd><span class="soc-badge soc-badge-success">@formProfile</span> (Strict Non-Destructive)</dd>
+
+                    <dt class="text-muted">Exclusions:</dt>
+                    <dd>@(string.IsNullOrWhiteSpace(formExclusions) ? "None declared" : formExclusions)</dd>
+
+                    <dt class="text-muted">Authorization Ref:</dt>
+                    <dd>@formEvidence</dd>
+
+                    <dt class="text-muted">Scope Lifespan:</dt>
+                    <dd>@formExpiryHours hours (bounded expiry)</dd>
+
+                    <dt class="text-muted">Execution Limits:</dt>
+                    <dd>Max @formRequestLimit req/min, 300s timeout</dd>
+                </dl>
+            </div>
+
+            <div style="background: rgba(244, 195, 106, 0.08); border: 1px solid rgba(244, 195, 106, 0.3); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-4);">
+                <label style="display: flex; gap: var(--space-3); align-items: flex-start; cursor: pointer;">
+                    <input type="checkbox" style="margin-top: 3px;" @bind="confirmedAuthorization" />
+                    <span style="font-size: 0.875rem; color: var(--text-primary);">
+                        <strong>I certify explicit tenant authorization:</strong> This target is strictly within our authorized boundaries. Passive inventory will not perform port scans, credential fuzzing, or active reachability probing.
+                    </span>
+                </label>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(wizardError))
+            {
+                <div style="margin-bottom: var(--space-4);">
+                    <ErrorState Message="@wizardError" />
+                </div>
+            }
+
+            <div style="display: flex; justify-content: space-between;">
+                <button class="soc-btn soc-btn-secondary" @onclick="() => wizardStep = 1">← Back to Parameters</button>
+                <button class="soc-btn soc-btn-primary" @onclick="SubmitAssessmentAsync" disabled="@(!confirmedAuthorization || submitting)">
+                    @(submitting ? "Submitting to Queue…" : "Confirm & Launch Assessment")
+                </button>
+            </div>
+        }
+        else if (wizardStep == 3)
+        {
+            <div style="text-align: center; padding: var(--space-6);">
+                <div style="font-size: 2.5rem; color: var(--color-success); margin-bottom: var(--space-2);">✓</div>
+                <h3 style="font-size: 1.25rem; color: var(--text-primary); margin-bottom: var(--space-2);">Assessment Successfully Queued</h3>
+                <p class="text-muted" style="max-width: 500px; margin: 0 auto var(--space-4);">
+                    Scope <code>@createdScopeId</code> was validated and Scan Job <code>@createdJobId</code> was dispatched to the worker queue.
+                </p>
+                <div style="display: flex; justify-content: center; gap: var(--space-3);">
+                    <button class="soc-btn soc-btn-secondary" @onclick="ResetWizard">New Assessment</button>
+                    <button class="soc-btn soc-btn-primary" @onclick="ToggleWizard">View Scan Queue</button>
+                </div>
+            </div>
+        }
+    </section>
+}
+
+<section class="soc-panel">
+    <div class="soc-panel-header">
+        <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+            <h2 class="soc-panel-title">Assessment Execution History</h2>
+            <span class="soc-badge soc-badge-neutral">@totalCount total</span>
+        </div>
+        <div style="display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center;">
+            <input type="search"
+                   class="soc-input"
+                   placeholder="Search scope or job ID…"
+                   style="max-width: 240px;"
+                   value="@searchTerm"
+                   @onchange="OnSearchChanged" />
+
+            <select class="soc-select" value="@selectedStatus" @onchange="OnStatusChanged" style="width: auto;">
+                <option value="All">All Statuses</option>
+                <option value="Queued">Queued</option>
+                <option value="Running">Running</option>
+                <option value="Completed">Completed</option>
+                <option value="Failed">Failed</option>
+                <option value="Cancelled">Cancelled</option>
+            </select>
+        </div>
+    </div>
+
+    @if (loading && scans.Count == 0)
+    {
+        <LoadingState Message="Loading scan execution history…" />
+    }
+    else if (error is not null)
+    {
+        <ErrorState Message="@error" OnRetry="RetryAsync" />
+    }
+    else if (scans.Count == 0)
+    {
+        <EmptyState Title="No Assessments Recorded"
+                    Message="@(string.IsNullOrWhiteSpace(searchTerm) ? "No scan jobs have been launched yet. Click 'New Assessment' to queue a passive inventory job." : "No scans match your current filter.")"
+                    ActionText="New Assessment"
+                    OnAction="ToggleWizard" />
+    }
+    else
+    {
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead>
+                    <tr>
+                        <th>Job ID / Scope</th>
+                        <th>Profile</th>
+                        <th>Status</th>
+                        <th>Queued At</th>
+                        <th>Duration / Elapsed</th>
+                        <th style="text-align: right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var scan in scans)
+                    {
+                        <tr>
+                            <td>
+                                <strong style="color: var(--text-primary); font-size: 0.875rem;">@scan.ScopeName</strong>
+                                <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted);">
+                                    @scan.Id.ToString().Substring(0, 8)…
+                                </div>
+                            </td>
+                            <td>
+                                <span class="soc-badge soc-badge-neutral">@scan.OperationProfile</span>
+                            </td>
+                            <td>
+                                <StatusBadge Status="@scan.Status.ToString()" />
+                            </td>
+                            <td class="text-muted" style="font-size: 0.8125rem;">
+                                @scan.CreatedAt.ToLocalTime().ToString("g")
+                            </td>
+                            <td class="text-muted" style="font-size: 0.8125rem;">
+                                @GetDurationString(scan)
+                            </td>
+                            <td style="text-align: right;">
+                                <div style="display: inline-flex; gap: var(--space-2);">
+                                    <button class="soc-btn soc-btn-secondary"
+                                            style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;"
+                                            @onclick="() => InspectScan(scan)">
+                                        Details
+                                    </button>
+                                    @if (scan.Status == ScanJobStatus.Queued || scan.Status == ScanJobStatus.Running)
+                                    {
+                                        <AuthorizeView Roles="Admin,Operator">
+                                            <Authorized>
+                                                <button class="soc-btn soc-btn-danger"
+                                                        style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;"
+                                                        @onclick="() => PromptCancel(scan)">
+                                                    Cancel
+                                                </button>
+                                            </Authorized>
+                                        </AuthorizeView>
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <Pagination CurrentPage="page"
+                    TotalCount="totalCount"
+                    PageSize="PageSize"
+                    OnPageChange="GoToPageAsync" />
+    }
+</section>
+
+<DetailDrawer Title="Scan Job Telemetry"
+              IsOpen="isDrawerOpen"
+              OnClose="() => isDrawerOpen = false">
+    @if (selectedScan is not null)
+    {
+        <div style="margin-bottom: var(--space-4); padding-bottom: var(--space-4); border-bottom: 1px solid var(--border-subtle);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                <strong style="font-size: 1.125rem; color: var(--primary-accent);">
+                    @selectedScan.ScopeName
+                </strong>
+                <StatusBadge Status="@selectedScan.Status.ToString()" />
+            </div>
+            <div class="text-muted" style="font-family: var(--font-mono); font-size: 0.8125rem;">
+                Job ID: @selectedScan.Id · Scope ID: @selectedScan.ScopeId
+            </div>
+        </div>
+
+        <dl style="display: grid; grid-template-columns: 140px 1fr; gap: var(--space-3) var(--space-4); font-size: 0.875rem; margin-bottom: var(--space-6);">
+            <dt class="text-muted">Profile:</dt>
+            <dd><span class="soc-badge soc-badge-neutral">@selectedScan.OperationProfile</span></dd>
+
+            <dt class="text-muted">Status:</dt>
+            <dd>@selectedScan.Status</dd>
+
+            <dt class="text-muted">Created At:</dt>
+            <dd>@selectedScan.CreatedAt.ToLocalTime().ToString("F")</dd>
+
+            <dt class="text-muted">Started At:</dt>
+            <dd>@(selectedScan.StartedAt.HasValue ? selectedScan.StartedAt.Value.ToLocalTime().ToString("F") : "Not yet started")</dd>
+
+            <dt class="text-muted">Completed At:</dt>
+            <dd>@(selectedScan.CompletedAt.HasValue ? selectedScan.CompletedAt.Value.ToLocalTime().ToString("F") : "In progress / Queued")</dd>
+
+            <dt class="text-muted">Total Runtime:</dt>
+            <dd>@GetDurationString(selectedScan)</dd>
+        </dl>
+
+        @if (!string.IsNullOrWhiteSpace(selectedScan.FailureReason))
+        {
+            <div style="margin-top: var(--space-4); padding: var(--space-4); background: rgba(255, 127, 135, 0.1); border: 1px solid var(--color-danger); border-radius: var(--radius-md);">
+                <h4 style="font-size: 0.875rem; color: var(--color-danger); margin-bottom: var(--space-1);">Execution Fault Information</h4>
+                <p style="font-family: var(--font-mono); font-size: 0.8125rem; color: var(--text-primary); margin: 0;">
+                    @selectedScan.FailureReason
+                </p>
+            </div>
+        }
+
+        @if (selectedScan.Status == ScanJobStatus.Queued || selectedScan.Status == ScanJobStatus.Running)
+        {
+            <div style="margin-top: var(--space-6); text-align: right;">
+                <AuthorizeView Roles="Admin,Operator">
+                    <Authorized>
+                        <button class="soc-btn soc-btn-danger" @onclick="() => PromptCancel(selectedScan)">
+                            Cancel Active Execution
+                        </button>
+                    </Authorized>
+                </AuthorizeView>
+            </div>
+        }
+    }
+</DetailDrawer>
+
+<ConfirmDialog IsOpen="confirmCancelOpen"
+               Title="Cancel Assessment Job"
+               Message="@($"Are you sure you want to abort scan job {jobToCancel?.Id}? Workers will terminate in-flight tasks and record a cancelled audit event.")"
+               ConfirmText="Yes, Abort Job"
+               IsDanger="true"
+               OnConfirm="ExecuteCancelAsync"
+               OnCancel="() => confirmCancelOpen = false" />
 
 @code {
-    private string name = "private-lab-assessment";
-    private string target = "10.20.0.0/16";
-    private string profile = "network-inventory-passive";
-    private string evidence = "operator-approved-lab";
-    private int expiryHours = 24;
-    private bool submitting;
-    private bool failed;
-    private string? message;
+    private const int PageSize = 25;
+    private List<ScanJobSummaryResponse> scans = [];
+    private int page = 1;
+    private int totalCount;
+    private int activeJobsCount;
+    private int completedJobsCount;
+    private bool loading = true;
+    private string? error;
 
-    private async Task CreateAssessment()
+    private string searchTerm = string.Empty;
+    private string selectedStatus = "All";
+
+    // Wizard state
+    private bool showWizard;
+    private int wizardStep = 1;
+    private bool submitting;
+    private string? wizardError;
+    private bool confirmedAuthorization;
+    private Guid createdScopeId;
+    private Guid createdJobId;
+
+    // Wizard form fields
+    private string formName = "corporate-lab-inventory";
+    private string formTarget = "10.20.0.0/16";
+    private TargetKind formTargetKind = TargetKind.Network;
+    private string formProfile = "network-inventory-passive";
+    private string formExclusions = "";
+    private string formEvidence = "secops-authorized-change";
+    private int formExpiryHours = 24;
+    private int formRequestLimit = 30;
+
+    // Detail drawer state
+    private bool isDrawerOpen;
+    private ScanJobSummaryResponse? selectedScan;
+
+    // Cancel modal state
+    private bool confirmCancelOpen;
+    private ScanJobSummaryResponse? jobToCancel;
+
+    protected override async Task OnInitializedAsync()
     {
-        submitting = true; failed = false; message = null;
+        await LoadSummaryAsync();
+        await LoadPageAsync();
+    }
+
+    private async Task LoadSummaryAsync()
+    {
         try
         {
-            var scopeRequest = new CreateScopeRequest(name, [new TargetDefinition(TargetKind.Network, target)], [], [profile], 30, 300, evidence, DateTimeOffset.UtcNow.AddHours(Math.Clamp(expiryHours, 1, 720)));
-            var scope = await ApiClient.PostJsonAsync<CreateScopeRequest, ScopeResponse>("/api/v1/scopes", scopeRequest);
-            var scan = await ApiClient.PostJsonAsync<CreateScanRequest, ScanResponse>("/api/v1/scans", new CreateScanRequest(scope.Id, profile));
-            message = $"Assessment {scan.Id} submitted to the worker queue.";
+            var summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
+            activeJobsCount = summary.RunningJobs;
         }
-        catch (SentinelApiException exception) { failed = true; message = exception.UserMessage; }
-        finally { submitting = false; }
+        catch { }
+    }
+
+    private async Task LoadPageAsync()
+    {
+        loading = true;
+        error = null;
+        try
+        {
+            var parameters = new Dictionary<string, string?>();
+            if (!string.IsNullOrWhiteSpace(searchTerm)) parameters["search"] = searchTerm;
+            if (selectedStatus != "All") parameters["status"] = selectedStatus;
+
+            var result = await ApiClient.GetPageAsync<ScanJobSummaryResponse>("/api/v1/scans", page, PageSize, parameters);
+            scans = result.Items?.ToList() ?? [];
+            totalCount = Math.Max(0, result.TotalCount);
+            page = Math.Max(1, result.Page);
+
+            activeJobsCount = scans.Count(s => s.Status == ScanJobStatus.Queued || s.Status == ScanJobStatus.Running);
+            completedJobsCount = scans.Count(s => s.Status == ScanJobStatus.Completed);
+        }
+        catch (SentinelApiException exception)
+        {
+            scans = [];
+            totalCount = 0;
+            error = exception.UserMessage;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task OnSearchChanged(ChangeEventArgs e)
+    {
+        searchTerm = e.Value?.ToString() ?? string.Empty;
+        page = 1;
+        await LoadPageAsync();
+    }
+
+    private async Task OnStatusChanged(ChangeEventArgs e)
+    {
+        selectedStatus = e.Value?.ToString() ?? "All";
+        page = 1;
+        await LoadPageAsync();
+    }
+
+    private Task RefreshAsync() => LoadPageAsync();
+    private Task RetryAsync() => LoadPageAsync();
+
+    private async Task GoToPageAsync(int newPage)
+    {
+        page = newPage;
+        await LoadPageAsync();
+    }
+
+    private void ToggleWizard()
+    {
+        showWizard = !showWizard;
+        if (showWizard) ResetWizard();
+    }
+
+    private void ResetWizard()
+    {
+        wizardStep = 1;
+        submitting = false;
+        wizardError = null;
+        confirmedAuthorization = false;
+        formName = $"assessment-{DateTime.UtcNow:yyyyMMdd-HHmm}";
+    }
+
+    private static string GetStepTitle(int step) => step switch
+    {
+        1 => "Scope & Target Parameters",
+        2 => "Policy & Authorization Review",
+        3 => "Execution Queued",
+        _ => "Wizard"
+    };
+
+    private void GoToReviewStep()
+    {
+        wizardError = null;
+        if (string.IsNullOrWhiteSpace(formName)) { wizardError = "Scope name is required."; return; }
+        if (string.IsNullOrWhiteSpace(formTarget)) { wizardError = "Target address or CIDR is required."; return; }
+        wizardStep = 2;
+    }
+
+    private async Task SubmitAssessmentAsync()
+    {
+        if (!confirmedAuthorization) return;
+        submitting = true;
+        wizardError = null;
+
+        try
+        {
+            var exclusions = string.IsNullOrWhiteSpace(formExclusions)
+                ? Array.Empty<string>()
+                : formExclusions.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            var scopeRequest = new CreateScopeRequest(
+                formName.Trim(),
+                [new TargetDefinition(formTargetKind, formTarget.Trim())],
+                exclusions,
+                [formProfile],
+                formRequestLimit,
+                300,
+                formEvidence.Trim(),
+                DateTimeOffset.UtcNow.AddHours(Math.Clamp(formExpiryHours, 1, 720)));
+
+            var scope = await ApiClient.PostJsonAsync<CreateScopeRequest, ScopeResponse>("/api/v1/scopes", scopeRequest);
+            var scan = await ApiClient.PostJsonAsync<CreateScanRequest, ScanResponse>("/api/v1/scans", new CreateScanRequest(scope.Id, formProfile));
+
+            createdScopeId = scope.Id;
+            createdJobId = scan.Id;
+            wizardStep = 3;
+
+            await LoadPageAsync();
+        }
+        catch (SentinelApiException ex)
+        {
+            wizardError = ex.UserMessage;
+        }
+        finally
+        {
+            submitting = false;
+        }
+    }
+
+    private void InspectScan(ScanJobSummaryResponse scan)
+    {
+        selectedScan = scan;
+        isDrawerOpen = true;
+    }
+
+    private void PromptCancel(ScanJobSummaryResponse scan)
+    {
+        jobToCancel = scan;
+        confirmCancelOpen = true;
+    }
+
+    private async Task ExecuteCancelAsync()
+    {
+        if (jobToCancel is null) return;
+        confirmCancelOpen = false;
+        try
+        {
+            await ApiClient.PostAsync($"/api/v1/scans/{jobToCancel.Id}/cancel");
+            if (isDrawerOpen && selectedScan?.Id == jobToCancel.Id)
+            {
+                isDrawerOpen = false;
+            }
+            await LoadPageAsync();
+        }
+        catch (SentinelApiException ex)
+        {
+            error = $"Cancellation failed: {ex.UserMessage}";
+        }
+        finally
+        {
+            jobToCancel = null;
+        }
+    }
+
+    private static string GetDurationString(ScanJobSummaryResponse scan)
+    {
+        if (scan.StartedAt is null) return "Queued";
+        var end = scan.CompletedAt ?? DateTimeOffset.UtcNow;
+        var elapsed = end - scan.StartedAt.Value;
+        if (elapsed.TotalSeconds < 60) return $"{Math.Max(0, (int)elapsed.TotalSeconds)}s";
+        if (elapsed.TotalMinutes < 60) return $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds}s";
+        return $"{(int)elapsed.TotalHours}h {elapsed.Minutes}m";
     }
 }

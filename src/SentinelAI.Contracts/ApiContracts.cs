@@ -83,3 +83,66 @@ public sealed record WorkerProvisionRequest(string Version, IReadOnlyCollection<
 public sealed record PagedResponse<T>(IReadOnlyCollection<T> Items, int Page, int PageSize, int TotalCount);
 
 public sealed record CurrentUserResponse(string Subject, Guid TenantId, Guid UserId, string Role);
+
+public sealed record DashboardSummaryResponse(
+    int AssetsObserved,
+    int ReachabilityConfirmedAssets,
+    int ObservedServices,
+    int TotalFindings,
+    int CriticalFindings,
+    int HighFindings,
+    int MediumFindings,
+    int LowFindings,
+    int InfoFindings,
+    int ActiveAssessments,
+    int RunningJobs,
+    int TotalJobs,
+    int HealthyWorkers,
+    int TotalWorkers,
+    IReadOnlyCollection<WebAssessmentResponse> RecentAssessments,
+    IReadOnlyCollection<ScanJobSummaryResponse> RecentScans,
+    IReadOnlyCollection<MonitoringEventResponse> RecentEvents);
+
+public sealed record ScanJobSummaryResponse(
+    Guid Id,
+    Guid ScopeId,
+    string ScopeName,
+    string OperationProfile,
+    ScanJobStatus Status,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? CompletedAt,
+    string? AssignedWorkerIdentity,
+    DateTimeOffset ExpiresAt,
+    string? FailureReason = null);
+
+public sealed record MonitoringEventResponse(
+    Guid Id,
+    Guid TenantId,
+    string Action,
+    string ResourceType,
+    Guid? ResourceId,
+    Guid? ActorId,
+    DateTimeOffset OccurredAt,
+    string? Detail);
+
+public sealed record FindingDetailResponse(
+    Guid Id,
+    string Title,
+    FindingSeverity Severity,
+    Guid? AssetId,
+    Guid? WebAssessmentId,
+    string? TargetUrl,
+    string? Category,
+    string? Confidence,
+    string? AffectedUrl,
+    string? HttpMethod,
+    string? Parameter,
+    string? Description,
+    string? Impact,
+    string? Reproduction,
+    string? Remediation,
+    WebCheckStatus? CheckStatus,
+    DateTimeOffset CreatedAt,
+    IReadOnlyCollection<EvidenceResponse> Evidence,
+    IReadOnlyCollection<ScreenshotResponse> Screenshots);

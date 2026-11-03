@@ -1,56 +1,53 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
 
 <div class="page">
-    <div class="sidebar">
+    <aside class="sidebar">
         <NavMenu />
-    </div>
+    </aside>
 
     <main>
-        <div class="top-row px-4">
-            <button type="button" class="profile-trigger" onclick="openModal('modal-profile')" aria-haspopup="dialog" aria-controls="modal-profile">
-                <img src="/images/shatrughna.jpg" alt="" class="profile-trigger-avatar" />
-                <span>Shatrughna Ambhore</span>
-            </button>
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
-        </div>
+        <header class="top-row">
+            <div class="top-row-left">
+                <div class="breadcrumb">
+                    <span>SentinelAI</span>
+                    <span>/</span>
+                    <strong>@CurrentPageName</strong>
+                </div>
+            </div>
 
-        <article class="content px-4">
+            <div class="top-row-right">
+                <a href="setup" class="ghost-button btn-sm" title="System Setup &amp; Health Checklist">
+                    <span class="pulsing-dot" style="color: var(--green);"></span> System Health
+                </a>
+
+                @if (!string.IsNullOrWhiteSpace(tenantId))
+                {
+                    <span class="status-pill pill-neutral" title="Current Tenant Context">
+                        Tenant: @FormatId(tenantId)
+                    </span>
+                }
+
+                <div class="status-pill @GetRolePillClass()" title="Authenticated User Role">
+                    @userRole
+                </div>
+
+                <div class="user-profile-badge" title="Authenticated User Identity">
+                    <span class="user-avatar">👤</span>
+                    <span class="user-name">@userName</span>
+                </div>
+
+                <a href="/auth/logout" class="secondary-button btn-sm" title="Sign out of SentinelAI">
+                    Sign Out ↗
+                </a>
+            </div>
+        </header>
+
+        <article class="content">
             @Body
         </article>
     </main>
-</div>
-
-<div id="modal-profile" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title" aria-hidden="true" onclick="if (event.target === this) closeModal('modal-profile')">
-    <div class="profile-modal-content" onclick="event.stopPropagation()">
-        <button type="button" onclick="closeModal('modal-profile')" class="modal-close" title="Close" aria-label="Close profile">✕</button>
-
-        <div class="profile-modal-body">
-            <div class="profile-photo-wrap">
-                <div class="profile-photo-glow"></div>
-                <a href="/images/shatrughna.jpg" target="_blank" rel="noopener noreferrer" title="View the full original photo in a new tab">
-                    <img src="/images/shatrughna.jpg" alt="Shatrughna Ambhore" class="profile-photo" />
-                </a>
-                <a href="/images/shatrughna.jpg" target="_blank" rel="noopener noreferrer" class="profile-full-view">
-                    <span aria-hidden="true">🔍</span> Full view
-                </a>
-            </div>
-
-            <h2 id="profile-modal-title">Shatrughna Ambhore</h2>
-            <span class="profile-role">Lead Creator &amp; Software Engineer</span>
-            <p class="profile-description">Architected LearningOS to deliver a resilient, career-grade 100-day engineering and AI learning system.</p>
-
-            <div class="profile-links">
-                <a href="mailto:ambhoreshatrughna@gmail.com"><span aria-hidden="true">✉️</span> ambhoreshatrughna@gmail.com</a>
-                <a href="tel:+919604466334"><span aria-hidden="true">📞</span> +91 9604466334</a>
-                <a href="https://github.com/shatru123/Learning" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">🐙</span> GitHub Repository</a>
-            </div>
-
-            <div class="profile-modal-footer">
-                <a href="/images/shatrughna.jpg" target="_blank" rel="noopener noreferrer">🖼️ Open full photo ↗</a>
-                <button type="button" onclick="closeModal('modal-profile')" class="secondary-button">Close</button>
-            </div>
-        </div>
-    </div>
 </div>
 
 <div id="blazor-error-ui" data-nosnippet>
@@ -58,3 +55,54 @@
     <a href="." class="reload">Reload</a>
     <span class="dismiss">🗙</span>
 </div>
+
+@code {
+    private string userName = "Operator";
+    private string userRole = "Viewer";
+    private string tenantId = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        if (user.Identity?.IsAuthenticated == true)
+        {
+            userName = user.Identity.Name ?? "Operator";
+            userRole = user.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ?? "Viewer";
+            tenantId = user.FindFirst("tenant_id")?.Value ?? string.Empty;
+        }
+
+        Navigation.LocationChanged += (s, e) => StateHasChanged();
+    }
+
+    private string CurrentPageName
+    {
+        get
+        {
+            var relative = Navigation.ToBaseRelativePath(Navigation.Uri);
+            var segment = relative.Split('?', '#')[0].Trim('/');
+            return segment switch
+            {
+                "" => "Overview",
+                "assets" => "Asset Inventory",
+                "scans" => "Security Scans",
+                "web-assessments" => "Web Assessments",
+                "findings" => "Vulnerabilities",
+                "workers" or "agents" => "Worker Management",
+                "monitoring" => "Monitoring & Audit",
+                "setup" => "Setup & Health Checklist",
+                "settings" => "Settings & Engine Configuration",
+                _ => char.ToUpper(segment[0]) + segment[1..]
+            };
+        }
+    }
+
+    private string GetRolePillClass() => userRole.ToLowerInvariant() switch
+    {
+        "admin" => "pill-healthy",
+        "securityanalyst" or "operator" => "pill-active",
+        _ => "pill-neutral"
+    };
+
+    private static string FormatId(string id) => id.Length > 8 ? id[..8] + "…" : id;
+}

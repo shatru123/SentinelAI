@@ -1,0 +1,42 @@
+<div class="pagination-bar">
+    <div class="pagination-info">
+        @if (TotalCount > 0)
+        {
+            <span>Showing page <strong>@CurrentPage</strong> of <strong>@TotalPages</strong> (@TotalCount total records)</span>
+        }
+        else
+        {
+            <span>No records to display</span>
+        }
+    </div>
+    <div class="pagination-controls">
+        <button class="secondary-button btn-sm" disabled="@(!CanPrevious)" @onclick="GoPrevious">
+            ← Previous
+        </button>
+        <span class="page-number-pill">@CurrentPage / @TotalPages</span>
+        <button class="secondary-button btn-sm" disabled="@(!CanNext)" @onclick="GoNext">
+            Next →
+        </button>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int CurrentPage { get; set; } = 1;
+    [Parameter] public int TotalCount { get; set; } = 0;
+    [Parameter] public int PageSize { get; set; } = 25;
+    [Parameter] public EventCallback<int> OnPageChanged { get; set; }
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling((double)TotalCount / Math.Max(1, PageSize)));
+    private bool CanPrevious => CurrentPage > 1;
+    private bool CanNext => CurrentPage < TotalPages;
+
+    private async Task GoPrevious()
+    {
+        if (CanPrevious) await OnPageChanged.InvokeAsync(CurrentPage - 1);
+    }
+
+    private async Task GoNext()
+    {
+        if (CanNext) await OnPageChanged.InvokeAsync(CurrentPage + 1);
+    }
+}

@@ -1,0 +1,391 @@
+@page "/workers"
+@attribute [Authorize]
+@using SentinelAI.Contracts
+@using SentinelAI.Domain
+@inject SentinelApiClient ApiClient
+<PageTitle>Workers & Execution Nodes · SentinelAI SOC</PageTitle>
+
+<PageHeader Title="Workers & Execution Plane"
+            Eyebrow="Execution Plane / Autonomous Workers"
+            Description="Enrolled worker nodes executing passive inventory discovery and authorized web assessments. Workers enforce authorization leases, scope boundaries, and rate limits.">
+    <Actions>
+        <button class="soc-btn soc-btn-secondary" @onclick="LoadWorkersAsync" disabled="@loading">
+            <span class="icon">↻</span> Refresh
+        </button>
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <button class="soc-btn soc-btn-primary" @onclick="OpenProvisionModal">
+                    <span class="icon">+</span> Provision Worker Node
+                </button>
+            </Authorized>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+
+<div class="metrics-grid" style="margin-bottom: var(--space-6);">
+    <MetricCard Title="Enrolled Workers"
+                Value="@workers.Count.ToString("N0")"
+                Icon="◈"
+                Subtitle="Registered agent nodes" />
+    <MetricCard Title="Healthy Nodes"
+                Value="@healthyCount.ToString("N0")"
+                Icon="●"
+                StatusClass="@(healthyCount > 0 ? "healthy" : "warning")"
+                Subtitle="Active heartbeats within 45s" />
+    <MetricCard Title="Active Execution Load"
+                Value="@($"{activeJobsSum} / {maxCapacitySum}")"
+                Icon="⚙"
+                StatusClass="@(activeJobsSum > 0 ? "warning" : "neutral")"
+                Subtitle="Current vs maximum concurrent capacity" />
+    <MetricCard Title="Advisory AI Plane"
+                Value="Strict Autorun"
+                Icon="🛡"
+                StatusClass="healthy"
+                Subtitle="Deterministic policy authorization" />
+</div>
+
+<section class="soc-panel" style="margin-bottom: var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <h2 class="soc-panel-title">Enrolled Worker Fleet</h2>
+            <p class="soc-panel-subtitle">Worker nodes register via authenticated mTLS/bearer token and send heartbeats to acknowledge leases.</p>
+        </div>
+        <span class="soc-badge soc-badge-neutral">@workers.Count nodes online/enrolled</span>
+    </div>
+
+    @if (loading && workers.Count == 0)
+    {
+        <LoadingState Message="Querying worker fleet registry…" />
+    }
+    else if (error is not null)
+    {
+        <ErrorState Message="@error" OnRetry="LoadWorkersAsync" />
+    }
+    else if (workers.Count == 0)
+    {
+        <EmptyState Title="No Worker Nodes Enrolled"
+                    Message="No workers are currently enrolled for this tenant. An administrator can provision a worker identity below, or start the in-process / standalone worker."
+                    ActionText="Provision Worker Node"
+                    OnAction="OpenProvisionModal" />
+    }
+    else
+    {
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead>
+                    <tr>
+                        <th>Worker Node Identity</th>
+                        <th>Status</th>
+                        <th>Heartbeat</th>
+                        <th>Job Capacity</th>
+                        <th>Assigned Capabilities</th>
+                        <th>Private Authorization</th>
+                        <th style="text-align: right;">Admin Configuration</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var worker in workers)
+                    {
+                        <tr>
+                            <td>
+                                <strong style="color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9375rem;">
+                                    @worker.Identity
+                                </strong>
+                                <div class="text-muted" style="font-size: 0.75rem;">v@(worker.Version) · ID: @worker.Id.ToString().Substring(0, 8)…</div>
+                            </td>
+                            <td>
+                                @if (worker.Status == WorkerStatus.Healthy)
+                                {
+                                    <span class="soc-badge soc-badge-success">
+                                        <span class="soc-pulse-dot" style="background: var(--color-success);"></span> Healthy
+                                    </span>
+                                }
+                                else if (worker.Status == WorkerStatus.Registered)
+                                {
+                                    <span class="soc-badge soc-badge-warning">Registered</span>
+                                }
+                                else if (worker.Status == WorkerStatus.Disabled)
+                                {
+                                    <span class="soc-badge soc-badge-neutral">Disabled</span>
+                                }
+                                else
+                                {
+                                    <span class="soc-badge soc-badge-danger">Unhealthy</span>
+                                }
+                            </td>
+                            <td class="text-muted" style="font-size: 0.8125rem;">
+                                @GetHeartbeatAge(worker.LastHeartbeatAt)
+                            </td>
+                            <td>
+                                <span style="font-family: var(--font-mono); font-size: 0.875rem; color: var(--text-primary);">
+                                    @worker.CurrentActiveJobs / @worker.MaximumCapacity
+                                </span>
+                            </td>
+                            <td>
+                                <div style="display: flex; gap: var(--space-1); flex-wrap: wrap;">
+                                    @foreach (var cap in worker.Capabilities)
+                                    {
+                                        <span class="soc-badge soc-badge-neutral" style="font-size: 0.6875rem;">@cap</span>
+                                    }
+                                </div>
+                            </td>
+                            <td>
+                                @if (worker.PrivateAssessmentApproved)
+                                {
+                                    <span class="soc-badge soc-badge-success">Approved</span>
+                                    @if (worker.ApprovedPrivateNetworkRanges is not null && worker.ApprovedPrivateNetworkRanges.Count > 0)
+                                    {
+                                        <div style="font-family: var(--font-mono); font-size: 0.6875rem; color: var(--primary-accent); margin-top: 2px;">
+                                            @string.Join(", ", worker.ApprovedPrivateNetworkRanges)
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <span class="text-muted" style="font-size: 0.75rem;">None</span>
+                                }
+                            </td>
+                            <td style="text-align: right;">
+                                <AuthorizeView Roles="Admin">
+                                    <Authorized>
+                                        <button class="soc-btn soc-btn-secondary"
+                                                style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;"
+                                                @onclick="() => ConfigureWorker(worker)">
+                                            Configure
+                                        </button>
+                                    </Authorized>
+                                    <NotAuthorized>
+                                        <span class="text-muted" style="font-size: 0.75rem;">Read only</span>
+                                    </NotAuthorized>
+                                </AuthorizeView>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="soc-panel">
+    <div class="soc-panel-header">
+        <div>
+            <h2 class="soc-panel-title">Worker Deployment Guide</h2>
+            <p class="soc-panel-subtitle">Deploy workers as autonomous containers or execute in-process in development environments.</p>
+        </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-4);">
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
+            <h3 style="font-size: 0.9375rem; color: var(--primary-accent); margin-bottom: var(--space-2);">1. Docker Compose Worker Service</h3>
+            <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-3);">
+                Launch the dedicated worker container connected to the internal RabbitMQ broker:
+            </p>
+            <pre class="soc-code-block" style="font-size: 0.75rem;">docker compose --env-file .env.example -f deploy/docker/docker-compose.yml up -d sentinelai-worker</pre>
+        </div>
+
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
+            <h3 style="font-size: 0.9375rem; color: var(--primary-accent); margin-bottom: var(--space-2);">2. In-Process Development Mode</h3>
+            <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-3);">
+                In local development with InMemory messaging, the API starts background worker jobs automatically when <code>Worker:RunInProcess=true</code>.
+            </p>
+            <pre class="soc-code-block" style="font-size: 0.75rem;">"Worker": { "RunInProcess": true }</pre>
+        </div>
+    </div>
+</section>
+
+@if (showProvisionModal)
+{
+    <DetailDrawer Title="@(isEditingWorker ? $"Configure Worker: {modalIdentity}" : "Provision New Worker Node")"
+                  IsOpen="true"
+                  OnClose="() => showProvisionModal = false">
+        <div class="soc-form-grid" style="margin-bottom: var(--space-4);">
+            <div class="soc-form-group">
+                <label class="soc-label">Worker Identity</label>
+                <input class="soc-input" @bind="modalIdentity" disabled="@isEditingWorker" placeholder="e.g. worker-primary" />
+            </div>
+            <div class="soc-form-group">
+                <label class="soc-label">Worker Version</label>
+                <input class="soc-input" @bind="modalVersion" placeholder="1.0.0" />
+            </div>
+        </div>
+
+        <div style="margin-bottom: var(--space-4);">
+            <label class="soc-label" style="margin-bottom: var(--space-2); display: block;">Authorized Capabilities</label>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2);">
+                <label style="display: flex; gap: var(--space-2); align-items: center; font-size: 0.8125rem; color: var(--text-primary); cursor: pointer;">
+                    <input type="checkbox" @bind="capPassiveInventory" /> passive-inventory
+                </label>
+                <label style="display: flex; gap: var(--space-2); align-items: center; font-size: 0.8125rem; color: var(--text-primary); cursor: pointer;">
+                    <input type="checkbox" @bind="capWebAssessment" /> web-assessment
+                </label>
+                <label style="display: flex; gap: var(--space-2); align-items: center; font-size: 0.8125rem; color: var(--text-primary); cursor: pointer;">
+                    <input type="checkbox" @bind="capPrivateWebAssessment" /> private-web-assessment
+                </label>
+                <label style="display: flex; gap: var(--space-2); align-items: center; font-size: 0.8125rem; color: var(--text-primary); cursor: pointer;">
+                    <input type="checkbox" @bind="capPassiveMock" /> passive-mock
+                </label>
+                <label style="display: flex; gap: var(--space-2); align-items: center; font-size: 0.8125rem; color: var(--text-primary); cursor: pointer;">
+                    <input type="checkbox" @bind="capBoundedConcurrency" /> bounded-concurrency
+                </label>
+                <label style="display: flex; gap: var(--space-2); align-items: center; font-size: 0.8125rem; color: var(--text-primary); cursor: pointer;">
+                    <input type="checkbox" @bind="capScopeValidation" /> scope-validation
+                </label>
+            </div>
+        </div>
+
+        @if (capPrivateWebAssessment)
+        {
+            <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-4);">
+                <label class="soc-label">Approved Private CIDR Ranges (Comma-separated)</label>
+                <input class="soc-input" @bind="modalPrivateRanges" placeholder="10.20.0.0/16, 172.16.0.0/12" style="margin-top: var(--space-1);" />
+                <span class="text-muted" style="font-size: 0.75rem; display: block; margin-top: var(--space-1);">
+                    Private web assessments are only routed to this worker if their targets fall within these approved CIDRs.
+                </span>
+            </div>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(modalError))
+        {
+            <div style="margin-bottom: var(--space-4);"><ErrorState Message="@modalError" /></div>
+        }
+
+        <div style="display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-6);">
+            <button class="soc-btn soc-btn-secondary" @onclick="() => showProvisionModal = false">Cancel</button>
+            <button class="soc-btn soc-btn-primary" @onclick="SubmitProvisionAsync" disabled="@submittingModal">
+                @(submittingModal ? "Saving Provisioning…" : (isEditingWorker ? "Update Provisioning" : "Provision Node"))
+            </button>
+        </div>
+    </DetailDrawer>
+}
+
+@code {
+    private List<WorkerResponse> workers = [];
+    private bool loading = true;
+    private string? error;
+
+    private int healthyCount => workers.Count(w => w.Status == WorkerStatus.Healthy);
+    private int activeJobsSum => workers.Sum(w => w.CurrentActiveJobs);
+    private int maxCapacitySum => Math.Max(1, workers.Sum(w => w.MaximumCapacity));
+
+    // Provision modal state
+    private bool showProvisionModal;
+    private bool isEditingWorker;
+    private string modalIdentity = "worker-primary";
+    private string modalVersion = "1.0.0";
+    private string modalPrivateRanges = "10.20.0.0/16";
+    private bool capPassiveInventory = true;
+    private bool capWebAssessment = true;
+    private bool capPrivateWebAssessment = true;
+    private bool capPassiveMock = true;
+    private bool capBoundedConcurrency = true;
+    private bool capScopeValidation = true;
+    private bool submittingModal;
+    private string? modalError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadWorkersAsync();
+    }
+
+    private async Task LoadWorkersAsync()
+    {
+        loading = true;
+        error = null;
+        try
+        {
+            var result = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers");
+            workers = result ?? [];
+        }
+        catch (SentinelApiException exception)
+        {
+            workers = [];
+            error = exception.UserMessage;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void OpenProvisionModal()
+    {
+        isEditingWorker = false;
+        modalIdentity = $"worker-{DateTime.UtcNow:MMdd-HHmm}";
+        modalVersion = "1.0.0";
+        modalPrivateRanges = "10.20.0.0/16";
+        capPassiveInventory = true;
+        capWebAssessment = true;
+        capPrivateWebAssessment = true;
+        capPassiveMock = true;
+        capBoundedConcurrency = true;
+        capScopeValidation = true;
+        modalError = null;
+        showProvisionModal = true;
+    }
+
+    private void ConfigureWorker(WorkerResponse worker)
+    {
+        isEditingWorker = true;
+        modalIdentity = worker.Identity;
+        modalVersion = worker.Version;
+        modalPrivateRanges = worker.ApprovedPrivateNetworkRanges is not null
+            ? string.Join(", ", worker.ApprovedPrivateNetworkRanges)
+            : string.Empty;
+
+        capPassiveInventory = worker.Capabilities.Contains("passive-inventory", StringComparer.OrdinalIgnoreCase);
+        capWebAssessment = worker.Capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase);
+        capPrivateWebAssessment = worker.Capabilities.Contains("private-web-assessment", StringComparer.OrdinalIgnoreCase);
+        capPassiveMock = worker.Capabilities.Contains("passive-mock", StringComparer.OrdinalIgnoreCase);
+        capBoundedConcurrency = worker.Capabilities.Contains("bounded-concurrency", StringComparer.OrdinalIgnoreCase);
+        capScopeValidation = worker.Capabilities.Contains("scope-validation", StringComparer.OrdinalIgnoreCase);
+
+        modalError = null;
+        showProvisionModal = true;
+    }
+
+    private async Task SubmitProvisionAsync()
+    {
+        if (string.IsNullOrWhiteSpace(modalIdentity)) { modalError = "Worker identity is required."; return; }
+        submittingModal = true;
+        modalError = null;
+
+        try
+        {
+            var capabilities = new List<string>();
+            if (capPassiveInventory) capabilities.Add("passive-inventory");
+            if (capWebAssessment) capabilities.Add("web-assessment");
+            if (capPrivateWebAssessment) capabilities.Add("private-web-assessment");
+            if (capPassiveMock) capabilities.Add("passive-mock");
+            if (capBoundedConcurrency) capabilities.Add("bounded-concurrency");
+            if (capScopeValidation) capabilities.Add("scope-validation");
+
+            var ranges = string.IsNullOrWhiteSpace(modalPrivateRanges)
+                ? Array.Empty<string>()
+                : modalPrivateRanges.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            var request = new WorkerProvisionRequest(modalVersion.Trim(), capabilities, capPrivateWebAssessment ? ranges : null);
+            await ApiClient.PostJsonAsync<WorkerProvisionRequest, WorkerResponse>($"/api/v1/workers/{modalIdentity.Trim()}/provision", request);
+
+            showProvisionModal = false;
+            await LoadWorkersAsync();
+        }
+        catch (SentinelApiException ex)
+        {
+            modalError = ex.UserMessage;
+        }
+        finally
+        {
+            submittingModal = false;
+        }
+    }
+
+    private static string GetHeartbeatAge(DateTimeOffset lastHeartbeat)
+    {
+        if (lastHeartbeat == default) return "Never";
+        var age = DateTimeOffset.UtcNow - lastHeartbeat;
+        if (age.TotalSeconds < 60) return $"{Math.Max(0, (int)age.TotalSeconds)}s ago";
+        if (age.TotalMinutes < 60) return $"{(int)age.TotalMinutes}m ago";
+        return lastHeartbeat.ToLocalTime().ToString("g");
+    }
+}

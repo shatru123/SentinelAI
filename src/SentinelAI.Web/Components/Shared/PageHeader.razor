@@ -1,0 +1,26 @@
+<div class="page-heading">
+    <div>
+        @if (!string.IsNullOrWhiteSpace(Eyebrow))
+        {
+            <div class="eyebrow">@Eyebrow</div>
+        }
+        <h1>@Title</h1>
+        @if (!string.IsNullOrWhiteSpace(Description))
+        {
+            <p class="muted">@Description</p>
+        }
+    </div>
+    @if (Actions is not null)
+    {
+        <div class="page-actions">
+            @Actions
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Eyebrow { get; set; }
+    [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+}

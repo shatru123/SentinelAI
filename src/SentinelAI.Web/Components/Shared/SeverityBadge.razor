@@ -1,0 +1,20 @@
+@using SentinelAI.Domain
+
+<span class="severity-badge @BadgeClass">
+    <span class="severity-dot"></span>
+    @Severity.ToString()
+</span>
+
+@code {
+    [Parameter] public FindingSeverity Severity { get; set; }
+
+    private string BadgeClass => Severity switch
+    {
+        FindingSeverity.Critical => "severity-critical",
+        FindingSeverity.High => "severity-high",
+        FindingSeverity.Medium => "severity-medium",
+        FindingSeverity.Low => "severity-low",
+        FindingSeverity.Informational => "severity-info",
+        _ => "severity-info"
+    };
+}

@@ -1,0 +1,19 @@
+<div class="empty-state">
+    <div class="empty-icon">@(Icon ?? "🛡️")</div>
+    <strong>@Title</strong>
+    <p>@Message</p>
+    @if (!string.IsNullOrWhiteSpace(ActionText) && OnAction.HasDelegate)
+    {
+        <div style="margin-top: 14px;">
+            <button class="primary-button" @onclick="OnAction">@ActionText</button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Icon { get; set; }
+    [Parameter] public string Title { get; set; } = "No records observed";
+    [Parameter] public string Message { get; set; } = "No operational records match the current criteria.";
+    [Parameter] public string? ActionText { get; set; }
+    [Parameter] public EventCallback OnAction { get; set; }
+}

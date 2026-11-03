@@ -1,0 +1,27 @@
+<span class="status-pill @PillClass">
+    @if (IsPulsing)
+    {
+        <span class="pulsing-dot"></span>
+    }
+    @StatusText
+</span>
+
+@code {
+    [Parameter] public string? Status { get; set; }
+    [Parameter] public string? CustomLabel { get; set; }
+
+    private string StatusText => CustomLabel ?? Status ?? "Unknown";
+
+    private bool IsPulsing => NormalizedStatus is "running" or "queued" or "pending" or "in-progress" or "active";
+
+    private string NormalizedStatus => (Status ?? string.Empty).ToLowerInvariant().Replace("_", "-").Trim();
+
+    private string PillClass => NormalizedStatus switch
+    {
+        "completed" or "healthy" or "verified" or "approved" or "online" or "active" => "pill-healthy",
+        "running" or "queued" or "pending" or "in-progress" => "pill-active",
+        "warning" or "advisory" or "advisory-only" or "expired" or "paused" => "pill-warning",
+        "failed" or "cancelled" or "revoked" or "unhealthy" or "disabled" or "offline" or "error" => "pill-danger",
+        _ => "pill-neutral"
+    };
+}

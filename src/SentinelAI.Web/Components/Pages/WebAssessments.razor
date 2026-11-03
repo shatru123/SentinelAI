@@ -4,113 +4,942 @@
 @using SentinelAI.Domain
 @inject SentinelApiClient ApiClient
 @inject IJSRuntime JS
-<PageTitle>Web assessments · SentinelAI</PageTitle>
+<PageTitle>Web Assessments · SentinelAI SOC</PageTitle>
 
-<div class="page-heading"><div><p class="eyebrow">Application security / authorized execution</p><h1>Web assessments</h1><p class="muted">Bounded, evidence-backed web checks. Authorization and DNS scope are revalidated before every request.</p></div></div>
-<AuthorizeView Roles="Admin,SecurityAnalyst"><Authorized>
-<section class="panel assessment-form"><div class="panel-heading"><div><p class="eyebrow">Register and assess</p><h2>New web assessment</h2></div><span class="status-pill healthy">NO DESTRUCTIVE TESTS</span></div>
-<div class="form-grid"><label>Assessment name<input @bind="name" maxlength="80" /></label><label>Application URL<input @bind="targetUrl" maxlength="512" /></label><label>Hosting<select @bind="hostingMode"><option value="Public">Public</option><option value="Private">Private</option></select></label><label>Approved private worker<select @bind="privateWorker"><option value="">Select an enrolled worker</option>@foreach (var worker in workers.Where(x => x.PrivateAssessmentApproved && x.Capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase))) { <option value="@worker.Identity">@worker.Identity · @worker.Status · @string.Join(", ", worker.ApprovedPrivateNetworkRanges ?? [])</option> }</select></label><label>Private CIDR (optional)<input @bind="privateNetworkRange" maxlength="64" placeholder="10.20.0.0/16" /></label><label>Profile<select @bind="profile"><option value="web-assessment-passive">Passive web assessment</option><option value="web-assessment-safe-active">Safe active (bounded)</option></select></label><label>Expires in hours<input type="number" min="1" max="720" @bind="expiryHours" /></label></div>
-<label>Authorization evidence<input @bind="evidence" maxlength="200" /></label><button class="primary-button" @onclick="CreateAsync" disabled="@submitting">@(submitting ? "Submitting…" : "+ Start authorized assessment")</button>
-@if (!string.IsNullOrWhiteSpace(message)) { <p class="@(failed ? "error-text" : "muted")">@message</p> }</section>
-<section class="panel"><div class="panel-heading"><h2>Public target authorization</h2><span class="muted">An administrator must approve the exact scheme, host, port and path.</span></div><div class="form-grid"><label>Target URL<input @bind="authorizationTarget" maxlength="512" /></label><label>Reason<input @bind="authorizationReason" maxlength="500" /></label></div><button class="secondary-button" @onclick="RequestAuthorizationAsync">Request authorization</button>@if (authorizations.Count > 0) { <table><thead><tr><th>Target</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>@foreach (var authorization in authorizations) { <tr><td>@authorization.Target</td><td>@authorization.Status</td><td>@DisplayTime(authorization.ExpiresAt ?? default)</td><td><AuthorizeView Roles="Admin"><Authorized Context="adminContext">@if (authorization.Status == PublicTargetAuthorizationStatus.Requested) { <button class="secondary-button" @onclick="() => ApproveAuthorizationAsync(authorization)">Approve</button> } @if (authorization.Status == PublicTargetAuthorizationStatus.Approved) { <button class="secondary-button" @onclick="() => RevokeAuthorizationAsync(authorization)">Revoke</button> }</Authorized></AuthorizeView></td></tr> } </tbody></table> }</section>
-</Authorized><NotAuthorized><section class="panel"><p class="muted">Your role can view assessments but cannot create or cancel them.</p></section></NotAuthorized></AuthorizeView>
+<PageHeader Title="Authorized Web Assessments"
+            Eyebrow="Application Security / Authorized Execution"
+            Description="Execute bounded, non-destructive web application security checks. Public targets require explicit domain-level approval; private targets require enrolled worker binding and CIDR validation.">
+    <Actions>
+        <button class="soc-btn soc-btn-secondary" @onclick="RefreshAllAsync" disabled="@loading">
+            <span class="icon">↻</span> Refresh
+        </button>
+        <AuthorizeView Roles="Admin,SecurityAnalyst">
+            <Authorized>
+                <button class="soc-btn soc-btn-primary" @onclick="ToggleWizard">
+                    <span class="icon">@(showWizard ? "✕" : "+")</span> @(showWizard ? "Close Wizard" : "New Assessment")
+                </button>
+            </Authorized>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
 
-<section class="panel"><div class="panel-heading"><h2>Assessment history</h2><button class="secondary-button" @onclick="LoadAsync" disabled="@loading">Refresh</button></div>
-@if (loading) { <p class="muted">Loading assessment history…</p> }
-else if (error is not null) { <div class="error-state"><p class="error-text">@error</p><button class="secondary-button" @onclick="LoadAsync">Retry</button></div> }
-else if (assessments.Count == 0) { <div class="empty-state"><span class="empty-icon">◌</span><strong>No web assessments yet</strong><p>Use an explicitly authorized public target or an enrolled private worker.</p></div> }
-else { <table><thead><tr><th>Target</th><th>Profile</th><th>Hosting</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>@foreach (var item in assessments) { <tr><td>@item.TargetUrl</td><td>@item.Profile</td><td>@item.HostingMode</td><td>@item.Status</td><td>@DisplayTime(item.CreatedAt)</td><td><button class="secondary-button" @onclick="() => OpenDetailsAsync(item)">Details</button><button class="secondary-button" @onclick="() => CancelAsync(item)" disabled="@(item.Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Cancelled or WebAssessmentStatus.Failed or WebAssessmentStatus.Expired)">Cancel</button>@if (item.Status == WebAssessmentStatus.Completed) { <button class="secondary-button" @onclick="() => DownloadReportAsync(item)">Download report</button> }</td></tr> } </tbody></table> }
-<div class="pagination"><button class="secondary-button" @onclick="PreviousPageAsync" disabled="@(loading || page <= 1)">Previous</button><span class="muted">Page @this.page</span><button class="secondary-button" @onclick="NextPageAsync" disabled="@(loading || !hasNext)">Next</button></div>
+<div class="metrics-grid" style="margin-bottom: var(--space-6);">
+    <MetricCard Title="Total Web Assessments"
+                Value="@totalCount.ToString("N0")"
+                Icon="◌"
+                Subtitle="Lifetime web application scans" />
+    <MetricCard Title="Active Assessments"
+                Value="@activeAssessmentsCount.ToString("N0")"
+                Icon="⚙"
+                StatusClass="@(activeAssessmentsCount > 0 ? "warning" : "neutral")"
+                Subtitle="Currently running browser/HTTP workers" />
+    <MetricCard Title="Public Approvals"
+                Value="@authorizations.Count(a => a.Status == PublicTargetAuthorizationStatus.Approved).ToString("N0")"
+                Icon="🛡"
+                StatusClass="healthy"
+                Subtitle="Active administrator authorizations" />
+    <MetricCard Title="Safety Boundary"
+                Value="Strict Bounded"
+                Icon="🔒"
+                StatusClass="healthy"
+                Subtitle="Zero destructive payload injection" />
+</div>
+
+@if (showWizard)
+{
+    <section class="soc-panel" style="margin-bottom: var(--space-6); border-color: var(--primary-accent);">
+        <div class="soc-panel-header">
+            <div>
+                <p class="soc-eyebrow" style="color: var(--primary-accent);">Web Assessment Provisioning</p>
+                <h2 class="soc-panel-title">Step @wizardStep of 4: @GetStepTitle(wizardStep)</h2>
+            </div>
+            <div class="soc-wizard-steps">
+                <span class="soc-wizard-step @(wizardStep == 1 ? "active" : (wizardStep > 1 ? "completed" : ""))">1. Target</span>
+                <span class="soc-wizard-step @(wizardStep == 2 ? "active" : (wizardStep > 2 ? "completed" : ""))">2. Binding</span>
+                <span class="soc-wizard-step @(wizardStep == 3 ? "active" : (wizardStep > 3 ? "completed" : ""))">3. Profile & Safety</span>
+                <span class="soc-wizard-step @(wizardStep == 4 ? "active" : "")">4. Confirm</span>
+            </div>
+        </div>
+
+        @if (wizardStep == 1)
+        {
+            <div class="soc-form-grid" style="margin-bottom: var(--space-4);">
+                <div class="soc-form-group">
+                    <label class="soc-label">Assessment Name</label>
+                    <input class="soc-input" @bind="formName" maxlength="80" placeholder="e.g. app-staging-security-review" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Target Web Application URL</label>
+                    <input class="soc-input" @bind="formTargetUrl" maxlength="512" placeholder="https://example.corp.internal" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Hosting Environment Mode</label>
+                    <select class="soc-select" @bind="formHostingMode">
+                        <option value="@WebHostingMode.Public">Public (Requires approved public target authorization)</option>
+                        <option value="@WebHostingMode.Private">Private (Requires enrolled worker with private capability)</option>
+                    </select>
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Scope Lifespan (Hours)</label>
+                    <input type="number" class="soc-input" min="1" max="720" @bind="formExpiryHours" />
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(wizardError))
+            {
+                <div style="margin-bottom: var(--space-4);"><ErrorState Message="@wizardError" /></div>
+            }
+
+            <div style="display: flex; justify-content: flex-end; gap: var(--space-3);">
+                <button class="soc-btn soc-btn-secondary" @onclick="ToggleWizard">Cancel</button>
+                <button class="soc-btn soc-btn-primary" @onclick="GoToBindingStep">Next: Binding & Execution Mode →</button>
+            </div>
+        }
+        else if (wizardStep == 2)
+        {
+            @if (formHostingMode == WebHostingMode.Public)
+            {
+                <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-4);">
+                    <h3 style="font-size: 1rem; color: var(--text-primary); margin-bottom: var(--space-2);">Public Target Authorization Binding</h3>
+                    <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-3);">
+                        Public web assessments require an administrator-approved target authorization matching the target URL scheme, host, and port.
+                    </p>
+
+                    @{
+                        var approvedAuths = authorizations.Where(a => a.Status == PublicTargetAuthorizationStatus.Approved).ToList();
+                    }
+
+                    @if (approvedAuths.Count == 0)
+                    {
+                        <div class="soc-empty-state" style="padding: var(--space-4);">
+                            <span class="soc-empty-icon" style="font-size: 1.5rem;">⚠️</span>
+                            <h4 style="font-size: 0.875rem;">No Approved Public Target Authorizations</h4>
+                            <p class="text-muted" style="font-size: 0.8125rem;">
+                                You must request and have an administrator approve public target authorization for <code>@formTargetUrl</code> below before proceeding.
+                            </p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="soc-form-group">
+                            <label class="soc-label">Select Matching Approved Target Authorization</label>
+                            <select class="soc-select" @bind="selectedAuthId">
+                                <option value="">Auto-match based on target URL (@formTargetUrl)</option>
+                                @foreach (var auth in approvedAuths)
+                                {
+                                    <option value="@auth.Id.ToString()">@auth.Target (Expires: @DisplayTime(auth.ExpiresAt))</option>
+                                }
+                            </select>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-4);">
+                    <h3 style="font-size: 1rem; color: var(--text-primary); margin-bottom: var(--space-2);">Private Worker & CIDR Binding</h3>
+                    <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-3);">
+                        Private assessments must be routed to an enrolled worker provisioned with private web assessment authorization and permitted CIDR ranges.
+                    </p>
+
+                    <div class="soc-form-grid">
+                        <div class="soc-form-group">
+                            <label class="soc-label">Enrolled Private Worker</label>
+                            <select class="soc-select" @bind="formPrivateWorker">
+                                <option value="">Select an enrolled worker</option>
+                                @foreach (var w in enrolledPrivateWorkers)
+                                {
+                                    <option value="@w.Identity">@w.Identity (Status: @w.Status, Ranges: @string.Join(", ", w.ApprovedPrivateNetworkRanges ?? []))</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="soc-form-group">
+                            <label class="soc-label">Target Private CIDR Range (e.g. 10.20.0.0/16)</label>
+                            <input class="soc-input" @bind="formPrivateRange" maxlength="64" placeholder="10.20.0.0/16" />
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(wizardError))
+            {
+                <div style="margin-bottom: var(--space-4);"><ErrorState Message="@wizardError" /></div>
+            }
+
+            <div style="display: flex; justify-content: space-between;">
+                <button class="soc-btn soc-btn-secondary" @onclick="() => wizardStep = 1">← Back to Target</button>
+                <button class="soc-btn soc-btn-primary" @onclick="GoToProfileStep">Next: Profile & Safety →</button>
+            </div>
+        }
+        else if (wizardStep == 3)
+        {
+            <div class="soc-form-grid" style="margin-bottom: var(--space-4);">
+                <div class="soc-form-group">
+                    <label class="soc-label">Operation Profile</label>
+                    <select class="soc-select" @bind="formProfile">
+                        <option value="web-assessment-passive">web-assessment-passive (Observation & Security Headers)</option>
+                        <option value="web-assessment-safe-active">web-assessment-safe-active (Bounded Active Probing)</option>
+                    </select>
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Authorization Evidence Reference</label>
+                    <input class="soc-input" @bind="formEvidence" maxlength="200" placeholder="e.g. secops-ticket-app-audit" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Request Rate Limit (req/min)</label>
+                    <input type="number" class="soc-input" min="1" max="500" @bind="formRequestLimit" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Timeout Bounded Limit (Seconds)</label>
+                    <input type="number" class="soc-input" min="30" max="600" value="300" disabled />
+                </div>
+            </div>
+
+            <div style="background: rgba(244, 195, 106, 0.08); border: 1px solid rgba(244, 195, 106, 0.3); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-4);">
+                <label style="display: flex; gap: var(--space-3); align-items: flex-start; cursor: pointer;">
+                    <input type="checkbox" style="margin-top: 3px;" @bind="confirmedAssessmentPolicy" />
+                    <span style="font-size: 0.875rem; color: var(--text-primary);">
+                        <strong>I certify assessment policy compliance:</strong> Checks will observe strict non-destructive constraints (no SQL drop/truncate, no credential brute force, no denial of service). Authorization and DNS pinning are verified on every single HTTP request.
+                    </span>
+                </label>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(wizardError))
+            {
+                <div style="margin-bottom: var(--space-4);"><ErrorState Message="@wizardError" /></div>
+            }
+
+            <div style="display: flex; justify-content: space-between;">
+                <button class="soc-btn soc-btn-secondary" @onclick="() => wizardStep = 2">← Back to Binding</button>
+                <button class="soc-btn soc-btn-primary" @onclick="SubmitAssessmentAsync" disabled="@(!confirmedAssessmentPolicy || submitting)">
+                    @(submitting ? "Launching Assessment…" : "Confirm & Start Web Assessment")
+                </button>
+            </div>
+        }
+        else if (wizardStep == 4)
+        {
+            <div style="text-align: center; padding: var(--space-6);">
+                <div style="font-size: 2.5rem; color: var(--color-success); margin-bottom: var(--space-2);">✓</div>
+                <h3 style="font-size: 1.25rem; color: var(--text-primary); margin-bottom: var(--space-2);">Web Assessment Successfully Dispatched</h3>
+                <p class="text-muted" style="max-width: 500px; margin: 0 auto var(--space-4);">
+                    Assessment <code>@createdAssessmentId</code> is now queued and dispatched to the designated worker.
+                </p>
+                <div style="display: flex; justify-content: center; gap: var(--space-3);">
+                    <button class="soc-btn soc-btn-secondary" @onclick="ResetWizard">Create Another</button>
+                    <button class="soc-btn soc-btn-primary" @onclick="ToggleWizard">View Assessment List</button>
+                </div>
+            </div>
+        }
+    </section>
+}
+
+<section class="soc-panel" style="margin-bottom: var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <h2 class="soc-panel-title">Public Target Authorizations</h2>
+            <p class="soc-panel-subtitle">Administrators must approve public domains before assessments can be dispatched against them.</p>
+        </div>
+        <button class="soc-btn soc-btn-secondary" @onclick="() => showAuthRequest = !showAuthRequest">
+            @(showAuthRequest ? "Hide Request Form" : "+ Request Public Authorization")
+        </button>
+    </div>
+
+    @if (showAuthRequest)
+    {
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-4);">
+            <h3 style="font-size: 0.9375rem; color: var(--text-primary); margin-bottom: var(--space-3);">Request New Public Target Authorization</h3>
+            <div class="soc-form-grid" style="margin-bottom: var(--space-3);">
+                <div class="soc-form-group">
+                    <label class="soc-label">Target URL (Scheme, Host, Port)</label>
+                    <input class="soc-input" @bind="authTargetInput" placeholder="https://app.example.com" />
+                </div>
+                <div class="soc-form-group">
+                    <label class="soc-label">Business Justification / Security Engagement</label>
+                    <input class="soc-input" @bind="authReasonInput" placeholder="Authorized bug bounty / security review" />
+                </div>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
+                <button class="soc-btn soc-btn-secondary" @onclick="() => showAuthRequest = false">Cancel</button>
+                <button class="soc-btn soc-btn-primary" @onclick="SubmitAuthRequestAsync" disabled="@submittingAuth">
+                    @(submittingAuth ? "Submitting…" : "Submit Request")
+                </button>
+            </div>
+        </div>
+    }
+
+    @if (authorizations.Count == 0)
+    {
+        <div class="soc-empty-state" style="padding: var(--space-4);">
+            <div class="soc-empty-icon" style="font-size: 1.5rem;">🛡</div>
+            <h4 style="font-size: 0.875rem;">No Public Authorizations Registered</h4>
+            <p class="text-muted" style="font-size: 0.8125rem;">Request authorization for public web targets to allow assessments.</p>
+        </div>
+    }
+    else
+    {
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead>
+                    <tr>
+                        <th>Target Host / URL</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Expires</th>
+                        <th style="text-align: right;">Administrator Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var auth in authorizations)
+                    {
+                        <tr>
+                            <td><strong style="color: var(--primary-accent); font-family: var(--font-mono);">@auth.Target</strong></td>
+                            <td>
+                                @if (auth.Status == PublicTargetAuthorizationStatus.Approved)
+                                {
+                                    <span class="soc-badge soc-badge-success">Approved</span>
+                                }
+                                else if (auth.Status == PublicTargetAuthorizationStatus.Requested)
+                                {
+                                    <span class="soc-badge soc-badge-warning">Requested</span>
+                                }
+                                else if (auth.Status == PublicTargetAuthorizationStatus.Revoked)
+                                {
+                                    <span class="soc-badge soc-badge-danger">Revoked</span>
+                                }
+                                else
+                                {
+                                    <span class="soc-badge soc-badge-neutral">@auth.Status</span>
+                                }
+                            </td>
+                            <td class="text-muted" style="font-size: 0.8125rem;">@DisplayTime(auth.CreatedAt)</td>
+                            <td class="text-muted" style="font-size: 0.8125rem;">@DisplayTime(auth.ExpiresAt)</td>
+                            <td style="text-align: right;">
+                                <AuthorizeView Roles="Admin">
+                                    <Authorized>
+                                        @if (auth.Status == PublicTargetAuthorizationStatus.Requested)
+                                        {
+                                            <button class="soc-btn soc-btn-primary" style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;" @onclick="() => ApproveAuthAsync(auth)">
+                                                Approve Target
+                                            </button>
+                                        }
+                                        @if (auth.Status == PublicTargetAuthorizationStatus.Approved)
+                                        {
+                                            <button class="soc-btn soc-btn-danger" style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;" @onclick="() => RevokeAuthAsync(auth)">
+                                                Revoke
+                                            </button>
+                                        }
+                                    </Authorized>
+                                    <NotAuthorized>
+                                        <span class="text-muted" style="font-size: 0.75rem;">Admin approval required</span>
+                                    </NotAuthorized>
+                                </AuthorizeView>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="soc-panel">
+    <div class="soc-panel-header">
+        <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+            <h2 class="soc-panel-title">Web Assessment History</h2>
+            <span class="soc-badge soc-badge-neutral">@totalCount total</span>
+        </div>
+        <div style="display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center;">
+            <input type="search"
+                   class="soc-input"
+                   placeholder="Search target URL…"
+                   style="max-width: 240px;"
+                   value="@searchTerm"
+                   @onchange="OnSearchChanged" />
+
+            <select class="soc-select" value="@selectedStatus" @onchange="OnStatusChanged" style="width: auto;">
+                <option value="All">All Statuses</option>
+                <option value="Queued">Queued</option>
+                <option value="Running">Running</option>
+                <option value="Completed">Completed</option>
+                <option value="Failed">Failed</option>
+                <option value="Cancelled">Cancelled</option>
+            </select>
+        </div>
+    </div>
+
+    @if (loading && assessments.Count == 0)
+    {
+        <LoadingState Message="Loading web assessments…" />
+    }
+    else if (error is not null)
+    {
+        <ErrorState Message="@error" OnRetry="LoadAsync" />
+    }
+    else if (assessments.Count == 0)
+    {
+        <EmptyState Title="No Web Assessments Found"
+                    Message="No assessments recorded. Click 'New Assessment' to launch a bounded web assessment."
+                    ActionText="New Assessment"
+                    OnAction="ToggleWizard" />
+    }
+    else
+    {
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead>
+                    <tr>
+                        <th>Target Web Application</th>
+                        <th>Profile</th>
+                        <th>Hosting</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th style="text-align: right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in FilteredAssessments)
+                    {
+                        <tr>
+                            <td>
+                                <strong style="color: var(--text-primary); font-family: var(--font-mono); font-size: 0.875rem;">
+                                    @item.TargetUrl
+                                </strong>
+                                <div class="text-muted" style="font-size: 0.75rem;">ID: @item.Id.ToString().Substring(0, 8)…</div>
+                            </td>
+                            <td><span class="soc-badge soc-badge-neutral">@item.Profile</span></td>
+                            <td><span class="soc-badge soc-badge-neutral">@item.HostingMode</span></td>
+                            <td><StatusBadge Status="@item.Status.ToString()" /></td>
+                            <td class="text-muted" style="font-size: 0.8125rem;">@DisplayTime(item.CreatedAt)</td>
+                            <td style="text-align: right;">
+                                <div style="display: inline-flex; gap: var(--space-2);">
+                                    <button class="soc-btn soc-btn-secondary"
+                                            style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;"
+                                            @onclick="() => InspectAssessmentAsync(item)">
+                                        Deep Inspection
+                                    </button>
+                                    @if (item.Status is WebAssessmentStatus.Running or WebAssessmentStatus.Queued)
+                                    {
+                                        <AuthorizeView Roles="Admin,Operator">
+                                            <Authorized>
+                                                <button class="soc-btn soc-btn-danger"
+                                                        style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;"
+                                                        @onclick="() => CancelAssessmentAsync(item)">
+                                                    Cancel
+                                                </button>
+                                            </Authorized>
+                                        </AuthorizeView>
+                                    }
+                                    @if (item.Status == WebAssessmentStatus.Completed)
+                                    {
+                                        <button class="soc-btn soc-btn-primary"
+                                                style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;"
+                                                @onclick="() => DownloadReportAsync(item)">
+                                            HTML Report
+                                        </button>
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <Pagination CurrentPage="page"
+                    TotalCount="totalCount"
+                    PageSize="PageSize"
+                    OnPageChange="GoToPageAsync" />
+    }
 </section>
 
 @if (selectedAssessment is not null)
 {
-<section class="panel"><div class="panel-heading"><h2>Assessment details</h2><button class="secondary-button" @onclick="() => selectedAssessment = null">Close</button></div><p class="muted">@selectedAssessment.TargetUrl · @selectedAssessment.Status · @selectedAssessment.HostingMode</p><div class="detail-grid"><div><h3>Findings</h3>@if (detailFindings.Count == 0) { <p class="muted">No findings recorded.</p> } else { @foreach (var finding in detailFindings) { <article class="finding"><strong>@finding.Title</strong><p>@finding.Severity · @finding.CheckStatus · confidence @finding.Confidence</p><p>@finding.Description</p></article> } }</div><div><h3>Coverage</h3>@foreach (var check in detailChecks) { <p><strong>@check.Name</strong> · @check.Status<br /><span class="muted">@check.AffectedEndpoint</span></p> }<h3>Endpoints</h3>@foreach (var endpoint in detailEndpoints) { <p class="muted">@endpoint.Method @endpoint.Url</p> }<h3>Screenshots</h3>@foreach (var screenshot in detailScreenshots) { <p class="muted">@screenshot.ScreenshotType · @screenshot.Url · @screenshot.Sha256</p> }</div></div></section>
+    <DetailDrawer Title="@($"Assessment: {selectedAssessment.TargetUrl}")"
+                  IsOpen="true"
+                  OnClose="() => selectedAssessment = null">
+        <div style="margin-bottom: var(--space-4); padding-bottom: var(--space-3); border-bottom: 1px solid var(--border-subtle);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                <strong style="color: var(--primary-accent); font-family: var(--font-mono); font-size: 1.125rem;">
+                    @selectedAssessment.TargetUrl
+                </strong>
+                <StatusBadge Status="@selectedAssessment.Status.ToString()" />
+            </div>
+            <div class="text-muted" style="font-size: 0.8125rem;">
+                Hosting: @selectedAssessment.HostingMode · Profile: @selectedAssessment.Profile · Created: @DisplayTime(selectedAssessment.CreatedAt)
+            </div>
+            @if (selectedAssessment.Status == WebAssessmentStatus.Completed)
+            {
+                <div style="margin-top: var(--space-3);">
+                    <button class="soc-btn soc-btn-primary" style="font-size: 0.8125rem;" @onclick="() => DownloadReportAsync(selectedAssessment)">
+                        📥 Download Full Audit HTML Report
+                    </button>
+                </div>
+            }
+        </div>
+
+        <div style="display: flex; gap: var(--space-2); border-bottom: 1px solid var(--border-subtle); margin-bottom: var(--space-4); overflow-x: auto;">
+            <button class="soc-btn @(detailTab == "findings" ? "soc-btn-primary" : "soc-btn-secondary")" style="font-size: 0.75rem;" @onclick='() => detailTab = "findings"'>
+                Findings (@detailFindings.Count)
+            </button>
+            <button class="soc-btn @(detailTab == "checks" ? "soc-btn-primary" : "soc-btn-secondary")" style="font-size: 0.75rem;" @onclick='() => detailTab = "checks"'>
+                Coverage Checks (@detailChecks.Count)
+            </button>
+            <button class="soc-btn @(detailTab == "endpoints" ? "soc-btn-primary" : "soc-btn-secondary")" style="font-size: 0.75rem;" @onclick='() => detailTab = "endpoints"'>
+                Discovered Endpoints (@detailEndpoints.Count)
+            </button>
+            <button class="soc-btn @(detailTab == "screenshots" ? "soc-btn-primary" : "soc-btn-secondary")" style="font-size: 0.75rem;" @onclick='() => detailTab = "screenshots"'>
+                Screenshots (@detailScreenshots.Count)
+            </button>
+        </div>
+
+        @if (loadingDetails)
+        {
+            <LoadingState Message="Querying assessment telemetry…" />
+        }
+        else if (detailTab == "findings")
+        {
+            @if (detailFindings.Count == 0)
+            {
+                <div class="soc-empty-state" style="padding: var(--space-6);">
+                    <div class="soc-empty-icon" style="font-size: 2rem;">🛡</div>
+                    <h4>No Findings Recorded</h4>
+                    <p class="text-muted">No security anomalies or compliance issues detected.</p>
+                </div>
+            }
+            else
+            {
+                @foreach (var finding in detailFindings)
+                {
+                    <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-3);">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: var(--space-2);">
+                            <strong style="color: var(--text-primary); font-size: 0.9375rem;">@finding.Title</strong>
+                            <SeverityBadge Severity="@finding.Severity" />
+                        </div>
+                        <p style="font-size: 0.8125rem; color: var(--text-muted); margin-bottom: var(--space-2);">
+                            Confidence: <strong>@(finding.Confidence ?? "Medium")</strong> · Status: <span class="soc-badge soc-badge-neutral">@finding.CheckStatus</span>
+                        </p>
+                        <p style="font-size: 0.875rem; color: var(--text-primary); margin: 0;">
+                            @finding.Description
+                        </p>
+                    </div>
+                }
+            }
+        }
+        else if (detailTab == "checks")
+        {
+            <div class="soc-table-container">
+                <table class="soc-table">
+                    <thead>
+                        <tr>
+                            <th>Check Name</th>
+                            <th>Status</th>
+                            <th>Affected Endpoint</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var check in detailChecks)
+                        {
+                            <tr>
+                                <td><strong>@check.Name</strong></td>
+                                <td><span class="soc-badge soc-badge-neutral">@check.Status</span></td>
+                                <td class="text-muted" style="font-family: var(--font-mono); font-size: 0.75rem;">@check.AffectedEndpoint</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else if (detailTab == "endpoints")
+        {
+            <div class="soc-table-container">
+                <table class="soc-table">
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>URL Path</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var ep in detailEndpoints)
+                        {
+                            <tr>
+                                <td><span class="soc-badge soc-badge-neutral">@ep.Method</span></td>
+                                <td style="font-family: var(--font-mono); font-size: 0.8125rem; color: var(--primary-accent);">@ep.Url</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else if (detailTab == "screenshots")
+        {
+            @if (detailScreenshots.Count == 0)
+            {
+                <div class="soc-empty-state" style="padding: var(--space-4);">
+                    <p class="text-muted">No screenshots captured during this assessment.</p>
+                </div>
+            }
+            else
+            {
+                @foreach (var shot in detailScreenshots)
+                {
+                    <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-3);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
+                            <span class="soc-badge soc-badge-neutral">@shot.ScreenshotType</span>
+                            <span class="text-muted" style="font-size: 0.75rem;">@shot.Format.ToUpperInvariant() · @shot.CapturedAt.ToLocalTime().ToString("g")</span>
+                        </div>
+                        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); word-break: break-all;">
+                            SHA256: @shot.Sha256
+                        </div>
+                        <div style="font-size: 0.8125rem; color: var(--primary-accent); margin-top: var(--space-1);">
+                            @shot.Url
+                        </div>
+                    </div>
+                }
+            }
+        }
+    </DetailDrawer>
 }
 
 @code {
     private const int PageSize = 25;
     private List<WebAssessmentResponse> assessments = [];
-    private string name = "authorized-web-assessment";
-    private string targetUrl = "https://example.com";
-    private WebHostingMode hostingMode = WebHostingMode.Public;
-    private string? privateWorker;
-    private string privateNetworkRange = string.Empty;
-    private string profile = "web-assessment-passive";
-    private string evidence = "operator-approved-application";
-    private int expiryHours = 24;
-    private int page = 1;
-    private int totalCount;
-    private bool loading = true;
-    private bool submitting;
-    private bool failed;
-    private string? error;
-    private string? message;
-    private string authorizationTarget = "https://example.com";
-    private string authorizationReason = string.Empty;
     private List<PublicTargetAuthorizationResponse> authorizations = [];
     private List<WorkerResponse> workers = [];
+    private List<WorkerResponse> enrolledPrivateWorkers => workers.Where(w => w.PrivateAssessmentApproved && w.Capabilities.Contains("web-assessment", StringComparer.OrdinalIgnoreCase)).ToList();
+
+    private int page = 1;
+    private int totalCount;
+    private int activeAssessmentsCount;
+    private bool loading = true;
+    private string? error;
+
+    private string searchTerm = string.Empty;
+    private string selectedStatus = "All";
+
+    // Wizard state
+    private bool showWizard;
+    private int wizardStep = 1;
+    private bool submitting;
+    private string? wizardError;
+    private bool confirmedAssessmentPolicy;
+    private Guid createdAssessmentId;
+
+    // Wizard form fields
+    private string formName = "web-assessment-engagement";
+    private string formTargetUrl = "https://example.com";
+    private WebHostingMode formHostingMode = WebHostingMode.Public;
+    private string? formPrivateWorker;
+    private string formPrivateRange = string.Empty;
+    private string formProfile = "web-assessment-passive";
+    private string formEvidence = "security-operations-charter";
+    private int formExpiryHours = 24;
+    private int formRequestLimit = 30;
+    private string selectedAuthId = string.Empty;
+
+    // Public authorization request
+    private bool showAuthRequest;
+    private string authTargetInput = "https://example.com";
+    private string authReasonInput = "Security team verification";
+    private bool submittingAuth;
+
+    // Deep inspection drawer
     private WebAssessmentResponse? selectedAssessment;
+    private string detailTab = "findings";
+    private bool loadingDetails;
     private List<WebAssessmentFindingResponse> detailFindings = [];
     private List<WebAssessmentEndpointResponse> detailEndpoints = [];
     private List<WebAssessmentCheckResponse> detailChecks = [];
     private List<ScreenshotResponse> detailScreenshots = [];
-    private bool hasNext => page * PageSize < totalCount;
 
     protected override async Task OnInitializedAsync()
     {
+        await RefreshAllAsync();
+    }
+
+    private async Task RefreshAllAsync()
+    {
+        await LoadSummaryAsync();
+        await LoadAuthorizationsAndWorkersAsync();
         await LoadAsync();
+    }
+
+    private async Task LoadSummaryAsync()
+    {
         try
         {
-            authorizations = (await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations")).ToList();
-            workers = (await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers")).ToList();
+            var summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
+            activeAssessmentsCount = summary.ActiveAssessments;
         }
-        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        catch { }
     }
+
+    private async Task LoadAuthorizationsAndWorkersAsync()
+    {
+        try
+        {
+            var auths = await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations");
+            authorizations = auths ?? [];
+
+            var w = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers");
+            workers = w ?? [];
+        }
+        catch { }
+    }
+
     private async Task LoadAsync()
     {
-        loading = true; error = null;
-        try { var result = await ApiClient.GetPageAsync<WebAssessmentResponse>("/api/v1/web-assessments", page, PageSize); assessments = result.Items?.ToList() ?? []; totalCount = Math.Max(0, result.TotalCount); page = Math.Max(1, result.Page); }
-        catch (SentinelApiException exception) { assessments = []; totalCount = 0; error = exception.UserMessage; }
-        finally { loading = false; }
+        loading = true;
+        error = null;
+        try
+        {
+            var result = await ApiClient.GetPageAsync<WebAssessmentResponse>("/api/v1/web-assessments", page, PageSize);
+            assessments = result.Items?.ToList() ?? [];
+            totalCount = Math.Max(0, result.TotalCount);
+            page = Math.Max(1, result.Page);
+            activeAssessmentsCount = assessments.Count(a => a.Status == WebAssessmentStatus.Running || a.Status == WebAssessmentStatus.Queued);
+        }
+        catch (SentinelApiException exception)
+        {
+            assessments = [];
+            totalCount = 0;
+            error = exception.UserMessage;
+        }
+        finally
+        {
+            loading = false;
+        }
     }
-    private async Task CreateAsync()
+
+    private IEnumerable<WebAssessmentResponse> FilteredAssessments
     {
-        submitting = true; failed = false; message = null;
-        try { var ranges = string.IsNullOrWhiteSpace(privateNetworkRange) ? Array.Empty<string>() : [privateNetworkRange.Trim()]; var selectedAuthorization = authorizations.FirstOrDefault(x => x.Status == PublicTargetAuthorizationStatus.Approved && string.Equals(x.Target, targetUrl, StringComparison.OrdinalIgnoreCase)); var result = await ApiClient.PostJsonAsync<CreateWebAssessmentRequest, WebAssessmentResponse>("/api/v1/web-assessments", new CreateWebAssessmentRequest(name, targetUrl, hostingMode, privateWorker, profile, [], 30, 300, evidence, DateTimeOffset.UtcNow.AddHours(Math.Clamp(expiryHours, 1, 720)), false, selectedAuthorization is null ? [] : [selectedAuthorization.Id], ranges)); message = $"Assessment {result.Id} queued for the authorized worker."; await LoadAsync(); }
-        catch (SentinelApiException exception) { failed = true; message = exception.UserMessage; }
-        finally { submitting = false; }
+        get
+        {
+            var items = assessments.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+                items = items.Where(a => a.TargetUrl.Contains(searchTerm, StringComparison.OrdinalIgnoreCase));
+            if (selectedStatus != "All")
+                items = items.Where(a => a.Status.ToString().Equals(selectedStatus, StringComparison.OrdinalIgnoreCase));
+            return items;
+        }
     }
-    private async Task RequestAuthorizationAsync()
+
+    private void OnSearchChanged(ChangeEventArgs e)
     {
-        try { await ApiClient.PostJsonAsync<PublicTargetAuthorizationRequest, PublicTargetAuthorizationResponse>("/api/v1/public-target-authorizations", new PublicTargetAuthorizationRequest(authorizationTarget, authorizationReason)); authorizations = (await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations")).ToList(); message = "Authorization request submitted for administrator review."; }
-        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        searchTerm = e.Value?.ToString() ?? string.Empty;
     }
-    private async Task ApproveAuthorizationAsync(PublicTargetAuthorizationResponse authorization)
+
+    private void OnStatusChanged(ChangeEventArgs e)
     {
-        try { await ApiClient.PostJsonAsync<PublicTargetAuthorizationApprovalRequest, PublicTargetAuthorizationResponse>($"/api/v1/public-target-authorizations/{authorization.Id}/approve", new PublicTargetAuthorizationApprovalRequest("operator-approved-engagement", "administrator-review", DateTimeOffset.UtcNow.AddHours(24))); authorizations = (await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations")).ToList(); }
-        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        selectedStatus = e.Value?.ToString() ?? "All";
     }
-    private async Task RevokeAuthorizationAsync(PublicTargetAuthorizationResponse authorization)
+
+    private async Task GoToPageAsync(int newPage)
     {
-        try { await ApiClient.PostAsync($"/api/v1/public-target-authorizations/{authorization.Id}/revoke"); authorizations = (await ApiClient.GetJsonAsync<List<PublicTargetAuthorizationResponse>>("/api/v1/public-target-authorizations")).ToList(); }
-        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        page = newPage;
+        await LoadAsync();
     }
-    private async Task CancelAsync(WebAssessmentResponse item) { try { await ApiClient.PostAsync($"/api/v1/web-assessments/{item.Id}/cancel"); await LoadAsync(); } catch (SentinelApiException exception) { error = exception.UserMessage; } }
-    private async Task OpenDetailsAsync(WebAssessmentResponse item)
+
+    private void ToggleWizard()
+    {
+        showWizard = !showWizard;
+        if (showWizard) ResetWizard();
+    }
+
+    private void ResetWizard()
+    {
+        wizardStep = 1;
+        submitting = false;
+        wizardError = null;
+        confirmedAssessmentPolicy = false;
+        formName = $"web-assessment-{DateTime.UtcNow:yyyyMMdd-HHmm}";
+    }
+
+    private static string GetStepTitle(int step) => step switch
+    {
+        1 => "Target Definition",
+        2 => "Hosting & Worker Binding",
+        3 => "Profile & Safety Boundary",
+        4 => "Dispatched",
+        _ => "Wizard"
+    };
+
+    private void GoToBindingStep()
+    {
+        wizardError = null;
+        if (string.IsNullOrWhiteSpace(formName)) { wizardError = "Assessment name is required."; return; }
+        if (string.IsNullOrWhiteSpace(formTargetUrl) || !Uri.TryCreate(formTargetUrl, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"))
+        {
+            wizardError = "A valid HTTP or HTTPS target URL is required.";
+            return;
+        }
+        wizardStep = 2;
+    }
+
+    private void GoToProfileStep()
+    {
+        wizardError = null;
+        if (formHostingMode == WebHostingMode.Private && string.IsNullOrWhiteSpace(formPrivateWorker))
+        {
+            wizardError = "Private assessments require an enrolled private worker.";
+            return;
+        }
+        wizardStep = 3;
+    }
+
+    private async Task SubmitAssessmentAsync()
+    {
+        if (!confirmedAssessmentPolicy) return;
+        submitting = true;
+        wizardError = null;
+
+        try
+        {
+            var ranges = string.IsNullOrWhiteSpace(formPrivateRange) ? Array.Empty<string>() : [formPrivateRange.Trim()];
+
+            List<Guid> boundAuthIds = [];
+            if (!string.IsNullOrWhiteSpace(selectedAuthId) && Guid.TryParse(selectedAuthId, out var parsedGuid))
+            {
+                boundAuthIds.Add(parsedGuid);
+            }
+            else
+            {
+                var matching = authorizations.FirstOrDefault(x => x.Status == PublicTargetAuthorizationStatus.Approved && string.Equals(x.Target, formTargetUrl, StringComparison.OrdinalIgnoreCase));
+                if (matching is not null) boundAuthIds.Add(matching.Id);
+            }
+
+            var request = new CreateWebAssessmentRequest(
+                formName.Trim(),
+                formTargetUrl.Trim(),
+                formHostingMode,
+                formHostingMode == WebHostingMode.Private ? formPrivateWorker : null,
+                formProfile,
+                [],
+                formRequestLimit,
+                300,
+                formEvidence.Trim(),
+                DateTimeOffset.UtcNow.AddHours(Math.Clamp(formExpiryHours, 1, 720)),
+                false,
+                boundAuthIds,
+                ranges);
+
+            var created = await ApiClient.PostJsonAsync<CreateWebAssessmentRequest, WebAssessmentResponse>("/api/v1/web-assessments", request);
+            createdAssessmentId = created.Id;
+            wizardStep = 4;
+            await LoadAsync();
+        }
+        catch (SentinelApiException ex)
+        {
+            wizardError = ex.UserMessage;
+        }
+        finally
+        {
+            submitting = false;
+        }
+    }
+
+    private async Task SubmitAuthRequestAsync()
+    {
+        if (string.IsNullOrWhiteSpace(authTargetInput)) return;
+        submittingAuth = true;
+        try
+        {
+            await ApiClient.PostJsonAsync<PublicTargetAuthorizationRequest, PublicTargetAuthorizationResponse>(
+                "/api/v1/public-target-authorizations",
+                new PublicTargetAuthorizationRequest(authTargetInput.Trim(), authReasonInput.Trim()));
+            showAuthRequest = false;
+            await LoadAuthorizationsAndWorkersAsync();
+        }
+        catch (SentinelApiException ex)
+        {
+            error = ex.UserMessage;
+        }
+        finally
+        {
+            submittingAuth = false;
+        }
+    }
+
+    private async Task ApproveAuthAsync(PublicTargetAuthorizationResponse auth)
     {
         try
         {
-            selectedAssessment = item;
-            detailFindings = (await ApiClient.GetJsonAsync<List<WebAssessmentFindingResponse>>($"/api/v1/web-assessments/{item.Id}/findings")).ToList();
-            detailEndpoints = (await ApiClient.GetJsonAsync<List<WebAssessmentEndpointResponse>>($"/api/v1/web-assessments/{item.Id}/endpoints")).ToList();
-            detailChecks = (await ApiClient.GetJsonAsync<List<WebAssessmentCheckResponse>>($"/api/v1/web-assessments/{item.Id}/checks")).ToList();
-            detailScreenshots = (await ApiClient.GetJsonAsync<List<ScreenshotResponse>>($"/api/v1/web-assessments/{item.Id}/screenshots")).ToList();
+            await ApiClient.PostJsonAsync<PublicTargetAuthorizationApprovalRequest, PublicTargetAuthorizationResponse>(
+                $"/api/v1/public-target-authorizations/{auth.Id}/approve",
+                new PublicTargetAuthorizationApprovalRequest("secops-engagement-charter", "admin-approval-granted", DateTimeOffset.UtcNow.AddHours(24)));
+            await LoadAuthorizationsAndWorkersAsync();
         }
-        catch (SentinelApiException exception) { selectedAssessment = null; error = exception.UserMessage; }
+        catch (SentinelApiException ex)
+        {
+            error = ex.UserMessage;
+        }
     }
-    private async Task DownloadReportAsync(WebAssessmentResponse item) { try { var bytes = await ApiClient.GetBytesAsync($"/api/v1/web-assessments/{item.Id}/report"); await JS.InvokeVoidAsync("sentinelaiDownload", $"sentinelai-{item.Id:N}.html", "text/html", bytes); } catch (SentinelApiException exception) { error = exception.UserMessage; } }
-    private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadAsync(); } }
-    private async Task NextPageAsync() { if (hasNext) { page++; await LoadAsync(); } }
-    private static string DisplayTime(DateTimeOffset value) => value == default ? "Not available" : value.ToLocalTime().ToString("g");
+
+    private async Task RevokeAuthAsync(PublicTargetAuthorizationResponse auth)
+    {
+        try
+        {
+            await ApiClient.PostAsync($"/api/v1/public-target-authorizations/{auth.Id}/revoke");
+            await LoadAuthorizationsAndWorkersAsync();
+        }
+        catch (SentinelApiException ex)
+        {
+            error = ex.UserMessage;
+        }
+    }
+
+    private async Task CancelAssessmentAsync(WebAssessmentResponse item)
+    {
+        try
+        {
+            await ApiClient.PostAsync($"/api/v1/web-assessments/{item.Id}/cancel");
+            await LoadAsync();
+        }
+        catch (SentinelApiException ex)
+        {
+            error = ex.UserMessage;
+        }
+    }
+
+    private async Task InspectAssessmentAsync(WebAssessmentResponse item)
+    {
+        selectedAssessment = item;
+        detailTab = "findings";
+        loadingDetails = true;
+        detailFindings = [];
+        detailChecks = [];
+        detailEndpoints = [];
+        detailScreenshots = [];
+
+        try
+        {
+            detailFindings = (await ApiClient.GetJsonAsync<List<WebAssessmentFindingResponse>>($"/api/v1/web-assessments/{item.Id}/findings")) ?? [];
+            detailChecks = (await ApiClient.GetJsonAsync<List<WebAssessmentCheckResponse>>($"/api/v1/web-assessments/{item.Id}/checks")) ?? [];
+            detailEndpoints = (await ApiClient.GetJsonAsync<List<WebAssessmentEndpointResponse>>($"/api/v1/web-assessments/{item.Id}/endpoints")) ?? [];
+            detailScreenshots = (await ApiClient.GetJsonAsync<List<ScreenshotResponse>>($"/api/v1/web-assessments/{item.Id}/screenshots")) ?? [];
+        }
+        catch (SentinelApiException ex)
+        {
+            error = ex.UserMessage;
+        }
+        finally
+        {
+            loadingDetails = false;
+        }
+    }
+
+    private async Task DownloadReportAsync(WebAssessmentResponse item)
+    {
+        try
+        {
+            var bytes = await ApiClient.GetBytesAsync($"/api/v1/web-assessments/{item.Id}/report");
+            await JS.InvokeVoidAsync("sentinelaiDownload", $"sentinelai-assessment-{item.Id:N}.html", "text/html", bytes);
+        }
+        catch (SentinelApiException ex)
+        {
+            error = ex.UserMessage;
+        }
+    }
+
+    private static string DisplayTime(DateTimeOffset? value) => value is null || value == default ? "—" : value.Value.ToLocalTime().ToString("g");
 }

@@ -44,4 +44,4 @@ The API writes `AgentJob`, audit data and `OutboxMessage` in one PostgreSQL tran
 
 ## Audit and evidence
 
-Record who requested a job, authorization scope and policy versions, approval decisions, worker identity, tool adapter/version, start/end time, cancellation, normalized results and evidence hashes. Avoid storing credentials or unnecessary personal data in logs.
+Record who requested a job, authorization scope and policy versions, approval decisions, worker identity, tool adapter/version, start/end time, cancellation, normalized results and evidence hashes. Avoid storing credentials or unnecessary personal data in logs. Operational URL logging is centralized and sanitized to origin-only format (scheme, host, effective port), strictly stripping credentials, session query parameters, fragments, and sensitive resource paths.

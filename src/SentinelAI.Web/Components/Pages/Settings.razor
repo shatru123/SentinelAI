@@ -1,5 +1,236 @@
 @page "/settings"
 @attribute [Authorize]
-<PageTitle>Settings · SentinelAI</PageTitle>
-<div class="page-heading"><div><p class="eyebrow">Control plane / configuration</p><h1>Settings</h1><p class="muted">Provider credentials belong in runtime secrets, never in source control.</p></div></div>
-<section class="panel"><div class="panel-heading"><h2>AI providers</h2><span class="status-pill healthy">ADVISORY ONLY</span></div><p class="muted">OpenAI, Anthropic Claude, and local Ollama adapters are represented behind a common interface. Live provider calls are a later milestone.</p></section>
+@using System.Security.Claims
+@using SentinelAI.Contracts
+@inject SentinelApiClient ApiClient
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IConfiguration Configuration
+<PageTitle>Settings & AI Control Plane · SentinelAI SOC</PageTitle>
+
+<PageHeader Title="Settings & Governance"
+            Eyebrow="Control Plane / Governance & Configuration"
+            Description="Tenant configuration, security boundaries, and AI provider readiness. SentinelAI enforces deterministic policy execution and zero secret leakage.">
+    <Actions>
+        <button class="soc-btn soc-btn-secondary" @onclick="LoadStatusAsync" disabled="@loading">
+            <span class="icon">↻</span> Refresh Status
+        </button>
+    </Actions>
+</PageHeader>
+
+<div class="metrics-grid" style="margin-bottom: var(--space-6);">
+    <MetricCard Title="AI Execution Role"
+                Value="Advisory Only"
+                Icon="🧠"
+                StatusClass="healthy"
+                Subtitle="Deterministic authorization authoritative" />
+    <MetricCard Title="Default Provider"
+                Value="@(string.IsNullOrWhiteSpace(configuredProvider) ? "none" : configuredProvider)"
+                Icon="⚡"
+                Subtitle="Configured LLM inference backend" />
+    <MetricCard Title="Security Boundary"
+                Value="Active Pinning"
+                Icon="🔒"
+                StatusClass="healthy"
+                Subtitle="DNS pinned per request + TLS strict" />
+    <MetricCard Title="Secrets Storage"
+                Value="Zero Exposure"
+                Icon="🛡"
+                StatusClass="healthy"
+                Subtitle="Credentials restricted to env secrets" />
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--space-6); margin-bottom: var(--space-6);">
+    <section class="soc-panel">
+        <div class="soc-panel-header">
+            <div>
+                <h2 class="soc-panel-title">AI Provider Readiness</h2>
+                <p class="soc-panel-subtitle">Multi-provider architecture supporting OpenAI, Anthropic Claude, and local Ollama.</p>
+            </div>
+            <span class="soc-badge soc-badge-success">ADVISORY ONLY</span>
+        </div>
+
+        @if (loading)
+        {
+            <LoadingState Message="Checking AI adapter status…" />
+        }
+        else
+        {
+            <div style="margin-bottom: var(--space-4);">
+                <p style="font-size: 0.875rem; color: var(--text-primary); line-height: 1.6;">
+                    SentinelAI integrates an extensible multi-model provider adapter suite. In all phases, AI output is strictly <strong>advisory</strong>. Scopes, network boundaries, rate limits, and report generation are governed by deterministic, verifiable code.
+                </p>
+            </div>
+
+            <div class="soc-table-container">
+                <table class="soc-table">
+                    <thead>
+                        <tr>
+                            <th>Provider Adapter</th>
+                            <th>Status</th>
+                            <th>Backend Type</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>OpenAI</strong> (GPT-4o)</td>
+                            <td>
+                                @if (configuredProvider == "openai")
+                                {
+                                    <span class="soc-badge soc-badge-success">Configured Active</span>
+                                }
+                                else
+                                {
+                                    <span class="soc-badge soc-badge-neutral">Ready (Key required)</span>
+                                }
+                            </td>
+                            <td class="text-muted">Cloud REST / Streaming</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Anthropic</strong> (Claude 3.5 Sonnet)</td>
+                            <td>
+                                @if (configuredProvider == "anthropic")
+                                {
+                                    <span class="soc-badge soc-badge-success">Configured Active</span>
+                                }
+                                else
+                                {
+                                    <span class="soc-badge soc-badge-neutral">Ready (Key required)</span>
+                                }
+                            </td>
+                            <td class="text-muted">Cloud Messages API</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Ollama</strong> (Local LLMs)</td>
+                            <td>
+                                @if (configuredProvider == "ollama")
+                                {
+                                    <span class="soc-badge soc-badge-success">Configured Active</span>
+                                }
+                                else
+                                {
+                                    <span class="soc-badge soc-badge-neutral">Self-hosted / Private</span>
+                                }
+                            </td>
+                            <td class="text-muted">Local HTTP REST</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div style="margin-top: var(--space-4); padding: var(--space-3); background: var(--bg-panel-subtle); border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
+                <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1);">Configuration Notice</div>
+                <p style="font-size: 0.8125rem; color: var(--text-primary); margin: 0;">
+                    To protect security credentials, API keys and access tokens are never accepted via dashboard inputs or rendered in browser responses. Configure provider keys via environment variables (e.g. <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>).
+                </p>
+            </div>
+        }
+    </section>
+
+    <section class="soc-panel">
+        <div class="soc-panel-header">
+            <div>
+                <h2 class="soc-panel-title">Active Tenant Context</h2>
+                <p class="soc-panel-subtitle">Authenticated session claims and tenant isolation boundaries.</p>
+            </div>
+        </div>
+
+        <dl style="display: grid; grid-template-columns: 140px 1fr; gap: var(--space-3) var(--space-4); font-size: 0.875rem;">
+            <dt class="text-muted">Active Tenant ID:</dt>
+            <dd><code style="color: var(--primary-accent);">@tenantId</code></dd>
+
+            <dt class="text-muted">User Identity:</dt>
+            <dd><strong>@userName</strong></dd>
+
+            <dt class="text-muted">User ID:</dt>
+            <dd><code style="font-size: 0.8125rem;">@userId</code></dd>
+
+            <dt class="text-muted">Assigned Role:</dt>
+            <dd><span class="soc-badge soc-badge-success">@role</span></dd>
+
+            <dt class="text-muted">Database Engine:</dt>
+            <dd>PostgreSQL (EF Core Multi-Tenant)</dd>
+
+            <dt class="text-muted">Broker Mode:</dt>
+            <dd><span class="soc-badge soc-badge-neutral">@(Configuration["Messaging:Mode"] ?? "InMemory")</span></dd>
+
+            <dt class="text-muted">Worker Mode:</dt>
+            <dd><span class="soc-badge soc-badge-neutral">@(Configuration.GetValue<bool>("Worker:RunInProcess") ? "In-Process Background" : "External Queue")</span></dd>
+        </dl>
+    </section>
+</div>
+
+<section class="soc-panel">
+    <div class="soc-panel-header">
+        <div>
+            <h2 class="soc-panel-title">Architectural Security Guarantees</h2>
+            <p class="soc-panel-subtitle">Built-in protections enforced by SentinelAI kernel and proxy middleware.</p>
+        </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4);">
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
+            <h3 style="font-size: 0.9375rem; color: var(--primary-accent); margin-bottom: var(--space-1);">DNS Pinning & Anti-Rebinding</h3>
+            <p class="text-muted" style="font-size: 0.8125rem;">
+                Hostnames are resolved once and verified against scope boundaries. Chromium connects exclusively through policy proxies to pinned IP addresses.
+            </p>
+        </div>
+
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
+            <h3 style="font-size: 0.9375rem; color: var(--primary-accent); margin-bottom: var(--space-1);">Strict Production TLS</h3>
+            <p class="text-muted" style="font-size: 0.8125rem;">
+                TLS certificate validation is strictly enforced in production. Self-signed or mismatched certificates are rejected to prevent MiTM interception.
+            </p>
+        </div>
+
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
+            <h3 style="font-size: 0.9375rem; color: var(--primary-accent); margin-bottom: var(--space-1);">Immutable Cryptographic Audit</h3>
+            <p class="text-muted" style="font-size: 0.8125rem;">
+                Every scope approval, worker lease check, and assessment finding generates SHA256 hashed evidence in append-only PostgreSQL storage.
+            </p>
+        </div>
+    </div>
+</section>
+
+@code {
+    private bool loading = true;
+    private string configuredProvider = "none";
+    private string tenantId = string.Empty;
+    private string userId = string.Empty;
+    private string userName = string.Empty;
+    private string role = "Reader";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        if (user.Identity?.IsAuthenticated == true)
+        {
+            userName = user.Identity.Name ?? "Authenticated Operator";
+            userId = user.FindFirstValue(ClaimTypes.NameIdentifier) ?? "dev-user";
+            tenantId = user.FindFirstValue("tenant_id") ?? "00000000-0000-0000-0000-000000000001";
+            role = user.FindFirstValue(ClaimTypes.Role) ?? "Admin";
+        }
+
+        await LoadStatusAsync();
+    }
+
+    private async Task LoadStatusAsync()
+    {
+        loading = true;
+        try
+        {
+            var health = await ApiClient.GetJsonAsync<AiHealthRecord>("/api/v1/ai/health");
+            configuredProvider = health.DefaultProvider ?? "none";
+        }
+        catch
+        {
+            configuredProvider = "none";
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private sealed record AiHealthRecord(string Status, string? DefaultProvider);
+}

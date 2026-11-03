@@ -1,0 +1,38 @@
+<div class="metric-card @CardClass">
+    <div class="metric-card-top">
+        <span>@Title</span>
+        @if (!string.IsNullOrWhiteSpace(Icon))
+        {
+            <div class="metric-icon">@Icon</div>
+        }
+    </div>
+    <strong>@Value</strong>
+    @if (!string.IsNullOrWhiteSpace(Subtitle))
+    {
+        <small class="@SubtitleClass">@Subtitle</small>
+    }
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string Value { get; set; } = "0";
+    [Parameter] public string? Subtitle { get; set; }
+    [Parameter] public string? Icon { get; set; }
+    [Parameter] public string Accent { get; set; } = "cyan"; // cyan, green, amber, red
+
+    private string CardClass => Accent switch
+    {
+        "green" => "accent-green",
+        "amber" => "accent-amber",
+        "red" => "accent-red",
+        _ => "accent-cyan"
+    };
+
+    private string SubtitleClass => Accent switch
+    {
+        "green" => "text-green",
+        "amber" => "text-amber",
+        "red" => "text-red",
+        _ => "text-cyan"
+    };
+}

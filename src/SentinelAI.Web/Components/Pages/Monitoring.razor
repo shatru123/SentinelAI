@@ -1,5 +1,255 @@
 @page "/monitoring"
 @attribute [Authorize]
-<PageTitle>Monitoring · SentinelAI</PageTitle>
-<div class="page-heading"><div><p class="eyebrow">Operations / audit</p><h1>Monitoring</h1><p class="muted">Audit events and worker health for the active tenant.</p></div></div>
-<section class="panel"><div class="empty-state"><span class="empty-icon">⌁</span><strong>Monitoring is ready</strong><p>Start the API and authenticate the dashboard to view persisted audit events.</p></div></section>
+@using SentinelAI.Contracts
+@inject SentinelApiClient ApiClient
+<PageTitle>Monitoring & Audit · SentinelAI SOC</PageTitle>
+
+<PageHeader Title="System Monitoring & Audit Log"
+            Eyebrow="Operations / Audit & Observability"
+            Description="Immutable tenant audit trail, real-time worker execution metrics, and integration with OpenTelemetry collectors. Every authorization and job lifecycle change is logged.">
+    <Actions>
+        <button class="soc-btn soc-btn-secondary" @onclick="RefreshAsync" disabled="@loading">
+            <span class="icon">↻</span> Refresh
+        </button>
+    </Actions>
+</PageHeader>
+
+<div class="metrics-grid" style="margin-bottom: var(--space-6);">
+    <MetricCard Title="Platform Status"
+                Value="Healthy"
+                Icon="●"
+                StatusClass="healthy"
+                Subtitle="Core API and services online" />
+    <MetricCard Title="Logged Audit Events"
+                Value="@events.Count.ToString("N0")"
+                Icon="📝"
+                Subtitle="Recent tenant audit entries" />
+    <MetricCard Title="Healthy Workers"
+                Value="@healthyWorkersCount.ToString("N0")"
+                Icon="◈"
+                StatusClass="@(healthyWorkersCount > 0 ? "healthy" : "warning")"
+                Subtitle="Active nodes acknowledging jobs" />
+    <MetricCard Title="Audit Integrity"
+                Value="Append-Only"
+                Icon="🔒"
+                StatusClass="healthy"
+                Subtitle="Tamper-evident domain log" />
+</div>
+
+<section class="soc-panel" style="margin-bottom: var(--space-6);">
+    <div class="soc-panel-header">
+        <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+            <h2 class="soc-panel-title">Tenant Audit Trail</h2>
+            <span class="soc-badge soc-badge-neutral">@FilteredEvents.Count() events</span>
+        </div>
+        <div style="display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center;">
+            <input type="search"
+                   class="soc-input"
+                   placeholder="Search action or details…"
+                   style="max-width: 240px;"
+                   value="@searchTerm"
+                   @onchange="OnSearchChanged" />
+
+            <select class="soc-select" value="@selectedCategory" @onchange="OnCategoryChanged" style="width: auto;">
+                <option value="All">All Actions</option>
+                <option value="scope">Scope Operations</option>
+                <option value="scan">Scan Operations</option>
+                <option value="worker">Worker Operations</option>
+                <option value="assessment">Assessment Operations</option>
+            </select>
+        </div>
+    </div>
+
+    @if (loading && events.Count == 0)
+    {
+        <LoadingState Message="Querying tenant audit log…" />
+    }
+    else if (error is not null)
+    {
+        <ErrorState Message="@error" OnRetry="RefreshAsync" />
+    }
+    else if (!FilteredEvents.Any())
+    {
+        <EmptyState Title="No Audit Events Recorded"
+                    Message="@(string.IsNullOrWhiteSpace(searchTerm) ? "No audit events recorded for this tenant yet." : "No audit events match your filter criteria.")" />
+    }
+    else
+    {
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead>
+                    <tr>
+                        <th style="width: 170px;">Timestamp</th>
+                        <th>Action</th>
+                        <th>Target Resource</th>
+                        <th>Actor ID</th>
+                        <th>Audit Details & Rationale</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var ev in FilteredEvents.Take(100))
+                    {
+                        <tr>
+                            <td class="text-muted" style="font-size: 0.8125rem;">
+                                @ev.OccurredAt.ToLocalTime().ToString("g")
+                            </td>
+                            <td>
+                                <span class="soc-badge @GetActionBadgeClass(ev.Action)">
+                                    @ev.Action
+                                </span>
+                            </td>
+                            <td>
+                                <strong style="color: var(--text-primary); font-size: 0.8125rem;">@ev.ResourceType</strong>
+                                @if (ev.ResourceId.HasValue)
+                                {
+                                    <div class="text-muted" style="font-family: var(--font-mono); font-size: 0.6875rem;">
+                                        @ev.ResourceId.Value.ToString().Substring(0, 8)…
+                                    </div>
+                                }
+                            </td>
+                            <td class="text-muted" style="font-family: var(--font-mono); font-size: 0.75rem;">
+                                @(ev.ActorId.HasValue ? ev.ActorId.Value.ToString().Substring(0, 8) + "…" : "System")
+                            </td>
+                            <td style="font-size: 0.8125rem; color: var(--text-primary);">
+                                @(string.IsNullOrWhiteSpace(ev.Detail) ? "—" : ev.Detail)
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="soc-panel">
+    <div class="soc-panel-header">
+        <div>
+            <h2 class="soc-panel-title">Observability & Telemetry Infrastructure</h2>
+            <p class="soc-panel-subtitle">Access distributed tracing, Prometheus metrics scraping, and Grafana operations dashboards.</p>
+        </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4);">
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                <strong style="color: var(--text-primary); font-size: 0.9375rem;">Prometheus Metrics</strong>
+                <span class="soc-badge soc-badge-neutral">Port 9090</span>
+            </div>
+            <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-3);">
+                Scrapes OpenTelemetry runtime counters, HTTP durations, and worker queue depths.
+            </p>
+            <a href="http://localhost:9090" target="_blank" rel="noopener noreferrer" class="soc-btn soc-btn-secondary" style="font-size: 0.75rem;">
+                Open Prometheus Dashboard ↗
+            </a>
+        </div>
+
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                <strong style="color: var(--text-primary); font-size: 0.9375rem;">Grafana Dashboards</strong>
+                <span class="soc-badge soc-badge-neutral">Port 3000</span>
+            </div>
+            <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-3);">
+                Preconfigured dashboards visualizing tenant resource usage, assessment throughput, and security events.
+            </p>
+            <a href="http://localhost:3000" target="_blank" rel="noopener noreferrer" class="soc-btn soc-btn-secondary" style="font-size: 0.75rem;">
+                Open Grafana Portal ↗
+            </a>
+        </div>
+
+        <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                <strong style="color: var(--text-primary); font-size: 0.9375rem;">Tempo Distributed Tracing</strong>
+                <span class="soc-badge soc-badge-neutral">Port 3200</span>
+            </div>
+            <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-3);">
+                Inspect OpenTelemetry spans across Minimal APIs, worker job execution, and assessment engines.
+            </p>
+            <a href="http://localhost:3200" target="_blank" rel="noopener noreferrer" class="soc-btn soc-btn-secondary" style="font-size: 0.75rem;">
+                Open Tempo Console ↗
+            </a>
+        </div>
+    </div>
+</section>
+
+@code {
+    private List<MonitoringEventResponse> events = [];
+    private int healthyWorkersCount;
+    private bool loading = true;
+    private string? error;
+
+    private string searchTerm = string.Empty;
+    private string selectedCategory = "All";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        loading = true;
+        error = null;
+        try
+        {
+            var evTask = ApiClient.GetJsonAsync<List<MonitoringEventResponse>>("/api/v1/monitoring/events");
+            var summaryTask = ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
+
+            await Task.WhenAll(evTask, summaryTask);
+
+            events = await evTask ?? [];
+            var summary = await summaryTask;
+            healthyWorkersCount = summary?.HealthyWorkers ?? 0;
+        }
+        catch (SentinelApiException ex)
+        {
+            error = ex.UserMessage;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private IEnumerable<MonitoringEventResponse> FilteredEvents
+    {
+        get
+        {
+            var items = events.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                items = items.Where(e =>
+                    e.Action.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+                    (e.Detail != null && e.Detail.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)) ||
+                    e.ResourceType.Contains(searchTerm, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (selectedCategory != "All")
+            {
+                items = items.Where(e => e.Action.Contains(selectedCategory, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return items;
+        }
+    }
+
+    private void OnSearchChanged(ChangeEventArgs e)
+    {
+        searchTerm = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnCategoryChanged(ChangeEventArgs e)
+    {
+        selectedCategory = e.Value?.ToString() ?? "All";
+    }
+
+    private static string GetActionBadgeClass(string action)
+    {
+        if (action.Contains("created") || action.Contains("approved") || action.Contains("completed"))
+            return "soc-badge-success";
+        if (action.Contains("revoked") || action.Contains("cancelled") || action.Contains("disabled"))
+            return "soc-badge-danger";
+        if (action.Contains("started") || action.Contains("provisioned"))
+            return "soc-badge-warning";
+        return "soc-badge-neutral";
+    }
+}

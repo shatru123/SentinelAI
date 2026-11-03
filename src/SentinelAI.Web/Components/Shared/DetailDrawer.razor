@@ -1,0 +1,30 @@
+@if (IsOpen)
+{
+    <div class="drawer-backdrop" @onclick="Close">
+        <div class="drawer-panel" @onclick:stopPropagation="true">
+            <div class="drawer-header">
+                <div>
+                    <h2 class="drawer-title">@Title</h2>
+                    @if (!string.IsNullOrWhiteSpace(Subtitle))
+                    {
+                        <div class="drawer-subtitle">@Subtitle</div>
+                    }
+                </div>
+                <button type="button" class="drawer-close-btn" @onclick="Close">✕</button>
+            </div>
+            <div class="drawer-content">
+                @ChildContent
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public string Title { get; set; } = "Inspection Details";
+    [Parameter] public string? Subtitle { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private async Task Close() => await OnClose.InvokeAsync();
+}

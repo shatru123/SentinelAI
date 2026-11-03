@@ -1,0 +1,11 @@
+<div class="loading-state">
+    <div class="soc-spinner">
+        <div class="soc-spinner-ring"></div>
+        <div class="soc-spinner-dot"></div>
+    </div>
+    <p>@(Message ?? "Loading telemetry and operational records...")</p>
+</div>
+
+@code {
+    [Parameter] public string? Message { get; set; }
+}

@@ -469,7 +469,13 @@ public sealed class BrowserAssessmentSecurityTests
     public async Task Scenario19_WebSocket_tracker_drain_respects_bounded_timeout_when_close_is_slow()
     {
         await using var tracker = new WebSocketRouteTracker();
-        var neverEndingTcs = new TaskCompletionSource<bool>();
+        var neverEndingTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var eventualCompletionObserved = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        tracker.TestOnlyOnRouteClosed = (_, task) =>
+        {
+            if (task.IsCompletedSuccessfully) eventualCompletionObserved.TrySetResult(true);
+        };
 
         var testWsRoute = new TestWebSocketRoute
         {
@@ -487,26 +493,77 @@ public sealed class BrowserAssessmentSecurityTests
         Assert.Same(drainTask, completed);
         await drainTask;
 
+        // Verify eventual completion is observed after timeout
         neverEndingTcs.TrySetResult(true);
+        await eventualCompletionObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, tracker.ClosedCount);
+        Assert.Equal(0, tracker.ActivePendingCount);
     }
 
     [Fact]
     public async Task Scenario20_WebSocket_tracker_dispose_cancels_and_drains_safely()
     {
-        var tracker = new WebSocketRouteTracker();
-        var fastTcs = new TaskCompletionSource<bool>();
+        var tracker = new WebSocketRouteTracker(drainTimeout: TimeSpan.FromMilliseconds(50));
+        var pendingTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var eventualClosureObserved = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        tracker.TestOnlyOnRouteClosed = (_, task) =>
+        {
+            if (task.IsCompletedSuccessfully) eventualClosureObserved.TrySetResult(true);
+        };
 
         var testWsRoute = new TestWebSocketRoute
         {
-            OnCloseAsync = _ => fastTcs.Task
+            OnCloseAsync = _ => pendingTcs.Task
         };
 
+        // 1. Start a pending close operation
         tracker.HandleRoute(testWsRoute);
+
+        // 2. Confirm the tracker owns the pending task
+        Assert.Equal(1, tracker.InterceptedCount);
         Assert.Equal(1, tracker.ActivePendingCount);
 
-        fastTcs.TrySetResult(true);
-        await tracker.DisposeAsync();
+        // 3. Invoke disposal while the task is still pending
+        var disposeTask = tracker.DisposeAsync().AsTask();
 
+        // 4. Verify disposal observes or boundedly drains the operation
+        var completed = await Task.WhenAny(disposeTask, Task.Delay(1000));
+        Assert.Same(disposeTask, completed);
+        await disposeTask;
+
+        // 5. Complete the pending operation
+        pendingTcs.TrySetResult(true);
+
+        // 6. Verify eventual completion is observed
+        await eventualClosureObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // 7. Verify tracker state is consistent
+        Assert.Equal(1, tracker.ClosedCount);
+        Assert.Equal(0, tracker.ActivePendingCount);
+        Assert.Equal(0, tracker.FailedCount);
+    }
+
+    [Fact]
+    public async Task Scenario21_WebSocket_tracker_handles_throwing_test_callback_without_unobserved_exception()
+    {
+        var tracker = new WebSocketRouteTracker();
+        var closeTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var testWsRoute = new TestWebSocketRoute
+        {
+            OnCloseAsync = _ => closeTcs.Task
+        };
+
+        tracker.TestOnlyOnRouteClosed = (_, _) => throw new InvalidOperationException("Simulated hook error.");
+
+        tracker.HandleRoute(testWsRoute);
+        closeTcs.TrySetResult(true);
+
+        await tracker.DrainPendingClosuresAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, tracker.InterceptedCount);
+        Assert.Equal(1, tracker.ClosedCount);
+        Assert.Equal(0, tracker.FailedCount);
         Assert.Equal(0, tracker.ActivePendingCount);
     }
 

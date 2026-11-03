@@ -5,7 +5,7 @@
 
 <PageTitle>Security Operations Dashboard · SentinelAI</PageTitle>
 
-<PageHeader Eyebrow="Security Operations Center" Title="Defensive Operations Overview" Description="Real-time defensive posture, authorized assessments, asset inventory, and worker orchestration.">
+<PageHeader Eyebrow="Security Operations Center" Title="Defensive Operations Overview" Description="Current defensive posture, authorized assessments, passive inventory, and worker execution status.">
     <Actions>
         <button class="secondary-button btn-sm" @onclick="LoadDashboardAsync" disabled="@loading">
             <span>↻</span> Refresh Telemetry
@@ -29,7 +29,25 @@ else if (!string.IsNullOrWhiteSpace(errorMessage))
 }
 else if (summary is not null)
 {
-    <!-- Top 8 Live Metric Cards -->
+    <section class="dashboard-hero panel">
+        <div class="dashboard-hero-copy">
+            <div class="eyebrow">Operational posture</div>
+            <h2>SentinelAI Security Operations</h2>
+            <p>Tenant-scoped telemetry across authorized assessments, passive inventory, and worker execution.</p>
+        </div>
+        <div class="dashboard-hero-status">
+            <span class="soc-badge @(systemHealth?.Status == "healthy" ? "soc-badge-success" : systemHealth is null ? "soc-badge-neutral" : "soc-badge-warning")">
+                @(systemHealth?.Status ?? "Health not verified")
+            </span>
+            <div class="dashboard-hero-meta">
+                <span>Database <strong>@(systemHealth?.DatabaseStatus ?? "Unknown")</strong></span>
+                <span>Messaging <strong>@(systemHealth?.MessagingStatus ?? "Unknown")</strong></span>
+                <span>Updated <strong>@(lastUpdatedAt?.ToLocalTime().ToString("g") ?? "Not yet")</strong></span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Top 8 tenant-wide metrics -->
     <div class="metric-grid">
         <MetricCard Title="Assets Observed" Value="@summary.AssetsObserved.ToString()" Subtitle="Passive scope declarations" Accent="cyan" Icon="🌐" />
         <MetricCard Title="Confirmed Reachable" Value="@summary.ReachabilityConfirmedAssets.ToString()" Subtitle="Verified reachability sources" Accent="green" Icon="✓" />
@@ -40,8 +58,8 @@ else if (summary is not null)
     <div class="metric-grid">
         <MetricCard Title="Critical Findings" Value="@summary.CriticalFindings.ToString()" Subtitle="Immediate remediation required" Accent="@(summary.CriticalFindings > 0 ? "red" : "green")" Icon="🚨" />
         <MetricCard Title="Active Assessments" Value="@summary.ActiveAssessments.ToString()" Subtitle="Web assessments running" Accent="cyan" Icon="🎯" />
-        <MetricCard Title="Running Jobs" Value="@summary.RunningJobs.ToString()" Subtitle="@($"{summary.TotalJobs} total jobs submitted")" Accent="cyan" Icon="⚙️" />
-        <MetricCard Title="Healthy Workers" Value="@($"{summary.HealthyWorkers} / {summary.TotalWorkers}")" Subtitle="Heartbeat &amp; capacity verified" Accent="@(summary.HealthyWorkers > 0 ? "green" : "amber")" Icon="🛡️" />
+        <MetricCard Title="Queued + Running" Value="@(summary.QueuedJobs + summary.RunningJobs).ToString()" Subtitle="@($"{summary.QueuedJobs} queued · {summary.RunningJobs} running")" Accent="cyan" Icon="⚙️" />
+        <MetricCard Title="Healthy Workers" Value="@($"{summary.HealthyWorkers} / {summary.TotalWorkers}")" Subtitle="Fresh authenticated heartbeats" Accent="@(summary.HealthyWorkers > 0 ? "green" : "amber")" Icon="🛡️" />
     </div>
 
     <!-- Middle Split: Vulnerability Distribution & Audit Stream -->
@@ -240,6 +258,8 @@ else if (summary is not null)
     private DashboardSummaryResponse? summary;
     private bool loading = true;
     private string? errorMessage;
+    private SystemHealthRecord? systemHealth;
+    private DateTimeOffset? lastUpdatedAt;
 
     protected override async Task OnInitializedAsync()
     {
@@ -253,6 +273,15 @@ else if (summary is not null)
         try
         {
             summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
+            try
+            {
+                systemHealth = await ApiClient.GetJsonAsync<SystemHealthRecord>("/api/v1/monitoring/health");
+            }
+            catch (SentinelApiException)
+            {
+                systemHealth = null;
+            }
+            lastUpdatedAt = DateTimeOffset.UtcNow;
         }
         catch (SentinelApiException ex)
         {
@@ -269,4 +298,12 @@ else if (summary is not null)
     }
 
     private static double CalculatePct(int part, int total) => total <= 0 ? 0 : Math.Round((double)part / total * 100, 1);
+    private sealed record SystemHealthRecord(
+        string Status,
+        string DatabaseStatus,
+        string MessagingStatus,
+        string AssessmentEngineStatus,
+        string WorkerExecutionMode,
+        string ConfiguredWorkerIdentity,
+        bool ActiveProbing);
 }

@@ -75,6 +75,327 @@ public sealed class WebAssessmentAuthorizationTests
         Assert.Contains(await fixture.Db.AuditEvents.ToListAsync(), audit => audit.Action == "scan.authorization-revoked");
     }
 
+    [Theory]
+    [InlineData("allow-subdomains")]
+    [InlineData("target")]
+    [InlineData("remove-exclusion")]
+    [InlineData("add-exclusion")]
+    [InlineData("remove-profile")]
+    [InlineData("verification-expiry")]
+    [InlineData("max-total-requests")]
+    [InlineData("requests-per-minute")]
+    [InlineData("max-pages")]
+    [InlineData("crawl-depth")]
+    [InlineData("response-bytes")]
+    [InlineData("execution-seconds")]
+    [InlineData("private-worker")]
+    [InlineData("private-ranges")]
+    public async Task Scope_mutation_during_report_generation_cancels_without_publication(string mutation)
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        if (mutation is "private-worker" or "private-ranges")
+            fixture.ConfigurePrivateAssessment();
+
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        switch (mutation)
+        {
+            case "allow-subdomains":
+                fixture.Scope.Configure(fixture.Scope.Targets, fixture.Scope.Exclusions, fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    allowSubdomains: true, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "target":
+                fixture.Scope.Configure([new TargetDefinition(TargetKind.Web, "http://127.0.0.1:9999/other")], fixture.Scope.Exclusions, fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "remove-exclusion":
+                fixture.Scope.Configure(fixture.Scope.Targets, [], fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "add-exclusion":
+                fixture.Scope.Configure(fixture.Scope.Targets, ["http://127.0.0.1/excluded"], fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "remove-profile":
+                fixture.Scope.Configure(fixture.Scope.Targets, fixture.Scope.Exclusions, ["other-profile"],
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "verification-expiry":
+                fixture.Scope.ConfigureVerifications([new PublicTargetVerification(fixture.Assessment.TargetUrl, "ticket", "verifier", "manual", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(-1))]);
+                break;
+            case "max-total-requests":
+                fixture.Scope.Configure(fixture.Scope.Targets, fixture.Scope.Exclusions, fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests - 1, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "requests-per-minute":
+                fixture.Scope.Configure(fixture.Scope.Targets, fixture.Scope.Exclusions, fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute - 1, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "max-pages":
+                fixture.Scope.Configure(fixture.Scope.Targets, fixture.Scope.Exclusions, fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages - 1, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "crawl-depth":
+                fixture.Scope.Configure(fixture.Scope.Targets, fixture.Scope.Exclusions, fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth + 1, fixture.Scope.MaxResponseBytes);
+                break;
+            case "response-bytes":
+                fixture.Scope.Configure(fixture.Scope.Targets, fixture.Scope.Exclusions, fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes - 1024);
+                break;
+            case "execution-seconds":
+                fixture.Scope.Configure(fixture.Scope.Targets, fixture.Scope.Exclusions, fixture.Scope.ApprovedOperationProfiles,
+                    fixture.Scope.RequestsPerMinute, fixture.Scope.MaxExecutionSeconds - 10, fixture.Scope.AuthorizationEvidence, false,
+                    fixture.Scope.AllowSubdomains, fixture.Scope.MaxTotalRequests, fixture.Scope.MaxConcurrentRequests,
+                    fixture.Scope.MaxPages, fixture.Scope.MaxCrawlDepth, fixture.Scope.MaxResponseBytes);
+                break;
+            case "private-worker":
+                fixture.Scope.ConfigureWebHosting(WebHostingMode.Private, "other-worker", ["10.0.0.0/8"]);
+                break;
+            case "private-ranges":
+                fixture.Scope.ConfigureWebHosting(WebHostingMode.Private, fixture.Worker.Identity, ["10.1.0.0/16"]);
+                break;
+        }
+
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Worker_unhealthy_during_report_generation_cancels_without_publication()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Worker.MarkUnhealthy();
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Contains(await fixture.Db.AuditEvents.ToListAsync(), audit => audit.Action == "web-assessment.authorization-revoked");
+    }
+
+    [Fact]
+    public async Task Worker_assignment_change_during_report_generation_requeues_for_retry()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Job.ReleaseLeaseForRetry("lease takeover");
+        Assert.True(fixture.Job.TryAcquireLease("worker-b", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentLeaseLostException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Queued, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.DoesNotContain(await fixture.Db.AuditEvents.ToListAsync(), audit => audit.Action == "web-assessment.authorization-revoked");
+    }
+
+    [Fact]
+    public async Task Report_generation_failure_sets_status_failed_and_discards_artifacts()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ThrowingReportGenerator();
+        var engine = fixture.CreateEngine(report);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.ExecuteAsync(engine));
+        Assert.Equal(WebAssessmentStatus.Failed, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Publication_failure_sets_status_failed_and_discards_staged_artifact()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        fixture.ArtifactStore.FailPublication = true;
+        var report = new CompletingReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        report.Complete();
+
+        await Assert.ThrowsAsync<IOException>(() => task);
+        Assert.Equal(WebAssessmentStatus.Failed, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Contains(fixture.ArtifactStore.DiscardedKeys, key => key.Contains("/.staging/"));
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Scope_mutation_before_parent_transaction_cancels_and_discards_published_report()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        fixture.Job.ReleaseLeaseForRetry("test retry");
+        fixture.Execution.ResetForRetry();
+        await fixture.Db.SaveChangesAsync();
+
+        var engine = new CompletingEngine(fixture.ArtifactStore);
+        var service = new ScanExecutionService(fixture.Db, new ControlledValidator(), new ConfigurationBuilder().Build(),
+            NullLogger<ScanExecutionService>.Instance, webAssessmentEngine: engine, artifactStore: fixture.ArtifactStore);
+
+        // Mutate scope right after engine runs but before ScanExecutionService's completion transaction
+        engine.OnAfterExecute = async () =>
+        {
+            var scope = await fixture.Db.TargetScopes.SingleAsync(x => x.Id == fixture.Scope.Id);
+            scope.Configure(scope.Targets, scope.Exclusions, scope.ApprovedOperationProfiles,
+                scope.RequestsPerMinute, scope.MaxExecutionSeconds, scope.AuthorizationEvidence, false,
+                scope.AllowSubdomains, scope.MaxTotalRequests - 1, scope.MaxConcurrentRequests,
+                scope.MaxPages, scope.MaxCrawlDepth, scope.MaxResponseBytes);
+            await fixture.Db.SaveChangesAsync();
+        };
+
+        var outcome = await service.ExecuteAsync(fixture.Job.Id, CancellationToken.None, fixture.Tenant.Id, fixture.Worker.Identity);
+
+        Assert.Equal(ScanExecutionOutcome.Cancelled, outcome);
+        Assert.Equal(ScanJobStatus.Cancelled, fixture.Job.Status);
+        Assert.Equal(AgentExecutionStatus.Cancelled, fixture.Execution.Status);
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Contains(await fixture.Db.AuditEvents.ToListAsync(), audit => audit.Action == "scan.authorization-revoked");
+        Assert.Contains(fixture.ArtifactStore.DiscardedKeys, key => key.Contains("/reports/"));
+    }
+
+    [Fact]
+    public async Task Lease_loss_before_parent_transaction_does_not_revoke_authorization()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        fixture.Job.ReleaseLeaseForRetry("test retry");
+        fixture.Execution.ResetForRetry();
+        await fixture.Db.SaveChangesAsync();
+
+        var engine = new CompletingEngine(fixture.ArtifactStore);
+        var service = new ScanExecutionService(fixture.Db, new ControlledValidator(), new ConfigurationBuilder().Build(),
+            NullLogger<ScanExecutionService>.Instance, webAssessmentEngine: engine, artifactStore: fixture.ArtifactStore);
+
+        // Take over lease right after engine completes
+        engine.OnAfterExecute = async () =>
+        {
+            var job = await fixture.Db.AgentJobs.SingleAsync(x => x.Id == fixture.Job.Id);
+            job.ReleaseLeaseForRetry("lease takeover");
+            job.TryAcquireLease("worker-b", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
+            await fixture.Db.SaveChangesAsync();
+        };
+
+        var outcome = await service.ExecuteAsync(fixture.Job.Id, CancellationToken.None, fixture.Tenant.Id, fixture.Worker.Identity);
+
+        Assert.Equal(ScanExecutionOutcome.ClaimedByAnotherWorker, outcome);
+        Assert.DoesNotContain(await fixture.Db.AuditEvents.ToListAsync(), audit => audit.Action == "scan.authorization-revoked");
+        Assert.Contains(fixture.ArtifactStore.DiscardedKeys, key => key.Contains("/reports/"));
+    }
+
+    [Fact]
+    public async Task Lease_loss_during_report_generation_is_distinct_and_requeues_the_assessment()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Job.ReleaseLeaseForRetry("lease takeover");
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentLeaseLostException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Queued, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.DoesNotContain(await fixture.Db.AuditEvents.ToListAsync(), audit => audit.Action == "web-assessment.authorization-revoked");
+    }
+
+    [Fact]
+    public async Task Private_capability_removal_during_report_generation_prevents_publication()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        fixture.ConfigurePrivateAssessment();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Worker.ProvisionByAdministrator("test", [WebAssessmentCapabilities.WebAssessment], []);
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+    }
+
+    [Fact]
+    public async Task Scope_expiry_during_report_generation_cancels_without_publication()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Scope.ExpireAuthorization();
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+    }
+
+    [Fact]
+    public async Task Revocation_at_the_completion_boundary_blocks_publication()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new CompletingReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Worker.ProvisionByAdministrator("test", ["passive-mock"], []);
+        await fixture.Db.SaveChangesAsync();
+        report.Complete();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+    }
+
     private sealed class AssessmentFixture : IAsyncDisposable
     {
         private AssessmentFixture(AppDbContext db, LoopbackHttpServer server, Tenant tenant, User user, TargetScope scope, WorkerRegistration worker, AgentJob job, AgentExecution execution, WebAssessment assessment)
@@ -88,7 +409,7 @@ public sealed class WebAssessmentAuthorizationTests
         public AgentJob Job { get; }
         public AgentExecution Execution { get; }
         public WebAssessment Assessment { get; }
-        public WorkerExecutionContext WorkerContext { get; }
+        public WorkerExecutionContext WorkerContext { get; private set; }
 
         public static async Task<AssessmentFixture> CreateAsync()
         {
@@ -99,7 +420,8 @@ public sealed class WebAssessmentAuthorizationTests
             var user = new User(tenant.Id, "web-authorization-user", "Test", UserRole.SecurityAnalyst);
             var scope = new TargetScope(tenant.Id, "web authorization scope", user.Id, DateTimeOffset.UtcNow.AddMinutes(5));
             var target = $"http://127.0.0.1:{server.Port}/";
-            scope.Configure([new TargetDefinition(TargetKind.Web, target)], [], ["web-assessment-passive"], 100, 120, "controlled-test", false);
+            scope.Configure([new TargetDefinition(TargetKind.Web, target)], ["http://127.0.0.1/initial-exclusion"], ["web-assessment-passive"], 100, 120, "controlled-test", false);
+            scope.ConfigureVerifications([new PublicTargetVerification(target, "ticket", "verifier", "manual", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddHours(1))]);
             var worker = new WorkerRegistration(tenant.Id, "worker-a", "test", [WebAssessmentCapabilities.WebAssessment]);
             worker.Heartbeat(0, 1);
             var job = new AgentJob(tenant.Id, scope.Id, user.Id, "web-assessment-passive");
@@ -111,9 +433,22 @@ public sealed class WebAssessmentAuthorizationTests
             return new AssessmentFixture(db, server, tenant, user, scope, worker, job, execution, assessment);
         }
 
+        public MemoryArtifactStore ArtifactStore { get; } = new();
+
         public WebAssessmentEngine CreateEngine(IHtmlReportGenerator report)
-            => new(Db, new ControlledValidator(), new MemoryArtifactStore(), new ControlledScreenshotService(), report,
+            => new(Db, new ControlledValidator(), ArtifactStore, new ControlledScreenshotService(), report,
                 new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["WebAssessment:AuthorizationRefreshIntervalMs"] = "25" }).Build());
+
+        public Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessmentEngine engine)
+            => engine.ExecuteAsync(Assessment, Job, Scope, Worker.Identity, Worker.Capabilities, Worker.ApprovedPrivateNetworkRanges,
+                _ => Task.FromResult(true), CancellationToken.None, _ => Task.FromResult<WorkerExecutionContext?>(WorkerContext));
+
+        public void ConfigurePrivateAssessment()
+        {
+            Scope.ConfigureWebHosting(WebHostingMode.Private, Worker.Identity, ["10.0.0.0/8"]);
+            Worker.ProvisionByAdministrator("test", [WebAssessmentCapabilities.WebAssessment, WebAssessmentCapabilities.PrivateWebAssessment], ["10.0.0.0/8"]);
+            WorkerContext = new WorkerExecutionContext(Worker.Identity, Worker.Capabilities.ToArray(), Worker.ApprovedPrivateNetworkRanges.ToArray());
+        }
 
         public async ValueTask DisposeAsync()
         {
@@ -151,6 +486,26 @@ public sealed class WebAssessmentAuthorizationTests
             => throw new WebAssessmentAuthorizationRevokedException();
     }
 
+    private sealed class ThrowingReportGenerator : IHtmlReportGenerator
+    {
+        public Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("Disk or rendering failure.");
+    }
+
+    private sealed class CompletingEngine(IAssessmentArtifactStore artifacts) : IWebAssessmentEngine
+    {
+        public Func<Task>? OnAfterExecute { get; set; }
+        public async Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessment assessment, AgentJob job, TargetScope scope, string workerIdentity,
+            IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<CancellationToken, Task<bool>> leaseCheck,
+            CancellationToken cancellationToken, Func<CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
+        {
+            var staged = await artifacts.StageReportAsync(job.TenantId, assessment.Id, [1, 2, 3], cancellationToken);
+            var published = await artifacts.PublishReportAsync(job.TenantId, assessment.Id, staged, cancellationToken);
+            if (OnAfterExecute is not null) await OnAfterExecute();
+            return new WebAssessmentExecutionResult(published, 1);
+        }
+    }
+
     private sealed class ControlledReportGenerator : IHtmlReportGenerator
     {
         public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -169,10 +524,42 @@ public sealed class WebAssessmentAuthorizationTests
         }
     }
 
+    private sealed class CompletingReportGenerator : IHtmlReportGenerator
+    {
+        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Complete() => completed.TrySetResult(true);
+        public async Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken)
+        {
+            Started.TrySetResult(true);
+            await completed.Task.WaitAsync(cancellationToken);
+            return $"{tenantId}/{assessment.Id}/.staging/report.html";
+        }
+    }
+
     private sealed class MemoryArtifactStore : IAssessmentArtifactStore
     {
+        public List<string> PublishedKeys { get; } = [];
+        public List<string> DiscardedKeys { get; } = [];
+        public bool FailPublication { get; set; }
+
         public Task<string> PutAsync(Guid tenantId, Guid assessmentId, string name, byte[] content, CancellationToken cancellationToken) => Task.FromResult($"{tenantId}/{assessmentId}/{name}");
         public Task<byte[]?> GetAsync(Guid tenantId, string storageKey, CancellationToken cancellationToken) => Task.FromResult<byte[]?>([137, 80, 78, 71]);
+        public Task<string> StageReportAsync(Guid tenantId, Guid assessmentId, byte[] content, CancellationToken cancellationToken) => Task.FromResult($"{tenantId}/{assessmentId}/.staging/report.html");
+        public Task<string> PublishReportAsync(Guid tenantId, Guid assessmentId, string stagingKey, CancellationToken cancellationToken)
+        {
+            if (FailPublication) throw new IOException("Disk failure during publication.");
+            var key = $"{tenantId}/{assessmentId}/reports/report.html";
+            lock (PublishedKeys) PublishedKeys.Add(key);
+            return Task.FromResult(key);
+        }
+        public Task<byte[]?> GetPublishedReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken) => Task.FromResult<byte[]?>(null);
+        public Task DiscardReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken)
+        {
+            lock (DiscardedKeys) DiscardedKeys.Add(storageKey);
+            return Task.CompletedTask;
+        }
+        public Task<int> CleanupStagedReportsAsync(DateTimeOffset olderThan, CancellationToken cancellationToken) => Task.FromResult(0);
     }
 
     private sealed class LoopbackHttpServer : IAsyncDisposable
@@ -191,17 +578,14 @@ public sealed class WebAssessmentAuthorizationTests
         {
             try
             {
-                while (!shutdown.IsCancellationRequested)
-                {
-                    using var client = await listener.AcceptTcpClientAsync(shutdown.Token);
-                    using var stream = client.GetStream();
-                    var buffer = new byte[4096];
-                    _ = await stream.ReadAsync(buffer, shutdown.Token);
-                    var body = Encoding.UTF8.GetBytes("<html><body>ok</body></html>");
-                    var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
-                    await stream.WriteAsync(header, shutdown.Token);
-                    await stream.WriteAsync(body, shutdown.Token);
-                }
+                using var client = await listener.AcceptTcpClientAsync(shutdown.Token);
+                using var stream = client.GetStream();
+                var buffer = new byte[4096];
+                _ = await stream.ReadAsync(buffer, shutdown.Token);
+                var body = Encoding.UTF8.GetBytes("<html><body>ok</body></html>");
+                var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+                await stream.WriteAsync(header, shutdown.Token);
+                await stream.WriteAsync(body, shutdown.Token);
             }
             catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
             catch (SocketException) when (shutdown.IsCancellationRequested) { }
@@ -210,7 +594,9 @@ public sealed class WebAssessmentAuthorizationTests
         {
             shutdown.Cancel();
             listener.Stop();
-            try { await loop; } catch (ObjectDisposedException) { }
+            try { await loop; }
+            catch (ObjectDisposedException) { }
+            catch (SocketException) when (shutdown.IsCancellationRequested) { }
             shutdown.Dispose();
         }
     }

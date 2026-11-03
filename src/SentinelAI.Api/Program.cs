@@ -203,8 +203,8 @@ api.MapGet("/web-assessments/{id:guid}/report", async (HttpContext context, Guid
 {
     var tenantId = ToPrincipal(context).TenantId;
     var assessment = await db.WebAssessments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
-    if (assessment is null || string.IsNullOrWhiteSpace(assessment.ReportStorageKey)) return Results.NotFound();
-    var content = await artifacts.GetAsync(tenantId, assessment.ReportStorageKey, cancellationToken);
+    if (assessment is null || assessment.Status != WebAssessmentStatus.Completed || string.IsNullOrWhiteSpace(assessment.ReportStorageKey)) return Results.NotFound();
+    var content = await artifacts.GetPublishedReportAsync(tenantId, assessment.Id, assessment.ReportStorageKey, cancellationToken);
     return content is null ? Results.NotFound() : Results.File(content, "text/html; charset=utf-8", $"sentinelai-{assessment.Id:N}.html");
 }).RequireAuthorization("Reader");
 

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Serialization;
 
 namespace SentinelAI.Domain;
@@ -102,8 +104,64 @@ public sealed class TargetScope
         ApprovedPrivateNetworkRanges = approvedPrivateNetworkRanges?.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
     }
 
+    public void ExpireAuthorization() => ExpiresAt = DateTimeOffset.UtcNow.AddTicks(-1);
+
     public void RevokePublicAuthorization(Guid authorizationId)
         => PublicTargetVerifications = PublicTargetVerifications.Where(x => x.AuthorizationId != authorizationId).ToList();
+
+    // This is intentionally a canonical hash rather than a JSON serialization. It is used only to
+    // detect fail-closed changes during an active execution; the underlying evidence is never logged.
+    public string GetAuthorizationFingerprint()
+    {
+        var canonical = new StringBuilder();
+        Append(canonical, TenantId.ToString("N"));
+        Append(canonical, Id.ToString("N"));
+        Append(canonical, ExpiresAt.ToUniversalTime().Ticks);
+        Append(canonical, RequestsPerMinute);
+        Append(canonical, MaxTotalRequests);
+        Append(canonical, MaxConcurrentRequests);
+        Append(canonical, MaxPages);
+        Append(canonical, MaxCrawlDepth);
+        Append(canonical, MaxResponseBytes);
+        Append(canonical, MaxExecutionSeconds);
+        Append(canonical, AuthorizationEvidence);
+        Append(canonical, PublicTargetOwnershipVerified);
+        Append(canonical, AllowSubdomains);
+        Append(canonical, WebHostingMode?.ToString());
+        Append(canonical, PrivateWorkerIdentity);
+
+        foreach (var target in Targets.OrderBy(x => x.Kind).ThenBy(x => x.Value, StringComparer.Ordinal))
+        {
+            Append(canonical, (int)target.Kind);
+            Append(canonical, target.Value);
+        }
+        foreach (var exclusion in Exclusions.OrderBy(x => x, StringComparer.Ordinal)) Append(canonical, exclusion);
+        foreach (var profile in ApprovedOperationProfiles.OrderBy(x => x, StringComparer.Ordinal)) Append(canonical, profile);
+        foreach (var range in ApprovedPrivateNetworkRanges.OrderBy(x => x, StringComparer.Ordinal)) Append(canonical, range);
+        foreach (var verification in PublicTargetVerifications
+                     .OrderBy(x => x.Target, StringComparer.Ordinal)
+                     .ThenBy(x => x.Verifier, StringComparer.Ordinal)
+                     .ThenBy(x => x.Method, StringComparer.Ordinal)
+                     .ThenBy(x => x.VerifiedAt)
+                     .ThenBy(x => x.ExpiresAt))
+        {
+            Append(canonical, verification.Target);
+            Append(canonical, verification.Evidence);
+            Append(canonical, verification.Verifier);
+            Append(canonical, verification.Method);
+            Append(canonical, verification.VerifiedAt.ToUniversalTime().Ticks);
+            Append(canonical, verification.ExpiresAt?.ToUniversalTime().Ticks);
+            Append(canonical, verification.AuthorizationId?.ToString("N"));
+        }
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString())));
+
+        static void Append(StringBuilder builder, object? value)
+        {
+            var text = value?.ToString() ?? "<null>";
+            builder.Append(text.Length).Append(':').Append(text).Append('|');
+        }
+    }
 }
 
 public sealed record TargetDefinition(TargetKind Kind, string Value);

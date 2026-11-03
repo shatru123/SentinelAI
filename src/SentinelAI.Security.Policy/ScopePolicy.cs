@@ -343,13 +343,13 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
 
     private static string NormalizeRepositoryPath(string path) => path.Trim('/').TrimEnd('/').Replace(".git", string.Empty, StringComparison.OrdinalIgnoreCase);
 
-    internal static bool IsPrivateAddress(IPAddress address)
+    public static bool IsPrivateAddress(IPAddress address)
     {
         address = NormalizeAddress(address);
         return IsWithinNetwork(address, "10.0.0.0/8") || IsWithinNetwork(address, "172.16.0.0/12") || IsWithinNetwork(address, "192.168.0.0/16") || IsWithinNetwork(address, "fc00::/7");
     }
 
-    internal static bool IsDisallowedAddress(IPAddress address)
+    public static bool IsDisallowedAddress(IPAddress address)
     {
         address = NormalizeAddress(address);
         return address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any) || IPAddress.IsLoopback(address) ||

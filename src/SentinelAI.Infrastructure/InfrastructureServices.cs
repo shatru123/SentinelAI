@@ -37,6 +37,7 @@ public static class InfrastructureServices
         services.AddScoped<IHtmlReportGenerator, HtmlReportGenerator>();
         services.AddScoped<IScreenshotCaptureService, PlaywrightScreenshotCaptureService>();
         services.AddSingleton<IAssessmentArtifactStore, FileSystemAssessmentArtifactStore>();
+        services.AddHostedService<AssessmentArtifactCleanupService>();
         services.AddSingleton<IPassiveInventoryAdapter, PassiveNetworkInventoryAdapter>();
         services.AddSingleton<WorkerCancellationRegistry>();
         services.AddSingleton<WorkerActivityTracker>();
@@ -55,6 +56,21 @@ public static class InfrastructureServices
             if (configuration.GetValue("Worker:RunInProcess", false)) services.AddHostedService<ScanJobProcessor>();
         }
         return services;
+    }
+}
+
+public sealed class AssessmentArtifactCleanupService(IAssessmentArtifactStore artifacts, ILogger<AssessmentArtifactCleanupService> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromHours(1));
+        do
+        {
+            try { await artifacts.CleanupStagedReportsAsync(DateTimeOffset.UtcNow.AddHours(-24), stoppingToken); }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
+            catch (Exception exception) { logger.LogWarning(exception, "Assessment artifact cleanup failed."); }
+        }
+        while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 }
 
@@ -109,7 +125,7 @@ public sealed class WorkerActivityTracker
 
 public enum ScanExecutionOutcome { Completed, Cancelled, Expired, AlreadyCompleted, AlreadyRunning, ClaimedByAnotherWorker, Unauthorized, Missing }
 
-public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator validator, IConfiguration configuration, ILogger<ScanExecutionService> logger, IPassiveInventoryAdapter? inventoryAdapter = null, IWebAssessmentEngine? webAssessmentEngine = null)
+public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator validator, IConfiguration configuration, ILogger<ScanExecutionService> logger, IPassiveInventoryAdapter? inventoryAdapter = null, IWebAssessmentEngine? webAssessmentEngine = null, IAssessmentArtifactStore? artifactStore = null)
 {
     private static readonly ActivitySource ActivitySource = new("SentinelAI.Worker");
     private readonly int executionDelayMs = Math.Clamp(configuration.GetValue("Worker:ExecutionDelayMs", 50), 0, 60_000);
@@ -216,6 +232,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         }
         execution.Start();
         var scopeDefinition = await db.TargetScopes.SingleAsync(x => x.Id == job.ScopeId && x.TenantId == job.TenantId, cancellationToken);
+        var initialScopeFingerprint = scopeDefinition.GetAuthorizationFingerprint();
         try { await db.SaveChangesAsync(cancellationToken); }
         catch (DbUpdateConcurrencyException)
         {
@@ -225,21 +242,30 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(scopeDefinition.MaxExecutionSeconds));
+        string? generatedReportKey = null;
+        Guid? generatedReportAssessmentId = null;
         try
         {
             if (WebAssessmentOperationProfiles.IsWeb(job.OperationProfile))
             {
                 if (webAssessmentEngine is null) throw new InvalidOperationException("Web assessment execution is not configured.");
                 var assessment = await db.WebAssessments.SingleAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, timeout.Token);
+                generatedReportAssessmentId = assessment.Id;
                 var result = await webAssessmentEngine.ExecuteAsync(assessment, job, scopeDefinition, effectiveWorkerIdentity, workerCapabilities, workerPrivateNetworkRanges,
                     token => HasActiveLeaseAsync(job.Id, effectiveWorkerIdentity, token), timeout.Token,
                     token => GetLiveWebWorkerAuthorizationAsync(job.TenantId, effectiveWorkerIdentity, scopeDefinition, token));
+                generatedReportKey = result.ReportStorageKey;
                 await db.Entry(job).ReloadAsync(timeout.Token);
                 await db.Entry(execution).ReloadAsync(timeout.Token);
                 await db.Entry(assessment).ReloadAsync(timeout.Token);
-                if (!job.IsLeaseOwnedBy(effectiveWorkerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                if (!job.IsLeaseOwnedBy(effectiveWorkerIdentity, DateTimeOffset.UtcNow))
+                {
+                    await DiscardGeneratedReportAsync();
+                    return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                }
                 if (job.IsCancellationRequested || job.Status == ScanJobStatus.Cancelled)
                 {
+                    await DiscardGeneratedReportAsync();
                     execution.Cancel(); assessment.Cancel();
                     await db.SaveChangesAsync(CancellationToken.None);
                     return ScanExecutionOutcome.Cancelled;
@@ -249,9 +275,14 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 await db.Entry(job).ReloadAsync(timeout.Token);
                 await db.Entry(execution).ReloadAsync(timeout.Token);
                 await db.Entry(assessment).ReloadAsync(timeout.Token);
-                if (!job.IsLeaseOwnedBy(effectiveWorkerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
-                if (!await IsWebAssessmentStillAuthorizedAsync(job, assessment, effectiveWorkerIdentity, timeout.Token))
+                if (!job.IsLeaseOwnedBy(effectiveWorkerIdentity, DateTimeOffset.UtcNow))
                 {
+                    await DiscardGeneratedReportAsync();
+                    return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                }
+                if (!await IsWebAssessmentStillAuthorizedAsync(job, assessment, effectiveWorkerIdentity, initialScopeFingerprint, timeout.Token))
+                {
+                    await DiscardGeneratedReportAsync();
                     execution.Cancel();
                     job.Cancel();
                     assessment.RevokeAuthorization();
@@ -263,6 +294,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 }
                 if (job.IsCancellationRequested || job.Status != ScanJobStatus.Running)
                 {
+                    await DiscardGeneratedReportAsync();
                     execution.Cancel(); assessment.Cancel();
                     await db.SaveChangesAsync(CancellationToken.None);
                     await completionTransaction.CommitAsync(CancellationToken.None);
@@ -274,6 +306,8 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "web-assessment.completed", nameof(WebAssessment), assessment.Id, "Authorized web assessment completed with bounded, non-destructive checks."));
                 await db.SaveChangesAsync(timeout.Token);
                 await completionTransaction.CommitAsync(timeout.Token);
+                generatedReportKey = null;
+                generatedReportAssessmentId = null;
                 return ScanExecutionOutcome.Completed;
             }
             var authorizedTargets = new List<AuthorizedInventoryTarget>(scopeDefinition.Targets.Count);
@@ -330,6 +364,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         }
         catch (WebAssessmentAuthorizationRevokedException)
         {
+            await DiscardGeneratedReportAsync();
             await db.Entry(job).ReloadAsync(CancellationToken.None);
             await db.Entry(execution).ReloadAsync(CancellationToken.None);
             var webAssessment = await db.WebAssessments.SingleOrDefaultAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, CancellationToken.None);
@@ -343,6 +378,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         }
         catch (WebAssessmentLeaseLostException)
         {
+            await DiscardGeneratedReportAsync();
             await db.Entry(job).ReloadAsync(CancellationToken.None);
             await db.Entry(execution).ReloadAsync(CancellationToken.None);
             var webAssessment = await db.WebAssessments.SingleOrDefaultAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, CancellationToken.None);
@@ -357,6 +393,7 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
+            await DiscardGeneratedReportAsync();
             await db.Entry(job).ReloadAsync(CancellationToken.None);
             DiscardPendingInventoryChanges();
             if (workerIdentity is not null && !job.IsLeaseOwnedBy(workerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
@@ -379,8 +416,21 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         }
         catch (Exception exception)
         {
+            await DiscardGeneratedReportAsync();
             logger.LogWarning(exception, "Job {JobId} failed during execution.", jobId);
             throw;
+        }
+
+        async Task DiscardGeneratedReportAsync()
+        {
+            if (artifactStore is null || string.IsNullOrWhiteSpace(generatedReportKey)) return;
+            var key = generatedReportKey;
+            generatedReportKey = null;
+            if (generatedReportAssessmentId is null) return;
+            var assessmentId = generatedReportAssessmentId.Value;
+            generatedReportAssessmentId = null;
+            try { await artifactStore.DiscardReportAsync(job.TenantId, assessmentId, key, CancellationToken.None); }
+            catch { logger.LogWarning("Unable to clean up an unpublished report artifact for job {JobId}.", job.Id); }
         }
     }
 
@@ -417,14 +467,15 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         return new WorkerExecutionContext(worker.Identity, worker.Capabilities.ToArray(), worker.ApprovedPrivateNetworkRanges.ToArray());
     }
 
-    private async Task<bool> IsWebAssessmentStillAuthorizedAsync(AgentJob job, WebAssessment assessment, string workerIdentity, CancellationToken cancellationToken)
+    private async Task<bool> IsWebAssessmentStillAuthorizedAsync(AgentJob job, WebAssessment assessment, string workerIdentity, string initialScopeFingerprint, CancellationToken cancellationToken)
     {
         var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Identity == workerIdentity, cancellationToken);
         if (worker is null || !worker.IsHealthyForAdmission(DateTimeOffset.UtcNow, WorkerStaleAfter) ||
             !worker.Capabilities.Contains(WebAssessmentCapabilities.WebAssessment, StringComparer.OrdinalIgnoreCase)) return false;
 
         var scope = await db.TargetScopes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == assessment.ScopeId && x.TenantId == job.TenantId, cancellationToken);
-        if (scope is null || scope.ExpiresAt <= DateTimeOffset.UtcNow) return false;
+        if (scope is null || scope.ExpiresAt <= DateTimeOffset.UtcNow ||
+            !string.Equals(initialScopeFingerprint, scope.GetAuthorizationFingerprint(), StringComparison.Ordinal)) return false;
         var currentWorker = new WorkerExecutionContext(worker.Identity, worker.Capabilities.ToArray(), worker.ApprovedPrivateNetworkRanges.ToArray());
         var validation = await validator.ValidateExecutionAsync(scope, job.TenantId, TargetKind.Web, assessment.TargetUrl, assessment.Profile, currentWorker, cancellationToken);
         return validation.IsValid && validation.ValidatedTarget is not null &&

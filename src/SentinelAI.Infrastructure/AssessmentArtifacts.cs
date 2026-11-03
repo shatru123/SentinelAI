@@ -19,9 +19,59 @@ public sealed class FileSystemAssessmentArtifactStore(IConfiguration configurati
 
     public async Task<byte[]?> GetAsync(Guid tenantId, string storageKey, CancellationToken cancellationToken)
     {
-        if (!storageKey.StartsWith($"{tenantId:D}/", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!storageKey.StartsWith($"{tenantId:D}/", StringComparison.OrdinalIgnoreCase) || storageKey.Contains("/.staging/", StringComparison.OrdinalIgnoreCase)) return null;
         var path = Resolve(storageKey);
         return File.Exists(path) ? await File.ReadAllBytesAsync(path, cancellationToken) : null;
+    }
+
+    public async Task<string> StageReportAsync(Guid tenantId, Guid assessmentId, byte[] content, CancellationToken cancellationToken)
+    {
+        var key = $"{tenantId:D}/{assessmentId:D}/.staging/{Guid.NewGuid():N}.html";
+        var path = ResolveOwnedReportPath(tenantId, assessmentId, key, requireStaging: true);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllBytesAsync(path, content, cancellationToken);
+        return key;
+    }
+
+    public Task<string> PublishReportAsync(Guid tenantId, Guid assessmentId, string stagingKey, CancellationToken cancellationToken)
+    {
+        var source = ResolveOwnedReportPath(tenantId, assessmentId, stagingKey, requireStaging: true);
+        if (!File.Exists(source)) throw new FileNotFoundException("The staged assessment report was not found.");
+        var publishedKey = $"{tenantId:D}/{assessmentId:D}/reports/{Guid.NewGuid():N}.html";
+        var destination = ResolveOwnedReportPath(tenantId, assessmentId, publishedKey, requireStaging: false);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        File.Move(source, destination);
+        return Task.FromResult(publishedKey);
+    }
+
+    public async Task<byte[]?> GetPublishedReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken)
+    {
+        if (!storageKey.StartsWith($"{tenantId:D}/{assessmentId:D}/", StringComparison.OrdinalIgnoreCase)) return null;
+        var path = ResolveOwnedReportPath(tenantId, assessmentId, storageKey, requireStaging: false);
+        if (!storageKey.Contains("/reports/", StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) return null;
+        return await File.ReadAllBytesAsync(path, cancellationToken);
+    }
+
+    public Task DiscardReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken)
+    {
+        var path = ResolveOwnedReportPath(tenantId, assessmentId, storageKey, requireStaging: false);
+        if (File.Exists(path)) File.Delete(path);
+        return Task.CompletedTask;
+    }
+
+    public Task<int> CleanupStagedReportsAsync(DateTimeOffset olderThan, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(root)) return Task.FromResult(0);
+        var removed = 0;
+        foreach (var path in Directory.EnumerateFiles(root, "*.html", SearchOption.AllDirectories).Take(10_000))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!path.Contains($"{Path.DirectorySeparatorChar}.staging{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)) continue;
+            if (File.GetLastWriteTimeUtc(path) >= olderThan.UtcDateTime) continue;
+            File.Delete(path);
+            removed++;
+        }
+        return Task.FromResult(removed);
     }
 
     private string Resolve(string key)
@@ -29,5 +79,17 @@ public sealed class FileSystemAssessmentArtifactStore(IConfiguration configurati
         var path = Path.GetFullPath(Path.Combine(root, key.Replace('/', Path.DirectorySeparatorChar)));
         if (!path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Invalid assessment artifact path.");
         return path;
+    }
+
+    private string ResolveOwnedReportPath(Guid tenantId, Guid assessmentId, string storageKey, bool requireStaging)
+    {
+        var prefix = $"{tenantId:D}/{assessmentId:D}/";
+        if (!storageKey.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Assessment artifact ownership mismatch.");
+        var normalized = storageKey.Replace('\\', '/');
+        var isStaging = normalized.Contains("/.staging/", StringComparison.OrdinalIgnoreCase);
+        var isPublished = normalized.Contains("/reports/", StringComparison.OrdinalIgnoreCase);
+        if ((!isStaging && !isPublished) || (requireStaging && !isStaging) || normalized.Contains("..", StringComparison.Ordinal))
+            throw new InvalidOperationException("Invalid assessment report artifact key.");
+        return Resolve(normalized);
     }
 }

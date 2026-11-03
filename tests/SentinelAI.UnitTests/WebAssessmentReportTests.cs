@@ -43,6 +43,15 @@ public sealed class WebAssessmentReportTests
         public Task<string> PutAsync(Guid tenantId, Guid assessmentId, string name, byte[] content, CancellationToken cancellationToken)
         { LastKey = $"{tenantId}/{assessmentId}/{name}"; files[LastKey] = content; return Task.FromResult(LastKey); }
         public Task<byte[]?> GetAsync(Guid tenantId, string storageKey, CancellationToken cancellationToken) => Task.FromResult(files.TryGetValue(storageKey, out var value) ? (byte[]?)value : storageKey.EndsWith("shot.png", StringComparison.Ordinal) ? Bytes : null);
+        public Task<string> StageReportAsync(Guid tenantId, Guid assessmentId, byte[] content, CancellationToken cancellationToken)
+        { LastKey = $"{tenantId}/{assessmentId}/.staging/report.html"; files[LastKey] = content; return Task.FromResult(LastKey); }
+        public Task<string> PublishReportAsync(Guid tenantId, Guid assessmentId, string stagingKey, CancellationToken cancellationToken)
+        { var key = $"{tenantId}/{assessmentId}/reports/report.html"; files[key] = files[stagingKey]; files.Remove(stagingKey); return Task.FromResult(key); }
+        public Task<byte[]?> GetPublishedReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken)
+            => Task.FromResult(files.TryGetValue(storageKey, out var value) ? (byte[]?)value : null);
+        public Task DiscardReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken)
+        { files.Remove(storageKey); return Task.CompletedTask; }
+        public Task<int> CleanupStagedReportsAsync(DateTimeOffset olderThan, CancellationToken cancellationToken) => Task.FromResult(0);
         public Task<string> GetTextAsync(string key) => Task.FromResult(Encoding.UTF8.GetString(files[key]));
     }
 }

@@ -211,6 +211,53 @@ public sealed class PostgresReliabilityTests
     }
 
     [Fact]
+    public async Task Postgres_web_endpoint_persistence_is_idempotent_across_independent_contexts_and_batches()
+    {
+        var connection = PostgreSqlConnection();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+
+        var tenant = new Tenant($"web-endpoint-concurrent-{Guid.NewGuid():N}");
+        var user = new User(tenant.Id, $"web-endpoint-concurrent-{Guid.NewGuid():N}", "Integration", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "web-endpoint-concurrent-scope", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://allowed.test/app")], [], ["web-assessment-passive"], 10, 120, "integration", false);
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, "web-assessment-passive");
+        var execution = new AgentExecution(job.Id, "AuthorizedWebAssessmentAgent");
+        var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, "https://allowed.test/app", "web-assessment-passive", WebHostingMode.Public);
+        db.AddRange(tenant, user, scope, job, execution, assessment);
+        await db.SaveChangesAsync();
+
+        try
+        {
+            var existing = new WebAssessmentEndpoint(tenant.Id, assessment.Id, "https://allowed.test/app", "GET", 0, "page");
+            var newEndpoint = new WebAssessmentEndpoint(tenant.Id, assessment.Id, "https://allowed.test/app/dashboard", "GET", 1, "page");
+            var duplicate = new WebAssessmentEndpoint(tenant.Id, assessment.Id, newEndpoint.Url, "GET", 1, "page");
+
+            async Task PersistFromIndependentContextAsync()
+            {
+                await using var context = new AppDbContext(options);
+                await context.PersistWebAssessmentEndpointsAsync(tenant.Id, assessment.Id, [existing]);
+            }
+
+            await Task.WhenAll(PersistFromIndependentContextAsync(), PersistFromIndependentContextAsync());
+
+            await db.PersistWebAssessmentEndpointsAsync(tenant.Id, assessment.Id, [existing, newEndpoint, duplicate]);
+            Assert.Equal(2, await db.WebAssessmentEndpoints.CountAsync(x => x.TenantId == tenant.Id && x.AssessmentId == assessment.Id));
+        }
+        finally
+        {
+            await db.WebAssessmentEndpoints.Where(x => x.AssessmentId == assessment.Id).ExecuteDeleteAsync();
+            await db.WebAssessments.Where(x => x.Id == assessment.Id).ExecuteDeleteAsync();
+            await db.AgentExecutions.Where(x => x.AgentJobId == job.Id).ExecuteDeleteAsync();
+            await db.AgentJobs.Where(x => x.Id == job.Id).ExecuteDeleteAsync();
+            await db.TargetScopes.Where(x => x.Id == scope.Id).ExecuteDeleteAsync();
+            await db.Users.Where(x => x.Id == user.Id).ExecuteDeleteAsync();
+            await db.Tenants.Where(x => x.Id == tenant.Id).ExecuteDeleteAsync();
+        }
+    }
+
+    [Fact]
     public async Task Postgres_backfills_reachability_history_without_overwriting_observation_or_existing_values()
     {
         var connection = PostgreSqlConnection();

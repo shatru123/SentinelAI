@@ -250,6 +250,17 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 await db.Entry(execution).ReloadAsync(timeout.Token);
                 await db.Entry(assessment).ReloadAsync(timeout.Token);
                 if (!job.IsLeaseOwnedBy(effectiveWorkerIdentity, DateTimeOffset.UtcNow)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                if (!await IsWebAssessmentStillAuthorizedAsync(job, assessment, effectiveWorkerIdentity, timeout.Token))
+                {
+                    execution.Cancel();
+                    job.Cancel();
+                    assessment.RevokeAuthorization();
+                    db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.authorization-revoked", nameof(AgentJob), job.Id,
+                        "Worker or target authorization changed before report publication; the job was cancelled without publishing results."));
+                    await db.SaveChangesAsync(CancellationToken.None);
+                    await completionTransaction.CommitAsync(CancellationToken.None);
+                    return ScanExecutionOutcome.Cancelled;
+                }
                 if (job.IsCancellationRequested || job.Status != ScanJobStatus.Running)
                 {
                     execution.Cancel(); assessment.Cancel();
@@ -404,6 +415,22 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
              !worker.Capabilities.Contains(WebAssessmentCapabilities.PrivateWebAssessment, StringComparer.OrdinalIgnoreCase) ||
              !worker.PrivateAssessmentApproved || worker.ApprovedPrivateNetworkRanges.Count == 0)) return null;
         return new WorkerExecutionContext(worker.Identity, worker.Capabilities.ToArray(), worker.ApprovedPrivateNetworkRanges.ToArray());
+    }
+
+    private async Task<bool> IsWebAssessmentStillAuthorizedAsync(AgentJob job, WebAssessment assessment, string workerIdentity, CancellationToken cancellationToken)
+    {
+        var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Identity == workerIdentity, cancellationToken);
+        if (worker is null || !worker.IsHealthyForAdmission(DateTimeOffset.UtcNow, WorkerStaleAfter) ||
+            !worker.Capabilities.Contains(WebAssessmentCapabilities.WebAssessment, StringComparer.OrdinalIgnoreCase)) return false;
+
+        var scope = await db.TargetScopes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == assessment.ScopeId && x.TenantId == job.TenantId, cancellationToken);
+        if (scope is null || scope.ExpiresAt <= DateTimeOffset.UtcNow) return false;
+        var currentWorker = new WorkerExecutionContext(worker.Identity, worker.Capabilities.ToArray(), worker.ApprovedPrivateNetworkRanges.ToArray());
+        var validation = await validator.ValidateExecutionAsync(scope, job.TenantId, TargetKind.Web, assessment.TargetUrl, assessment.Profile, currentWorker, cancellationToken);
+        return validation.IsValid && validation.ValidatedTarget is not null &&
+            (scope.WebHostingMode != WebHostingMode.Private ||
+             (scope.PrivateWorkerIdentity == workerIdentity && worker.PrivateAssessmentApproved &&
+              worker.Capabilities.Contains(WebAssessmentCapabilities.PrivateWebAssessment, StringComparer.OrdinalIgnoreCase)));
     }
 
     public async Task<bool> RequeueOrFailAsync(Guid jobId, string expectedWorkerIdentity, int attempt, int maxAttempts, string reason, CancellationToken cancellationToken)

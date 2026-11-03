@@ -31,6 +31,44 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AssessmentScreenshot> AssessmentScreenshots => Set<AssessmentScreenshot>();
     public DbSet<WebAssessmentCheck> WebAssessmentChecks => Set<WebAssessmentCheck>();
 
+    public async Task PersistWebAssessmentEndpointsAsync(Guid tenantId, Guid assessmentId, IReadOnlyCollection<WebAssessmentEndpoint> endpoints, CancellationToken cancellationToken = default)
+    {
+        if (endpoints.Count == 0) return;
+        if (endpoints.Any(endpoint => endpoint.TenantId != tenantId || endpoint.AssessmentId != assessmentId))
+            throw new ArgumentException("All web assessment endpoints must belong to the supplied tenant and assessment.", nameof(endpoints));
+
+        var distinct = endpoints
+            .GroupBy(endpoint => endpoint.Url, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
+
+        if (distinct.Length == 0) return;
+
+        if (Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            foreach (var endpoint in distinct)
+            {
+                await Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO "WebAssessmentEndpoints" ("Id", "TenantId", "AssessmentId", "Url", "Method", "Depth", "Kind", "DiscoveredAt")
+                    VALUES ({endpoint.Id}, {endpoint.TenantId}, {endpoint.AssessmentId}, {endpoint.Url}, {endpoint.Method}, {endpoint.Depth}, {endpoint.Kind}, {endpoint.DiscoveredAt})
+                    ON CONFLICT ("TenantId", "AssessmentId", "Url") DO NOTHING
+                    """, cancellationToken);
+            }
+
+            return;
+        }
+
+        var urls = distinct.Select(endpoint => endpoint.Url).ToArray();
+        var existing = await WebAssessmentEndpoints.AsNoTracking()
+            .Where(endpoint => endpoint.TenantId == tenantId && endpoint.AssessmentId == assessmentId && urls.Contains(endpoint.Url))
+            .Select(endpoint => endpoint.Url)
+            .ToListAsync(cancellationToken);
+        var existingUrls = existing.ToHashSet(StringComparer.Ordinal);
+        foreach (var endpoint in distinct.Where(endpoint => existingUrls.Add(endpoint.Url)))
+            WebAssessmentEndpoints.Add(endpoint);
+        await SaveChangesAsync(cancellationToken);
+    }
+
     public async Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
     {
         if (Database.ProviderName?.Contains("InMemory", StringComparison.OrdinalIgnoreCase) == true)

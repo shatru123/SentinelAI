@@ -137,6 +137,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
     {
         if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || !IsValidWebHost(uri.Host) || uri.UserInfo.Length > 0)
             return ScopeValidationResult.Invalid("Web target must be an absolute HTTP(S) URL without credentials.");
+        if (!IsSafeWebPath(uri.AbsolutePath)) return ScopeValidationResult.Invalid("Web target path contains an ambiguous or unsafe encoding.");
         IReadOnlyCollection<IPAddress> resolved;
         try { resolved = await resolver.ResolveAsync(uri.Host, cancellationToken); }
         catch (SocketException) { return ScopeValidationResult.Invalid("Web target could not be resolved safely."); }
@@ -160,7 +161,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         {
             if (!Uri.TryCreate(authorized.Value, UriKind.Absolute, out var baseUri)) continue;
             var hostMatches = uri.Host.Equals(baseUri.Host, StringComparison.OrdinalIgnoreCase) || (scope.AllowSubdomains && DomainMatches(uri.Host, baseUri.Host, true));
-            if (baseUri.Scheme.Equals(uri.Scheme, StringComparison.OrdinalIgnoreCase) && baseUri.Port == uri.Port && hostMatches && IsPathWithin(baseUri.AbsolutePath, uri.AbsolutePath))
+            if (baseUri.Scheme.Equals(uri.Scheme, StringComparison.OrdinalIgnoreCase) && EffectivePort(baseUri) == EffectivePort(uri) && hostMatches && IsPathWithin(baseUri.AbsolutePath, uri.AbsolutePath))
                 return ScopeValidationResult.Valid(CreateValidatedTarget(uri.Host, resolved, scope, operationProfile));
         }
         return ScopeValidationResult.Invalid("Web target or redirect is outside the authorized scope.");
@@ -190,7 +191,7 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
                 if (!IsValidHostname(value)) { error = $"Network target '{value}' is not a strict IP, CIDR or hostname."; return false; }
                 requiresPublicAuthorization = true; return true;
             case TargetKind.Web:
-                if (!Uri.TryCreate(value, UriKind.Absolute, out var web) || web.Scheme is not ("http" or "https") || !IsValidWebHost(web.Host) || web.UserInfo.Length > 0)
+                if (!Uri.TryCreate(value, UriKind.Absolute, out var web) || web.Scheme is not ("http" or "https") || !IsValidWebHost(web.Host) || web.UserInfo.Length > 0 || !IsSafeWebPath(web.AbsolutePath))
                 { error = $"Web target '{value}' must be an absolute HTTP(S) URL without credentials."; return false; }
                 requiresPublicAuthorization = true; return true;
             case TargetKind.Code:
@@ -329,6 +330,13 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         var baseValue = normalizedBase == "/" ? "/" : normalizedBase + "/";
         var candidate = string.IsNullOrWhiteSpace(candidatePath) ? "/" : candidatePath;
         return candidate.Equals(normalizedBase, StringComparison.OrdinalIgnoreCase) || candidate.StartsWith(baseValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSafeWebPath(string path)
+    {
+        if (string.IsNullOrEmpty(path) || path.Any(char.IsControl) || path.Contains('\\') || path.Contains("//", StringComparison.Ordinal)) return false;
+        if (path.Contains('%')) return false;
+        return path.Split('/').All(segment => segment is not ("." or ".."));
     }
 
     private static int EffectivePort(Uri uri) => uri.IsDefaultPort ? (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? 443 : 80) : uri.Port;

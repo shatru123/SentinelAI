@@ -30,6 +30,7 @@ public interface IAppDbContext
     DbSet<WebAssessmentEndpoint> WebAssessmentEndpoints { get; }
     DbSet<AssessmentScreenshot> AssessmentScreenshots { get; }
     DbSet<WebAssessmentCheck> WebAssessmentChecks { get; }
+    Task PersistWebAssessmentEndpointsAsync(Guid tenantId, Guid assessmentId, IReadOnlyCollection<WebAssessmentEndpoint> endpoints, CancellationToken cancellationToken = default);
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
     Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
 }

@@ -152,10 +152,66 @@ public sealed class ScopeValidatorTests
         Assert.False(outside.IsValid);
     }
 
+    [Fact]
+    public async Task Production_web_scope_enforces_scheme_effective_port_host_and_path_boundaries()
+    {
+        var scope = CreatePublicWebScope("https://example.com/app", allowSubdomains: true);
+
+        Assert.True((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com/app/dashboard", "web-assessment-passive")).IsValid);
+        Assert.True((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com/app/", "web-assessment-passive")).IsValid);
+        Assert.True((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com/app/assets/site.css?theme=dark#main", "web-assessment-passive")).IsValid);
+        Assert.True((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com:443/app/assets/site.css", "web-assessment-passive")).IsValid);
+        Assert.True((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://sub.example.com/app", "web-assessment-passive")).IsValid);
+        Assert.False((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "http://example.com/app", "web-assessment-passive")).IsValid);
+        Assert.False((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://notexample.com/app", "web-assessment-passive")).IsValid);
+        Assert.False((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com:8443/app", "web-assessment-passive")).IsValid);
+        Assert.False((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com/application", "web-assessment-passive")).IsValid);
+        Assert.False((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com/app2", "web-assessment-passive")).IsValid);
+        Assert.False((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com/outside", "web-assessment-passive")).IsValid);
+        Assert.False((await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://user:password@example.com/app", "web-assessment-passive")).IsValid);
+    }
+
+    [Theory]
+    [InlineData("https://example.com/app/../admin")]
+    [InlineData("https://example.com/app/%2e%2e/admin")]
+    [InlineData("https://example.com/app/%2E%2E/admin")]
+    [InlineData("https://example.com/app/%252e%252e/admin")]
+    [InlineData("https://example.com/app/%2fadmin")]
+    [InlineData("https://example.com/app/%5cadmin")]
+    [InlineData("https://example.com/app//admin")]
+    public async Task Production_web_scope_rejects_ambiguous_or_traversal_paths(string target)
+    {
+        var scope = CreatePublicWebScope("https://example.com/app");
+        var result = await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, target, "web-assessment-passive");
+        Assert.False(result.IsValid);
+    }
+
+    [Fact]
+    public async Task Production_web_scope_applies_dns_and_path_exclusions_at_execution_time()
+    {
+        var scope = CreatePublicWebScope("https://example.com/app");
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://example.com/app")], ["https://example.com/app/admin", "evil.example.com"], ["web-assessment-passive"], 30, 300, "ticket-123", false);
+        scope.ConfigureVerifications([new PublicTargetVerification("https://example.com/app", "ticket-123", "security", "registry", DateTimeOffset.UtcNow)]);
+
+        var excludedPath = await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://example.com/app/admin", "web-assessment-passive");
+        var excludedSubdomain = await new TargetScopeValidator(new PublicResolver()).ValidateExecutionAsync(scope, tenantId, TargetKind.Web, "https://evil.example.com/app", "web-assessment-passive");
+
+        Assert.False(excludedPath.IsValid);
+        Assert.False(excludedSubdomain.IsValid);
+    }
+
     private TargetScope CreateScope(string target, DateTimeOffset expiresAt)
     {
         var scope = new TargetScope(tenantId, "test-scope", Guid.NewGuid(), expiresAt);
         scope.Configure([new TargetDefinition(TargetKind.Network, target)], [], ["mock-passive"], 30, 300, "ticket-123", false);
+        return scope;
+    }
+
+    private TargetScope CreatePublicWebScope(string target, bool allowSubdomains = false)
+    {
+        var scope = new TargetScope(tenantId, "public-web", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, target)], [], ["web-assessment-passive"], 30, 300, "ticket-123", publicTargetOwnershipVerified: false, allowSubdomains: allowSubdomains);
+        scope.ConfigureVerifications([new PublicTargetVerification(target, "ticket-123", "security", "registry", DateTimeOffset.UtcNow)]);
         return scope;
     }
 
@@ -173,4 +229,6 @@ public sealed class ScopeValidatorTests
     { public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<IPAddress>>([IPAddress.Parse("10.20.10.4")]); }
     private sealed class OutsidePrivateResolver : IHostAddressResolver
     { public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<IPAddress>>([IPAddress.Parse("10.21.10.4")]); }
+    private sealed class PublicResolver : IHostAddressResolver
+    { public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyCollection<IPAddress>>([IPAddress.Parse("93.184.216.34")]); }
 }

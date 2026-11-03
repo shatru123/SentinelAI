@@ -919,6 +919,13 @@ public sealed class WebAssessmentAuthorizationTests
         public DbSet<WebAssessmentEndpoint> WebAssessmentEndpoints => inner.WebAssessmentEndpoints;
         public DbSet<AssessmentScreenshot> AssessmentScreenshots => inner.AssessmentScreenshots;
         public DbSet<WebAssessmentCheck> WebAssessmentChecks => inner.WebAssessmentChecks;
+        public DbSet<VulnerabilityCatalogEntry> VulnerabilityCatalogEntries => inner.VulnerabilityCatalogEntries;
+        public DbSet<VulnerabilityCvssMetric> VulnerabilityCvssMetrics => inner.VulnerabilityCvssMetrics;
+        public DbSet<VulnerabilityKevEntry> VulnerabilityKevEntries => inner.VulnerabilityKevEntries;
+        public DbSet<VulnerabilityEpssScore> VulnerabilityEpssScores => inner.VulnerabilityEpssScores;
+        public DbSet<VulnerabilitySyncCheckpoint> VulnerabilitySyncCheckpoints => inner.VulnerabilitySyncCheckpoints;
+        public DbSet<SoftwareComponent> SoftwareComponents => inner.SoftwareComponents;
+        public DbSet<AssetVulnerabilityMatch> AssetVulnerabilityMatches => inner.AssetVulnerabilityMatches;
         public Task PersistWebAssessmentEndpointsAsync(Guid tenantId, Guid assessmentId, IReadOnlyCollection<WebAssessmentEndpoint> endpoints, CancellationToken cancellationToken = default) => inner.PersistWebAssessmentEndpointsAsync(tenantId, assessmentId, endpoints, cancellationToken);
         public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) => inner.SaveChangesAsync(cancellationToken);
         public Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default) => inner.BeginTransactionAsync(cancellationToken);

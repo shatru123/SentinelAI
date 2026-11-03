@@ -10,6 +10,7 @@
             Eyebrow="Phase 3 / CVE Correlation"
             Description="Enrich the local CVE catalog, verify product identities against asset evidence, and evaluate CPE applicability without treating uncertain matches as confirmed vulnerabilities.">
     <Actions>
+        <a class="soc-btn soc-btn-secondary" href="/api/v1/vulnerability-intelligence/report">Export CSV</a>
         <button class="soc-btn soc-btn-secondary" @onclick="RefreshAsync" disabled="@loading">
             <span class="icon">↻</span> Refresh
         </button>
@@ -159,6 +160,10 @@
                         <strong>@selectedCve.Epss.Score.ToString("P2")</strong>
                         <div style="font-size:.75rem;">Percentile @selectedCve.Epss.Percentile.ToString("P1")</div>
                         <div class="text-muted" style="font-size:.7rem;">As of @selectedCve.Epss.AsOfDate</div>
+                        @if (IsEpssStale(selectedCve.Epss.AsOfDate))
+                        {
+                            <span class="soc-badge soc-badge-warning">Stale EPSS data</span>
+                        }
                     }
                     <AuthorizeView Roles="Admin">
                         <Authorized>
@@ -182,6 +187,10 @@
                     <div class="text-muted" style="font-size:.72rem; margin-top:6px;">
                         Catalog @selectedCve.Kev.CatalogVersion · Due @selectedCve.Kev.DueDate
                     </div>
+                    @if (IsKevStale(selectedCve.Kev.CatalogReleasedAt))
+                    {
+                        <span class="soc-badge soc-badge-warning">Stale KEV catalog</span>
+                    }
                 }
             </div>
             <div class="text-muted" style="font-size:.72rem;">
@@ -708,6 +717,12 @@
             ? transitions.Deserialize<List<VulnerabilityMatchTransitionResponse>>() ?? []
             : [];
     }
+
+    private static bool IsEpssStale(DateOnly asOfDate)
+        => DateOnly.FromDateTime(DateTime.UtcNow).DayNumber - asOfDate.DayNumber > 7;
+
+    private static bool IsKevStale(DateTimeOffset releasedAt)
+        => DateTimeOffset.UtcNow - releasedAt > TimeSpan.FromDays(7);
 
     private static VulnerabilityTriageAssessmentResponse BuildTriageResponseFromHistory(JsonElement item, Guid matchId)
     {

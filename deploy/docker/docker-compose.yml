@@ -12,7 +12,7 @@ services:
       Messaging__Mode: RabbitMq
       Messaging__RunOutboxDispatcher: "true"
       Worker__RunInProcess: "false"
-      Worker__Identity: ${WORKER_IDENTITY:-compose-worker}
+      Worker__Identity: compose-worker
       RabbitMQ__Host: rabbitmq
       RabbitMQ__Username: ${RABBITMQ_USER}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD}
@@ -78,7 +78,7 @@ services:
       Worker__ControlPlaneUrl: http://api:8080
       Worker__ControlPlaneToken: ${WORKER_CONTROL_PLANE_TOKEN:-local-worker-token-change-me}
       Worker__TenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
-      Worker__Identity: ${WORKER_IDENTITY:-compose-worker}
+      Worker__Identity: compose-worker
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       postgres: { condition: service_healthy }

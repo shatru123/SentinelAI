@@ -21,7 +21,7 @@
 
 @if (loading)
 {
-    <LoadingState Message="Loading real-time SOC metrics and persisted assessment records..." />
+    <LoadingState Message="Loading current SOC metrics and persisted assessment records..." />
 }
 else if (!string.IsNullOrWhiteSpace(errorMessage))
 {
@@ -58,7 +58,7 @@ else if (summary is not null)
     <div class="metric-grid">
         <MetricCard Title="Critical Findings" Value="@summary.CriticalFindings.ToString()" Subtitle="Immediate remediation required" Accent="@(summary.CriticalFindings > 0 ? "red" : "green")" Icon="🚨" />
         <MetricCard Title="Active Assessments" Value="@summary.ActiveAssessments.ToString()" Subtitle="Web assessments running" Accent="cyan" Icon="🎯" />
-        <MetricCard Title="Queued + Running" Value="@(summary.QueuedJobs + summary.RunningJobs).ToString()" Subtitle="@($"{summary.QueuedJobs} queued · {summary.RunningJobs} running")" Accent="cyan" Icon="⚙️" />
+        <MetricCard Title="Queued + Running" Value="@((summary.QueuedJobs + summary.RunningJobs).ToString())" Subtitle="@($"{summary.QueuedJobs} queued · {summary.RunningJobs} running")" Accent="cyan" Icon="⚙️" />
         <MetricCard Title="Healthy Workers" Value="@($"{summary.HealthyWorkers} / {summary.TotalWorkers}")" Subtitle="Fresh authenticated heartbeats" Accent="@(summary.HealthyWorkers > 0 ? "green" : "amber")" Icon="🛡️" />
     </div>
 

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Security.Claims;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication;
@@ -900,5 +901,14 @@ static PrincipalContext ToPrincipal(HttpContext context)
 }
 
 static (int Page, int PageSize) NormalizePage(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize, 1, 100));
+
+static string? FindFirstCriteriaId(ApplicabilityNode node) => node switch
+{
+    CpeMatchNode match when !string.IsNullOrWhiteSpace(match.CriteriaId) => match.CriteriaId,
+    LogicalApplicabilityNode logical => logical.Children
+        .Select(FindFirstCriteriaId)
+        .FirstOrDefault(criteriaId => !string.IsNullOrWhiteSpace(criteriaId)),
+    _ => null
+};
 static WorkerResponse ToWorkerResponse(WorkerRegistration worker) => new(worker.Id, worker.Identity, worker.Version, worker.Status, worker.Capabilities, worker.LastHeartbeatAt, worker.CurrentActiveJobs, worker.MaximumCapacity, worker.LastJobStartedAt, worker.LastJobCompletedAt, worker.PrivateAssessmentApproved, worker.ApprovedPrivateNetworkRanges);
 public partial class Program { }

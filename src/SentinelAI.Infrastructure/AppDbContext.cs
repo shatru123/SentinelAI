@@ -172,6 +172,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<WebAssessmentCheck>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.CheckId, x.AffectedEndpoint }).IsUnique();
         modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.IdempotencyKey }).IsUnique();
         modelBuilder.Entity<VulnerabilityCatalogEntry>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<VulnerabilityCvssMetric>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<VulnerabilityKevEntry>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<VulnerabilityEpssScore>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<AssetVulnerabilityMatch>().Property(x => x.CveId).HasMaxLength(20);
         modelBuilder.Entity<VulnerabilityCatalogEntry>().HasIndex(x => x.LastModifiedAt);
         modelBuilder.Entity<VulnerabilityCvssMetric>().HasIndex(x => new { x.CveId, x.Version, x.Vector, x.Source }).IsUnique();
         modelBuilder.Entity<VulnerabilityCvssMetric>().HasOne<VulnerabilityCatalogEntry>().WithMany()

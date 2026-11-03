@@ -494,6 +494,136 @@ public sealed class WebAssessmentAuthorizationTests
         Assert.Empty(fixture.ArtifactStore.PublishedKeys);
     }
 
+    [Fact]
+    public async Task Worker_revocation_is_detected_during_report_generation()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Worker.MarkUnhealthy();
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Scope_mutation_is_detected_during_report_generation()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Scope.Configure([new TargetDefinition(TargetKind.Web, $"http://127.0.0.1:{fixture.Server.Port}/mutated")], [], ["web-assessment-passive"], 100, 120, "controlled-test", false);
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Scope_expiry_is_detected_during_report_generation()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Scope.ExpireAuthorization();
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Private_worker_capability_removal_is_detected_during_report_generation()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        fixture.ConfigurePrivateAssessment();
+        await fixture.Db.SaveChangesAsync();
+
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Worker.ProvisionByAdministrator("test", [WebAssessmentCapabilities.WebAssessment], []);
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Job_cancellation_during_report_generation_is_detected_as_lease_lost()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var engine = fixture.CreateEngine(report);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Job.Cancel();
+        await fixture.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<WebAssessmentLeaseLostException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Queued, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Monitor_db_failure_during_report_generation_aborts_report_and_propagates()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var failingFactory = new FailingDbContextFactory();
+        var engine = fixture.CreateEngine(report, failingFactory);
+        var task = fixture.ExecuteAsync(engine);
+
+        await report.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => task);
+        await report.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WebAssessmentStatus.Failed, fixture.Assessment.Status);
+        Assert.Null(fixture.Assessment.ReportStorageKey);
+        Assert.Empty(fixture.ArtifactStore.PublishedKeys);
+    }
+
+    [Fact]
+    public async Task Report_generation_failure_shuts_down_monitor_cleanly()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var trackingFactory = new TrackingDbContextFactory(fixture.Options);
+        var throwingReport = new ThrowingReportGenerator();
+        var engine = fixture.CreateEngine(throwingReport, trackingFactory);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.ExecuteAsync(engine));
+        var count = trackingFactory.CreationCount;
+        await Task.Delay(100);
+        Assert.Equal(count, trackingFactory.CreationCount);
+        Assert.All(trackingFactory.CreatedContexts, ctx => Assert.True(ctx.IsDisposed));
+    }
+
     private sealed class AssessmentFixture : IAsyncDisposable
     {
         private AssessmentFixture(DbContextOptions<AppDbContext> options, AppDbContext db, LoopbackHttpServer server, Tenant tenant, User user, TargetScope scope, WorkerRegistration worker, AgentJob job, AgentExecution execution, WebAssessment assessment)
@@ -556,7 +686,19 @@ public sealed class WebAssessmentAuthorizationTests
 
         public Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessmentEngine engine)
             => engine.ExecuteAsync(Assessment, Job, Scope, Worker.Identity, Worker.Capabilities, Worker.ApprovedPrivateNetworkRanges,
-                _ => Task.FromResult(true), CancellationToken.None, _ => Task.FromResult<WorkerExecutionContext?>(WorkerContext));
+                async (activeDb, ct) => await activeDb.AgentJobs.AsNoTracking().AnyAsync(x => x.Id == Job.Id && x.Status == ScanJobStatus.Running && x.LeaseOwnerWorkerId == Worker.Identity && x.LeaseExpiresAt > DateTimeOffset.UtcNow, ct),
+                CancellationToken.None,
+                async (activeDb, ct) =>
+                {
+                    var worker = await activeDb.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == Job.TenantId && x.Identity == Worker.Identity, ct);
+                    if (worker is null || !worker.IsHealthyForAdmission(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5)) ||
+                        !worker.Capabilities.Contains(WebAssessmentCapabilities.WebAssessment, StringComparer.OrdinalIgnoreCase)) return null;
+                    if (Scope.WebHostingMode == WebHostingMode.Private &&
+                        (!string.Equals(Scope.PrivateWorkerIdentity, Worker.Identity, StringComparison.Ordinal) ||
+                         !worker.Capabilities.Contains(WebAssessmentCapabilities.PrivateWebAssessment, StringComparer.OrdinalIgnoreCase) ||
+                         !worker.PrivateAssessmentApproved || worker.ApprovedPrivateNetworkRanges.Count == 0)) return null;
+                    return new WorkerExecutionContext(worker.Identity, worker.Capabilities.ToArray(), worker.ApprovedPrivateNetworkRanges.ToArray());
+                });
 
         public void ConfigurePrivateAssessment()
         {
@@ -716,6 +858,11 @@ public sealed class WebAssessmentAuthorizationTests
             IsDisposed = true;
             await inner.DisposeAsync();
         }
+    }
+
+    public sealed class FailingDbContextFactory : IAppDbContextFactory
+    {
+        public IAppDbContext CreateDbContext() => throw new InvalidOperationException("Simulated database connection failure.");
     }
 
     public sealed class TrackingDbContextFactory(DbContextOptions<AppDbContext> options) : IAppDbContextFactory

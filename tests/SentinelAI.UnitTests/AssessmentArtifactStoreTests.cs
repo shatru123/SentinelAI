@@ -331,4 +331,148 @@ public sealed class AssessmentArtifactStoreTests
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task Active_in_progress_assessments_published_reports_are_protected_from_reconciliation()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"sentinelai-artifacts-{Guid.NewGuid():N}");
+        var dbName = Guid.NewGuid().ToString();
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(opt => opt.UseInMemoryDatabase(dbName));
+        services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
+        var sp = services.BuildServiceProvider();
+
+        var tenant = Guid.NewGuid();
+        try
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Artifacts:Root"] = root }).Build();
+            var store = new FileSystemAssessmentArtifactStore(configuration);
+
+            Guid activeAssessmentId;
+            using (var scope = sp.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var targetScope = new TargetScope(tenant, "active test scope", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(5));
+                var job = new AgentJob(tenant, targetScope.Id, Guid.NewGuid(), "web-assessment-passive");
+                var assessment = new WebAssessment(tenant, job.Id, targetScope.Id, "http://127.0.0.1/", "web-assessment-passive", WebHostingMode.Public);
+                assessment.Start(); // Status is Running
+                // Note: ReportStorageKey not yet set on assessment because it's actively running!
+                db.AddRange(targetScope, job, assessment);
+                await db.SaveChangesAsync();
+                activeAssessmentId = assessment.Id;
+            }
+
+            var staged = await store.StageReportAsync(tenant, activeAssessmentId, [1, 2, 3], CancellationToken.None);
+            var publishedKey = await store.PublishReportAsync(tenant, activeAssessmentId, staged, CancellationToken.None);
+
+            // Report file is older than 50 hours (well past the 48-hour grace period)
+            var fullPath = Path.Combine(root, publishedKey.Replace('/', Path.DirectorySeparatorChar));
+            File.SetLastWriteTimeUtc(fullPath, DateTime.UtcNow.AddHours(-50));
+
+            var cleanupService = new AssessmentArtifactCleanupService(
+                store,
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                NullLogger<AssessmentArtifactCleanupService>.Instance);
+
+            var cleanedTotal = await cleanupService.RunCleanupCycleAsync(CancellationToken.None);
+
+            // Because assessment is Running, its report must be protected and NOT deleted
+            Assert.Equal(0, cleanedTotal);
+            Assert.True(File.Exists(fullPath));
+            Assert.Equal(new byte[] { 1, 2, 3 }, await store.GetPublishedReportAsync(tenant, activeAssessmentId, publishedKey, CancellationToken.None));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Published_grace_period_defaults_to_at_least_48_hours()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"sentinelai-artifacts-{Guid.NewGuid():N}");
+        var dbName = Guid.NewGuid().ToString();
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(opt => opt.UseInMemoryDatabase(dbName));
+        services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
+        var sp = services.BuildServiceProvider();
+
+        var tenant = Guid.NewGuid();
+        var assessmentRecent = Guid.NewGuid();
+        var assessmentOld = Guid.NewGuid();
+        try
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Artifacts:Root"] = root }).Build();
+            var store = new FileSystemAssessmentArtifactStore(configuration);
+
+            var staged1 = await store.StageReportAsync(tenant, assessmentRecent, [1], CancellationToken.None);
+            var publishedRecent = await store.PublishReportAsync(tenant, assessmentRecent, staged1, CancellationToken.None);
+
+            var staged2 = await store.StageReportAsync(tenant, assessmentOld, [2], CancellationToken.None);
+            var publishedOld = await store.PublishReportAsync(tenant, assessmentOld, staged2, CancellationToken.None);
+
+            var recentPath = Path.Combine(root, publishedRecent.Replace('/', Path.DirectorySeparatorChar));
+            var oldPath = Path.Combine(root, publishedOld.Replace('/', Path.DirectorySeparatorChar));
+
+            // Set recent to 30 hours ago (beyond the old 2-hour window, but within the 48-hour grace period)
+            File.SetLastWriteTimeUtc(recentPath, DateTime.UtcNow.AddHours(-30));
+            // Set old to 50 hours ago (beyond 48 hours)
+            File.SetLastWriteTimeUtc(oldPath, DateTime.UtcNow.AddHours(-50));
+
+            var cleanupService = new AssessmentArtifactCleanupService(
+                store,
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                NullLogger<AssessmentArtifactCleanupService>.Instance);
+
+            // Run with default grace periods (no overrides)
+            var cleanedTotal = await cleanupService.RunCleanupCycleAsync(CancellationToken.None);
+
+            Assert.Equal(1, cleanedTotal);
+            Assert.True(File.Exists(recentPath)); // 30-hour-old file is retained by 48-hour grace period
+            Assert.False(File.Exists(oldPath));   // 50-hour-old file is deleted
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Database_lookup_failure_aborts_published_reconciliation_cycle_without_deleting_files()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"sentinelai-artifacts-{Guid.NewGuid():N}");
+        var tenant = Guid.NewGuid();
+        var assessment = Guid.NewGuid();
+        try
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Artifacts:Root"] = root }).Build();
+            var store = new FileSystemAssessmentArtifactStore(configuration);
+
+            var staged = await store.StageReportAsync(tenant, assessment, [1, 2, 3], CancellationToken.None);
+            var publishedKey = await store.PublishReportAsync(tenant, assessment, staged, CancellationToken.None);
+
+            var fullPath = Path.Combine(root, publishedKey.Replace('/', Path.DirectorySeparatorChar));
+            File.SetLastWriteTimeUtc(fullPath, DateTime.UtcNow.AddHours(-100));
+
+            // Service provider with mock/throwing DB context factory
+            var services = new ServiceCollection();
+            services.AddScoped<IAppDbContext>(_ => throw new InvalidOperationException("Simulated database failure during reconciliation lookup."));
+            var sp = services.BuildServiceProvider();
+
+            var cleanupService = new AssessmentArtifactCleanupService(
+                store,
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                NullLogger<AssessmentArtifactCleanupService>.Instance);
+
+            // Should abort gracefully without throwing and without deleting files
+            var cleanedTotal = await cleanupService.RunCleanupCycleAsync(CancellationToken.None);
+
+            Assert.Equal(0, cleanedTotal);
+            Assert.True(File.Exists(fullPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
 }

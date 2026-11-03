@@ -6,6 +6,7 @@ using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Microsoft.Playwright;
 using SentinelAI.Application;
 using SentinelAI.Agent.Vulnerability;
 using SentinelAI.Domain;
@@ -177,23 +178,39 @@ public sealed class BrowserAssessmentSecurityTests
         Assert.Null(screenshot);
         var pathsCountAfterRevocation = server.RequestedPaths.Count;
 
-        // Exercise post-revocation request through proxy boundary
-        var authorized = false;
+        // Exercise post-revocation request through the same active proxy instance transitioning from approved to revoked
+        var authorized = true;
         await using var proxy = await BrowserPolicyProxy.StartAsync(
             (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(authorized ? new ValidatedBrowserDestination(server.Address, [server.Address]) : null),
             CancellationToken.None,
             (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(authorized ? new ValidatedBrowserDestination(server.Address, [server.Address]) : null));
 
-        using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
-        await using var stream = client.GetStream();
-        var connectMsg = Encoding.ASCII.GetBytes($"CONNECT allowed.test:{server.Port} HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\n\r\n");
-        await stream.WriteAsync(connectMsg);
+        using (var client1 = new TcpClient())
+        {
+            await client1.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
+            await using var stream1 = client1.GetStream();
+            var connectMsg = Encoding.ASCII.GetBytes($"CONNECT allowed.test:{server.Port} HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\n\r\n");
+            await stream1.WriteAsync(connectMsg);
+            var responseBuffer = new byte[1024];
+            var read = await stream1.ReadAsync(responseBuffer);
+            var response = Encoding.ASCII.GetString(responseBuffer, 0, read);
+            Assert.Contains("200 Connection Established", response);
+        }
 
-        var responseBuffer = new byte[1024];
-        var read = await stream.ReadAsync(responseBuffer);
-        var response = Encoding.ASCII.GetString(responseBuffer, 0, read);
-        Assert.DoesNotContain("200 Connection Established", response);
+        // Live authorization transition to revoked on the same active proxy
+        authorized = false;
+
+        using (var client2 = new TcpClient())
+        {
+            await client2.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
+            await using var stream2 = client2.GetStream();
+            var connectMsg = Encoding.ASCII.GetBytes($"CONNECT allowed.test:{server.Port} HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\n\r\n");
+            await stream2.WriteAsync(connectMsg);
+            var responseBuffer = new byte[1024];
+            var read = await stream2.ReadAsync(responseBuffer);
+            var response = read > 0 ? Encoding.ASCII.GetString(responseBuffer, 0, read) : string.Empty;
+            Assert.DoesNotContain("200 Connection Established", response);
+        }
 
         Assert.DoesNotContain("/after-revocation", server.RequestedPaths);
         Assert.Equal(pathsCountAfterRevocation, server.RequestedPaths.Count);
@@ -202,14 +219,21 @@ public sealed class BrowserAssessmentSecurityTests
     [BrowserFact]
     public async Task Scenario13_Browser_session_blocks_websockets()
     {
-        await using var server = new ControlledHttpsServer();
+        await using var server = new ControlledHttpsServer(attemptWebSockets: true);
         var context = CreateHttpsContext(server, "/app", basePath: "/app");
 
+        // 1. Direct unit verification: Playwright HandleWebSocketRoute closes WebSocket routes without connecting to server
+        var testWsRoute = new TestWebSocketRoute();
+        PlaywrightScreenshotCaptureService.HandleWebSocketRoute(testWsRoute);
+        Assert.True(testWsRoute.Closed);
+        Assert.False(testWsRoute.ConnectedToServerCalled);
+
+        // 2. Playwright capture with attemptWebSockets in HTML page succeeds while WebSockets and JS remain disabled in production
         var screenshot = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
         Assert.True(screenshot.Length > 8);
         Assert.Contains("/app", server.RequestedPaths);
 
-        // Exercise WebSocket handshake rejection through BrowserPolicyProxy boundary
+        // 3. Exercise WebSocket handshake rejection through BrowserPolicyProxy boundary over HTTP
         await using var proxy = await BrowserPolicyProxy.StartAsync(
             (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(new ValidatedBrowserDestination(server.Address, [server.Address])),
             CancellationToken.None,
@@ -231,21 +255,37 @@ public sealed class BrowserAssessmentSecurityTests
     [BrowserFact]
     public async Task Scenario14_Browser_session_blocks_mutating_requests()
     {
-        await using var server = new ControlledHttpsServer();
+        await using var server = new ControlledHttpsServer(attemptMutatingRequests: true);
         var context = CreateHttpsContext(server, "/app", basePath: "/app");
 
+        // 1. Direct unit verification: HandleBrowserRouteAsync aborts mutating HTTP methods (POST, PUT, PATCH, DELETE, TRACE, CONNECT)
+        var mutatingMethods = new[] { "POST", "PUT", "PATCH", "DELETE", "TRACE", "CONNECT" };
+        foreach (var method in mutatingMethods)
+        {
+            var testRoute = new TestRoute(method, $"https://allowed.test:{server.Port}/mutate");
+            await PlaywrightScreenshotCaptureService.HandleBrowserRouteAsync(
+                testRoute,
+                _ => Task.FromResult(true),
+                _ => Task.CompletedTask,
+                (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(new ValidatedBrowserDestination(server.Address, [server.Address])),
+                () => { },
+                CancellationToken.None);
+            Assert.True(testRoute.Aborted, $"Method {method} was not aborted by browser route handler.");
+            Assert.False(testRoute.Continued, $"Method {method} continued through browser route handler.");
+        }
+
+        // 2. Playwright capture with attemptMutatingRequests in HTML succeeds without executing mutating requests
         var screenshot = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
         Assert.True(screenshot.Length > 8);
         Assert.Contains("/app", server.RequestedPaths);
 
-        // Exercise proxy rejection of mutating HTTP methods (POST, PUT, PATCH, DELETE, TRACE)
+        // 3. Exercise proxy rejection of mutating HTTP methods (POST, PUT, PATCH, DELETE, TRACE)
         await using var proxy = await BrowserPolicyProxy.StartAsync(
             (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(new ValidatedBrowserDestination(server.Address, [server.Address])),
             CancellationToken.None,
             (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(new ValidatedBrowserDestination(server.Address, [server.Address])));
 
-        var mutatingMethods = new[] { "POST", "PUT", "PATCH", "DELETE", "TRACE" };
-        foreach (var method in mutatingMethods)
+        foreach (var method in new[] { "POST", "PUT", "PATCH", "DELETE", "TRACE" })
         {
             using var client = new TcpClient();
             await client.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
@@ -524,5 +564,60 @@ public sealed class BrowserAssessmentSecurityTests
 
             return IPAddress.Parse("10.0.0.1");
         }
+    }
+
+    private sealed class TestWebSocketRoute : IWebSocketRoute
+    {
+        public bool Closed { get; private set; }
+        public bool ConnectedToServerCalled { get; private set; }
+        public string Url => "wss://allowed.test/ws";
+        public Task CloseAsync(WebSocketRouteCloseOptions? options = null)
+        {
+            Closed = true;
+            return Task.CompletedTask;
+        }
+        public IWebSocketRoute ConnectToServer()
+        {
+            ConnectedToServerCalled = true;
+            return this;
+        }
+        public void OnClose(Action<int?, string> handler) { }
+        public void OnMessage(Action<IWebSocketFrame> handler) { }
+        public void Send(byte[] message) { }
+        public void Send(string message) { }
+    }
+
+    private sealed class TestRequest(string method, string url) : IRequest
+    {
+        public string Method => method;
+        public string Url => url;
+        public Dictionary<string, string> Headers => new();
+        public bool IsNavigationRequest => false;
+        public IFrame Frame => null!;
+        public string? PostData => null;
+        public byte[]? PostDataBuffer => null;
+        public IRequest? RedirectedFrom => null;
+        public IRequest? RedirectedTo => null;
+        public string ResourceType => "document";
+        public Task<IResponse?> ResponseAsync() => Task.FromResult<IResponse?>(null);
+        public Task<Dictionary<string, string>> AllHeadersAsync() => Task.FromResult(new Dictionary<string, string>());
+        public Task<string?> HeaderValueAsync(string name) => Task.FromResult<string?>(null);
+        public Task<IReadOnlyList<Header>> HeadersArrayAsync() => Task.FromResult<IReadOnlyList<Header>>([]);
+        public System.Text.Json.JsonElement? PostDataJSON() => null;
+        public Task<RequestSizesResult> SizesAsync() => Task.FromResult(new RequestSizesResult());
+        public RequestTimingResult Timing => new();
+        public string? Failure => null;
+    }
+
+    private sealed class TestRoute(string method, string url) : IRoute
+    {
+        public bool Aborted { get; private set; }
+        public bool Continued { get; private set; }
+        public IRequest Request { get; } = new TestRequest(method, url);
+        public Task AbortAsync(string? errorCode = null) { Aborted = true; return Task.CompletedTask; }
+        public Task ContinueAsync(RouteContinueOptions? options = null) { Continued = true; return Task.CompletedTask; }
+        public Task FallbackAsync(RouteFallbackOptions? options = null) => Task.CompletedTask;
+        public Task FulfillAsync(RouteFulfillOptions? options = null) => Task.CompletedTask;
+        public Task<IAPIResponse> FetchAsync(RouteFetchOptions? options = null) => Task.FromResult<IAPIResponse>(null!);
     }
 }

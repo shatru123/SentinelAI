@@ -76,7 +76,7 @@ public sealed class AssessmentArtifactCleanupService(
     ILogger<AssessmentArtifactCleanupService> logger) : BackgroundService
 {
     private static readonly TimeSpan StagedGracePeriod = TimeSpan.FromHours(24);
-    private static readonly TimeSpan PublishedGracePeriod = TimeSpan.FromHours(2);
+    private static readonly TimeSpan PublishedGracePeriod = TimeSpan.FromHours(48);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -95,19 +95,47 @@ public sealed class AssessmentArtifactCleanupService(
         var now = DateTimeOffset.UtcNow;
         var stagedCleaned = await artifacts.CleanupStagedReportsAsync(now - (stagedGrace ?? StagedGracePeriod), cancellationToken);
 
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+        var publishedReconciled = 0;
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
 
-        var completedReportKeys = await db.WebAssessments.AsNoTracking()
-            .Where(x => x.Status == WebAssessmentStatus.Completed && x.ReportStorageKey != null)
-            .Select(x => x.ReportStorageKey!)
-            .ToListAsync(cancellationToken);
+            var completedReportKeys = await db.WebAssessments.AsNoTracking()
+                .Where(x => x.Status == WebAssessmentStatus.Completed && x.ReportStorageKey != null)
+                .Select(x => x.ReportStorageKey!)
+                .ToListAsync(cancellationToken);
 
-        var referencedSet = completedReportKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var publishedReconciled = await artifacts.ReconcilePublishedReportsAsync(
-            now - (publishedGrace ?? PublishedGracePeriod),
-            key => Task.FromResult(referencedSet.Contains(key)),
-            cancellationToken);
+            var activeAssessmentIds = await db.WebAssessments.AsNoTracking()
+                .Where(x => x.Status == WebAssessmentStatus.Running || x.Status == WebAssessmentStatus.Queued)
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+
+            var referencedSet = completedReportKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var activeSet = activeAssessmentIds.Select(id => id.ToString("D")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            publishedReconciled = await artifacts.ReconcilePublishedReportsAsync(
+                now - (publishedGrace ?? PublishedGracePeriod),
+                key =>
+                {
+                    if (referencedSet.Contains(key)) return Task.FromResult(true);
+                    var segments = key.Split('/');
+                    if (segments.Length >= 2 && activeSet.Contains(segments[1]))
+                    {
+                        return Task.FromResult(true);
+                    }
+                    return Task.FromResult(false);
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Failed to query database for published report reconciliation; aborting reconciliation cycle.");
+        }
 
         if (stagedCleaned > 0 || publishedReconciled > 0)
         {
@@ -297,8 +325,8 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 var assessment = await db.WebAssessments.SingleAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, timeout.Token);
                 generatedReportAssessmentId = assessment.Id;
                 var result = await webAssessmentEngine.ExecuteAsync(assessment, job, scopeDefinition, effectiveWorkerIdentity, workerCapabilities, workerPrivateNetworkRanges,
-                    token => HasActiveLeaseAsync(job.Id, effectiveWorkerIdentity, token), timeout.Token,
-                    token => GetLiveWebWorkerAuthorizationAsync(job.TenantId, effectiveWorkerIdentity, scopeDefinition, token));
+                    (activeDb, token) => HasActiveLeaseAsync(activeDb, job.Id, effectiveWorkerIdentity, token), timeout.Token,
+                    (activeDb, token) => GetLiveWebWorkerAuthorizationAsync(activeDb, job.TenantId, effectiveWorkerIdentity, scopeDefinition, WorkerStaleAfter, token));
                 generatedReportKey = result.ReportStorageKey;
                 await db.Entry(job).ReloadAsync(timeout.Token);
                 await db.Entry(execution).ReloadAsync(timeout.Token);
@@ -376,13 +404,13 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 authorizedTargets.Add(new AuthorizedInventoryTarget(target, validation.ValidatedTarget ?? throw new ScopeValidationException(["Execution validation did not produce a validated target."])));
             }
 
-            if (workerIdentity is not null && !await HasActiveLeaseAsync(job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+            if (workerIdentity is not null && !await HasActiveLeaseAsync(db, job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
             var observations = await (inventoryAdapter ?? new PassiveNetworkInventoryAdapter()).CollectAsync(authorizedTargets, scopeDefinition.RequestsPerMinute, timeout.Token);
-            if (workerIdentity is not null && !await HasActiveLeaseAsync(job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+            if (workerIdentity is not null && !await HasActiveLeaseAsync(db, job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
             foreach (var observation in observations)
             {
                 timeout.Token.ThrowIfCancellationRequested();
-                if (workerIdentity is not null && !await HasActiveLeaseAsync(job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
+                if (workerIdentity is not null && !await HasActiveLeaseAsync(db, job.Id, workerIdentity, timeout.Token)) return ScanExecutionOutcome.ClaimedByAnotherWorker;
                 var asset = await db.Assets.SingleOrDefaultAsync(x => x.TenantId == job.TenantId && x.Address == observation.Address, timeout.Token);
                 if (asset is null) { asset = new Asset(job.TenantId, scopeDefinition.Id, observation.Address, observation.Kind); db.Assets.Add(asset); }
                 if (observation.IsOnline && observation.ReachabilityConfirmed) asset.RecordReachabilityConfirmation();
@@ -497,13 +525,13 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         }
     }
 
-    private async Task<bool> HasActiveLeaseAsync(Guid jobId, string workerIdentity, CancellationToken cancellationToken)
-        => await db.AgentJobs.AsNoTracking().AnyAsync(x => x.Id == jobId && x.Status == ScanJobStatus.Running && x.LeaseOwnerWorkerId == workerIdentity && x.LeaseExpiresAt > DateTimeOffset.UtcNow, cancellationToken);
+    private static async Task<bool> HasActiveLeaseAsync(IAppDbContext context, Guid jobId, string workerIdentity, CancellationToken cancellationToken)
+        => await context.AgentJobs.AsNoTracking().AnyAsync(x => x.Id == jobId && x.Status == ScanJobStatus.Running && x.LeaseOwnerWorkerId == workerIdentity && x.LeaseExpiresAt > DateTimeOffset.UtcNow, cancellationToken);
 
-    private async Task<WorkerExecutionContext?> GetLiveWebWorkerAuthorizationAsync(Guid tenantId, string workerIdentity, TargetScope scope, CancellationToken cancellationToken)
+    private static async Task<WorkerExecutionContext?> GetLiveWebWorkerAuthorizationAsync(IAppDbContext context, Guid tenantId, string workerIdentity, TargetScope scope, TimeSpan workerStaleAfter, CancellationToken cancellationToken)
     {
-        var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Identity == workerIdentity, cancellationToken);
-        if (worker is null || !worker.IsHealthyForAdmission(DateTimeOffset.UtcNow, WorkerStaleAfter) ||
+        var worker = await context.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Identity == workerIdentity, cancellationToken);
+        if (worker is null || !worker.IsHealthyForAdmission(DateTimeOffset.UtcNow, workerStaleAfter) ||
             !worker.Capabilities.Contains(WebAssessmentCapabilities.WebAssessment, StringComparer.OrdinalIgnoreCase)) return null;
         if (scope.WebHostingMode == WebHostingMode.Private &&
             (!string.Equals(scope.PrivateWorkerIdentity, workerIdentity, StringComparison.Ordinal) ||

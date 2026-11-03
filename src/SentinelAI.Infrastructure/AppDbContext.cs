@@ -125,13 +125,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         var targetComparer = new ValueComparer<List<TargetDefinition>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList());
         var stringComparer = new ValueComparer<List<string>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList());
         var scope = modelBuilder.Entity<TargetScope>();
-        scope.Property(x => x.Targets).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<TargetDefinition>>(v, jsonOptions) ?? new List<TargetDefinition>()).Metadata.SetValueComparer(targetComparer);
-        scope.Property(x => x.Exclusions).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
-        scope.Property(x => x.ApprovedOperationProfiles).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
-        scope.Property(x => x.PublicTargetVerifications).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<PublicTargetVerification>>(v, jsonOptions) ?? new List<PublicTargetVerification>()).Metadata.SetValueComparer(new ValueComparer<List<PublicTargetVerification>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList()));
-        scope.Property(x => x.ApprovedPrivateNetworkRanges).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
-        modelBuilder.Entity<WorkerRegistration>().Property(x => x.Capabilities).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
-        modelBuilder.Entity<WorkerRegistration>().Property(x => x.ApprovedPrivateNetworkRanges).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => JsonSerializer.Deserialize<List<string>>(v, jsonOptions) ?? new List<string>()).Metadata.SetValueComparer(stringComparer);
+        scope.Property(x => x.Targets).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => DeserializeList<TargetDefinition>(v, jsonOptions)).Metadata.SetValueComparer(targetComparer);
+        scope.Property(x => x.Exclusions).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => DeserializeList<string>(v, jsonOptions)).Metadata.SetValueComparer(stringComparer);
+        scope.Property(x => x.ApprovedOperationProfiles).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => DeserializeList<string>(v, jsonOptions)).Metadata.SetValueComparer(stringComparer);
+        scope.Property(x => x.PublicTargetVerifications).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => DeserializeList<PublicTargetVerification>(v, jsonOptions)).Metadata.SetValueComparer(new ValueComparer<List<PublicTargetVerification>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList()));
+        scope.Property(x => x.ApprovedPrivateNetworkRanges).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => DeserializeList<string>(v, jsonOptions)).Metadata.SetValueComparer(stringComparer);
+        modelBuilder.Entity<WorkerRegistration>().Property(x => x.Capabilities).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => DeserializeList<string>(v, jsonOptions)).Metadata.SetValueComparer(stringComparer);
+        modelBuilder.Entity<WorkerRegistration>().Property(x => x.ApprovedPrivateNetworkRanges).HasConversion(v => JsonSerializer.Serialize(v, jsonOptions), v => DeserializeList<string>(v, jsonOptions)).Metadata.SetValueComparer(stringComparer);
 
         modelBuilder.Entity<Tenant>().Property<byte[]>("RowVersion").IsConcurrencyToken();
         modelBuilder.Entity<TargetScope>().Property<byte[]>("RowVersion").IsConcurrencyToken();
@@ -158,6 +158,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     }
 
     private static void ConfigureTenant(PropertyBuilder<Guid> property) => property.IsRequired();
+
+    private static List<T> DeserializeList<T>(string? json, JsonSerializerOptions opts) =>
+        string.IsNullOrWhiteSpace(json) ? [] : JsonSerializer.Deserialize<List<T>>(json, opts) ?? [];
 
     private sealed class NoopAppDbTransaction : IAppDbTransaction
     {

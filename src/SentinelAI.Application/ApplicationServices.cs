@@ -7,7 +7,7 @@ using SentinelAI.Security.Policy;
 
 namespace SentinelAI.Application;
 
-public interface IAppDbContext
+public interface IAppDbContext : IAsyncDisposable, IDisposable
 {
     DbSet<Tenant> Tenants { get; }
     DbSet<User> Users { get; }
@@ -33,6 +33,11 @@ public interface IAppDbContext
     Task PersistWebAssessmentEndpointsAsync(Guid tenantId, Guid assessmentId, IReadOnlyCollection<WebAssessmentEndpoint> endpoints, CancellationToken cancellationToken = default);
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
     Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IAppDbContextFactory
+{
+    IAppDbContext CreateDbContext();
 }
 
 public interface IAppDbTransaction : IAsyncDisposable

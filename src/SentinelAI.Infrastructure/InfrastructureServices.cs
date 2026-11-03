@@ -23,12 +23,15 @@ public static class InfrastructureServices
 {
     public static IServiceCollection AddSentinelInfrastructure(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
     {
-        services.AddDbContext<AppDbContext>(options =>
+        Action<DbContextOptionsBuilder> configureDb = options =>
         {
             var provider = configuration["Database:Provider"] ?? (environment.IsDevelopment() ? "InMemory" : "Postgres");
             if (provider.Equals("InMemory", StringComparison.OrdinalIgnoreCase)) options.UseInMemoryDatabase("sentinelai");
             else options.UseNpgsql(configuration.GetConnectionString("SentinelAI") ?? "Host=localhost;Database=sentinelai;Username=sentinelai;Password=sentinelai");
-        });
+        };
+        services.AddDbContext<AppDbContext>(configureDb, ServiceLifetime.Scoped, ServiceLifetime.Singleton);
+        services.AddDbContextFactory<AppDbContext>(configureDb);
+        services.AddSingleton<IAppDbContextFactory, DefaultAppDbContextFactory>();
         services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
         services.AddSingleton<IHostAddressResolver, SystemHostAddressResolver>();
         services.AddScoped<ITargetScopeValidator, TargetScopeValidator>();
@@ -59,18 +62,60 @@ public static class InfrastructureServices
     }
 }
 
-public sealed class AssessmentArtifactCleanupService(IAssessmentArtifactStore artifacts, ILogger<AssessmentArtifactCleanupService> logger) : BackgroundService
+public sealed class DefaultAppDbContextFactory : IAppDbContextFactory
 {
+    private readonly Func<IAppDbContext> create;
+    public DefaultAppDbContextFactory(IDbContextFactory<AppDbContext> factory) => create = () => factory.CreateDbContext();
+    public DefaultAppDbContextFactory(Func<IAppDbContext> create) => this.create = create;
+    public IAppDbContext CreateDbContext() => create();
+}
+
+public sealed class AssessmentArtifactCleanupService(
+    IAssessmentArtifactStore artifacts,
+    IServiceScopeFactory scopeFactory,
+    ILogger<AssessmentArtifactCleanupService> logger) : BackgroundService
+{
+    private static readonly TimeSpan StagedGracePeriod = TimeSpan.FromHours(24);
+    private static readonly TimeSpan PublishedGracePeriod = TimeSpan.FromHours(2);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromHours(1));
         do
         {
-            try { await artifacts.CleanupStagedReportsAsync(DateTimeOffset.UtcNow.AddHours(-24), stoppingToken); }
+            try { await RunCleanupCycleAsync(stoppingToken); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
             catch (Exception exception) { logger.LogWarning(exception, "Assessment artifact cleanup failed."); }
         }
         while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
+
+    public async Task<int> RunCleanupCycleAsync(CancellationToken cancellationToken, TimeSpan? stagedGrace = null, TimeSpan? publishedGrace = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var stagedCleaned = await artifacts.CleanupStagedReportsAsync(now - (stagedGrace ?? StagedGracePeriod), cancellationToken);
+
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+
+        var completedReportKeys = await db.WebAssessments.AsNoTracking()
+            .Where(x => x.Status == WebAssessmentStatus.Completed && x.ReportStorageKey != null)
+            .Select(x => x.ReportStorageKey!)
+            .ToListAsync(cancellationToken);
+
+        var referencedSet = completedReportKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var publishedReconciled = await artifacts.ReconcilePublishedReportsAsync(
+            now - (publishedGrace ?? PublishedGracePeriod),
+            key => Task.FromResult(referencedSet.Contains(key)),
+            cancellationToken);
+
+        if (stagedCleaned > 0 || publishedReconciled > 0)
+        {
+            logger.LogInformation("Cleaned {StagedCount} abandoned staged report(s) and reconciled {PublishedCount} unreferenced published report(s).",
+                stagedCleaned, publishedReconciled);
+        }
+
+        return stagedCleaned + publishedReconciled;
     }
 }
 

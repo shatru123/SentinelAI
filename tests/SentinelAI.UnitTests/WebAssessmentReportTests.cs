@@ -52,6 +52,7 @@ public sealed class WebAssessmentReportTests
         public Task DiscardReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken)
         { files.Remove(storageKey); return Task.CompletedTask; }
         public Task<int> CleanupStagedReportsAsync(DateTimeOffset olderThan, CancellationToken cancellationToken) => Task.FromResult(0);
+        public Task<int> ReconcilePublishedReportsAsync(DateTimeOffset olderThan, Func<string, Task<bool>> isReferencedAsync, CancellationToken cancellationToken) => Task.FromResult(0);
         public Task<string> GetTextAsync(string key) => Task.FromResult(Encoding.UTF8.GetString(files[key]));
     }
 }

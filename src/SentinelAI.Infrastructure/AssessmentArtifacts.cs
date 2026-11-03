@@ -74,6 +74,41 @@ public sealed class FileSystemAssessmentArtifactStore(IConfiguration configurati
         return Task.FromResult(removed);
     }
 
+    public async Task<int> ReconcilePublishedReportsAsync(DateTimeOffset olderThan, Func<string, Task<bool>> isReferencedAsync, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(root)) return 0;
+        var removed = 0;
+        var files = Directory.EnumerateFiles(root, "*.html", SearchOption.AllDirectories).Take(10_000).ToList();
+        foreach (var path in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var relative = Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
+            var segments = relative.Split('/');
+            if (segments.Length != 4 || !string.Equals(segments[2], "reports", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!Guid.TryParse(segments[0], out _) || !Guid.TryParse(segments[1], out _)) continue;
+            if (relative.Contains(".staging", StringComparison.OrdinalIgnoreCase)) continue;
+
+            try
+            {
+                var lastWrite = File.GetLastWriteTimeUtc(path);
+                if (lastWrite >= olderThan.UtcDateTime) continue;
+
+                var isReferenced = await isReferencedAsync(relative);
+                if (!isReferenced)
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                        removed++;
+                    }
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+        return removed;
+    }
+
     private string Resolve(string key)
     {
         var path = Path.GetFullPath(Path.Combine(root, key.Replace('/', Path.DirectorySeparatorChar)));

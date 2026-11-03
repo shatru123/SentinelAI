@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -167,56 +168,101 @@ public sealed class BrowserAssessmentSecurityTests
             RefreshAuthorization = _ => Task.FromResult<WorkerExecutionContext?>(Interlocked.Increment(ref refreshes) < 2 ? worker : null)
         };
 
-        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() =>
-            new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token));
-
-        var pathsCount = server.RequestedPaths.Count;
-
-        // Attempt a subsequent request via TCP client to ensure no further requests reach the fixture server
-        try
+        byte[]? screenshot = null;
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(async () =>
         {
-            using var client = new TcpClient();
-            var connect = client.ConnectAsync(server.Address, server.Port);
-            await connect.WaitAsync(TimeSpan.FromMilliseconds(500));
-            if (client.Connected)
-            {
-                await using var stream = client.GetStream();
-                var msg = Encoding.ASCII.GetBytes($"GET /after-revocation HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\nConnection: close\r\n\r\n");
-                await stream.WriteAsync(msg);
-            }
-        }
-        catch
-        {
-            // Expected if closed/unreachable
-        }
+            screenshot = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+        });
+
+        Assert.Null(screenshot);
+        var pathsCountAfterRevocation = server.RequestedPaths.Count;
+
+        // Exercise post-revocation request through proxy boundary
+        var authorized = false;
+        await using var proxy = await BrowserPolicyProxy.StartAsync(
+            (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(authorized ? new ValidatedBrowserDestination(server.Address, [server.Address]) : null),
+            CancellationToken.None,
+            (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(authorized ? new ValidatedBrowserDestination(server.Address, [server.Address]) : null));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
+        await using var stream = client.GetStream();
+        var connectMsg = Encoding.ASCII.GetBytes($"CONNECT allowed.test:{server.Port} HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\n\r\n");
+        await stream.WriteAsync(connectMsg);
+
+        var responseBuffer = new byte[1024];
+        var read = await stream.ReadAsync(responseBuffer);
+        var response = Encoding.ASCII.GetString(responseBuffer, 0, read);
+        Assert.DoesNotContain("200 Connection Established", response);
 
         Assert.DoesNotContain("/after-revocation", server.RequestedPaths);
+        Assert.Equal(pathsCountAfterRevocation, server.RequestedPaths.Count);
     }
 
     [BrowserFact]
     public async Task Scenario13_Browser_session_blocks_websockets()
     {
-        await using var server = new ControlledHttpsServer(attemptWebSockets: true);
+        await using var server = new ControlledHttpsServer();
         var context = CreateHttpsContext(server, "/app", basePath: "/app");
 
-        _ = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
-
+        var screenshot = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+        Assert.True(screenshot.Length > 8);
         Assert.Contains("/app", server.RequestedPaths);
+
+        // Exercise WebSocket handshake rejection through BrowserPolicyProxy boundary
+        await using var proxy = await BrowserPolicyProxy.StartAsync(
+            (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(new ValidatedBrowserDestination(server.Address, [server.Address])),
+            CancellationToken.None,
+            (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(new ValidatedBrowserDestination(server.Address, [server.Address])));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
+        await using var stream = client.GetStream();
+        var wsRequest = $"GET http://allowed.test:{server.Port}/ws HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(wsRequest));
+
+        var buffer = new byte[1024];
+        var read = await stream.ReadAsync(buffer);
+        Assert.Equal(0, read);
+
         Assert.DoesNotContain("/ws", server.RequestedPaths);
     }
 
     [BrowserFact]
     public async Task Scenario14_Browser_session_blocks_mutating_requests()
     {
-        await using var server = new ControlledHttpsServer(attemptMutatingRequests: true);
+        await using var server = new ControlledHttpsServer();
         var context = CreateHttpsContext(server, "/app", basePath: "/app");
 
-        _ = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
-
+        var screenshot = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+        Assert.True(screenshot.Length > 8);
         Assert.Contains("/app", server.RequestedPaths);
+
+        // Exercise proxy rejection of mutating HTTP methods (POST, PUT, PATCH, DELETE, TRACE)
+        await using var proxy = await BrowserPolicyProxy.StartAsync(
+            (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(new ValidatedBrowserDestination(server.Address, [server.Address])),
+            CancellationToken.None,
+            (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(new ValidatedBrowserDestination(server.Address, [server.Address])));
+
+        var mutatingMethods = new[] { "POST", "PUT", "PATCH", "DELETE", "TRACE" };
+        foreach (var method in mutatingMethods)
+        {
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
+            await using var stream = client.GetStream();
+            var request = $"{method} http://allowed.test:{server.Port}/mutate HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\nContent-Length: 4\r\n\r\ntest";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(request));
+
+            var buffer = new byte[1024];
+            var read = await stream.ReadAsync(buffer);
+            Assert.Equal(0, read);
+        }
+
         Assert.DoesNotContain("POST", server.RequestedMethods);
         Assert.DoesNotContain("PUT", server.RequestedMethods);
+        Assert.DoesNotContain("PATCH", server.RequestedMethods);
         Assert.DoesNotContain("DELETE", server.RequestedMethods);
+        Assert.DoesNotContain("TRACE", server.RequestedMethods);
         Assert.DoesNotContain("/mutate", server.RequestedPaths);
     }
 
@@ -313,6 +359,7 @@ public sealed class BrowserAssessmentSecurityTests
     {
         private readonly TcpListener listener;
         private readonly CancellationTokenSource stop = new();
+        private readonly ConcurrentDictionary<Task, bool> handlerTasks = new();
         private readonly List<string> paths = [];
         private readonly List<string> methods = [];
         private readonly RSA key = RSA.Create(2048);
@@ -370,7 +417,10 @@ public sealed class BrowserAssessmentSecurityTests
                 while (!stop.IsCancellationRequested)
                 {
                     var client = await listener.AcceptTcpClientAsync(stop.Token);
-                    _ = HandleClientAsync(client, stop.Token);
+                    var task = HandleClientAsync(client, stop.Token);
+                    handlerTasks.TryAdd(task, true);
+                    _ = task.ContinueWith(t => handlerTasks.TryRemove(t, out _), CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 }
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
@@ -447,6 +497,11 @@ public sealed class BrowserAssessmentSecurityTests
             stop.Cancel();
             listener.Stop();
             try { await loop; } catch (OperationCanceledException) { }
+            var pending = handlerTasks.Keys.ToArray();
+            if (pending.Length > 0)
+            {
+                try { await Task.WhenAll(pending); } catch { }
+            }
             certificate.Dispose();
             key.Dispose();
             stop.Dispose();

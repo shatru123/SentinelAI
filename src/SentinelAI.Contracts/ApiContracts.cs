@@ -101,7 +101,9 @@ public sealed record DashboardSummaryResponse(
     int TotalWorkers,
     IReadOnlyCollection<WebAssessmentResponse> RecentAssessments,
     IReadOnlyCollection<ScanJobSummaryResponse> RecentScans,
-    IReadOnlyCollection<MonitoringEventResponse> RecentEvents);
+    IReadOnlyCollection<MonitoringEventResponse> RecentEvents,
+    int QueuedJobs = 0,
+    int CompletedJobs = 0);
 
 public sealed record ScanJobSummaryResponse(
     Guid Id,

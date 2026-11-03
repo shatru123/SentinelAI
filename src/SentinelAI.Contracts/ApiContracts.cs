@@ -183,6 +183,7 @@ public sealed record AssetVulnerabilityMatchResponse(
     Guid SoftwareComponentId,
     string CveId,
     VulnerabilityMatchStatus Status,
+    VulnerabilityLifecycleStatus LifecycleStatus,
     string Explanation,
     string? CriteriaId,
     DateTimeOffset FirstObservedAt,

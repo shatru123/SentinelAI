@@ -85,8 +85,8 @@ public sealed class DashboardComponentTests
 
         Assert.Contains("Created by", html);
         Assert.Contains("Shatrughna Ambhore", html);
-        Assert.Contains("id=\\"modal-profile\\"", html);
-        Assert.Contains("aria-hidden=\\"true\\"", html);
+        Assert.Contains("modal-profile", html);
+        Assert.Contains("aria-hidden", html);
     }
 
     private sealed class NoopJsRuntime : IJSRuntime

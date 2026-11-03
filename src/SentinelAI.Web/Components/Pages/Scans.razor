@@ -465,8 +465,13 @@
         await LoadPageAsync();
     }
 
-    private Task RefreshAsync() => LoadPageAsync();
-    private Task RetryAsync() => LoadPageAsync();
+    private async Task RefreshAsync()
+    {
+        await LoadSummaryAsync();
+        await LoadPageAsync();
+    }
+
+    private Task RetryAsync() => RefreshAsync();
 
     private async Task GoToPageAsync(int newPage)
     {
@@ -534,7 +539,7 @@
             createdJobId = scan.Id;
             wizardStep = 3;
 
-            await LoadPageAsync();
+            await RefreshAsync();
         }
         catch (SentinelApiException ex)
         {
@@ -569,7 +574,7 @@
             {
                 isDrawerOpen = false;
             }
-            await LoadPageAsync();
+            await RefreshAsync();
         }
         catch (SentinelApiException ex)
         {

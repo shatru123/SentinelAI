@@ -18,8 +18,8 @@
 </PageHeader>
 
 <div class="metrics-grid" style="margin-bottom: var(--space-6);">
-    <MetricCard Title="Total Observed Assets"
-                Value="@totalCount.ToString("N0")"
+    <MetricCard Title="Assets In Tenant"
+                Value="@tenantAssetCount.ToString("N0")"
                 Icon="⌁"
                 Subtitle="Unique IP/CIDR/Host targets" />
     <MetricCard Title="Reachability Confirmed"
@@ -42,7 +42,7 @@
     <div class="soc-panel-header">
         <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
             <h2 class="soc-panel-title">Monitored Assets</h2>
-            <span class="soc-badge soc-badge-neutral">@totalCount persisted</span>
+            <span class="soc-badge soc-badge-neutral">@totalCount matching filters</span>
         </div>
         <div style="display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center;">
             <input type="search"
@@ -164,7 +164,7 @@
         </div>
 
         <h3 style="font-size: 0.9375rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: var(--space-3);">
-            Discovered Listening Services (@selectedServices.Count)
+            Recorded Service Metadata (@selectedServices.Count)
         </h3>
 
         @if (loadingServices)
@@ -219,6 +219,7 @@
     private List<AssetResponse> assets = [];
     private int page = 1;
     private int totalCount;
+    private int tenantAssetCount;
     private int confirmedOnlineCount;
     private int observedServicesCount;
     private bool loading = true;
@@ -245,6 +246,7 @@
         try
         {
             var summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
+            tenantAssetCount = summary.AssetsObserved;
             confirmedOnlineCount = summary.ReachabilityConfirmedAssets;
             observedServicesCount = summary.ObservedServices;
         }
@@ -304,8 +306,13 @@
         await LoadPageAsync();
     }
 
-    private Task RefreshAsync() => LoadPageAsync();
-    private Task RetryAsync() => LoadPageAsync();
+    private async Task RefreshAsync()
+    {
+        await LoadSummaryAsync();
+        await LoadPageAsync();
+    }
+
+    private Task RetryAsync() => RefreshAsync();
 
     private async Task GoToPageAsync(int newPage)
     {

@@ -188,6 +188,12 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.NotNull(assessment);
         Assert.NotEqual(Guid.Empty, assessment!.ScopeId);
 
+        var filteredAssessments = await operatorClient.GetFromJsonAsync<PagedResponse<WebAssessmentResponse>>(
+            $"/api/v1/web-assessments?search=myapp.internal&status={assessment.Status}");
+        Assert.NotNull(filteredAssessments);
+        Assert.Contains(filteredAssessments.Items, item => item.Id == assessment.Id);
+        Assert.Equal(1, filteredAssessments.TotalCount);
+
         using var otherTenant = CreateAuthenticatedClient(Guid.NewGuid(), Guid.NewGuid(), UserRole.Viewer);
         Assert.Equal(HttpStatusCode.NotFound, (await otherTenant.GetAsync($"/api/v1/web-assessments/{assessment.Id}")).StatusCode);
     }

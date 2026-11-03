@@ -10,11 +10,11 @@
         }
     </div>
     <div class="pagination-controls">
-        <button class="secondary-button btn-sm" disabled="@(!CanPrevious)" @onclick="GoPrevious">
+        <button type="button" class="secondary-button btn-sm" disabled="@(!CanPrevious)" @onclick="GoPrevious">
             ← Previous
         </button>
         <span class="page-number-pill">@CurrentPage / @TotalPages</span>
-        <button class="secondary-button btn-sm" disabled="@(!CanNext)" @onclick="GoNext">
+        <button type="button" class="secondary-button btn-sm" disabled="@(!CanNext)" @onclick="GoNext">
             Next →
         </button>
     </div>
@@ -22,8 +22,9 @@
 
 @code {
     [Parameter] public int CurrentPage { get; set; } = 1;
-    [Parameter] public int TotalCount { get; set; } = 0;
+    [Parameter] public int TotalCount { get; set; }
     [Parameter] public int PageSize { get; set; } = 25;
+    [Parameter] public EventCallback<int> OnPageChange { get; set; }
     [Parameter] public EventCallback<int> OnPageChanged { get; set; }
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling((double)TotalCount / Math.Max(1, PageSize)));
@@ -32,11 +33,16 @@
 
     private async Task GoPrevious()
     {
-        if (CanPrevious) await OnPageChanged.InvokeAsync(CurrentPage - 1);
+        if (CanPrevious) await NotifyPageChangedAsync(CurrentPage - 1);
     }
 
     private async Task GoNext()
     {
-        if (CanNext) await OnPageChanged.InvokeAsync(CurrentPage + 1);
+        if (CanNext) await NotifyPageChangedAsync(CurrentPage + 1);
     }
+
+    private Task NotifyPageChangedAsync(int page)
+        => OnPageChange.HasDelegate
+            ? OnPageChange.InvokeAsync(page)
+            : OnPageChanged.InvokeAsync(page);
 }

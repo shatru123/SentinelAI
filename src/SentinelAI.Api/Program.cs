@@ -191,13 +191,37 @@ api.MapGet("/web-assessments/{id:guid}", async (HttpContext context, Guid id, IW
     return result is null ? Results.NotFound() : Results.Ok(result);
 }).RequireAuthorization("Reader");
 
-api.MapGet("/web-assessments", async (HttpContext context, IAppDbContext db, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default) =>
+api.MapGet("/web-assessments", async (HttpContext context, IAppDbContext db, int page = 1, int pageSize = 25, string? status = null, string? search = null, CancellationToken cancellationToken = default) =>
 {
     (page, pageSize) = NormalizePage(page, pageSize);
     var tenantId = ToPrincipal(context).TenantId;
-    var query = db.WebAssessments.AsNoTracking().Where(x => x.TenantId == tenantId).OrderByDescending(x => x.CreatedAt);
+    var query = db.WebAssessments.AsNoTracking().Where(x => x.TenantId == tenantId);
+
+    if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<WebAssessmentStatus>(status, true, out var parsedStatus))
+    {
+        query = query.Where(x => x.Status == parsedStatus);
+    }
+
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim();
+        query = query.Where(x => x.TargetUrl.Contains(term) || x.Profile.Contains(term));
+    }
+
     var total = await query.CountAsync(cancellationToken);
-    var items = await query.Skip((page - 1) * pageSize).Take(pageSize).Join(db.AgentJobs.AsNoTracking().Where(x => x.TenantId == tenantId), x => x.AgentJobId, x => x.Id, (assessment, job) => new WebAssessmentResponse(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, job.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey)).ToListAsync(cancellationToken);
+    var items = await query.OrderByDescending(x => x.CreatedAt)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .Join(db.AgentJobs.AsNoTracking().Where(x => x.TenantId == tenantId),
+            assessment => assessment.AgentJobId,
+            job => job.Id,
+            (assessment, job) => new WebAssessmentResponse(
+                assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl,
+                assessment.Profile, assessment.HostingMode, assessment.Status, job.Status,
+                assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt,
+                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey))
+        .ToListAsync(cancellationToken);
+
     return Results.Ok(new PagedResponse<WebAssessmentResponse>(items, page, pageSize, total));
 }).RequireAuthorization("Reader");
 
@@ -434,9 +458,9 @@ api.MapGet("/ai/providers", (IConfiguration configuration) =>
     return Results.Ok(new
     {
         selectedProvider,
-        openAiCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["OPENAI_API_KEY"]),
-        anthropicCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["ANTHROPIC_API_KEY"]),
-        ollamaEndpointConfigured = !string.IsNullOrWhiteSpace(configuration["OLLAMA_BASE_URL"]),
+        openAiCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["OPENAI_API_KEY"] ?? configuration["AI:OpenAI:ApiKey"]),
+        anthropicCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["ANTHROPIC_API_KEY"] ?? configuration["AI:Anthropic:ApiKey"]),
+        ollamaEndpointConfigured = !string.IsNullOrWhiteSpace(configuration["OLLAMA_BASE_URL"] ?? configuration["AI:Ollama:Endpoint"]),
         connectivityVerified = false,
         inferenceImplemented = false,
         executionMode = "advisory-only"
@@ -453,6 +477,7 @@ api.MapGet("/monitoring/health", async (
     AppDbContext db,
     IScanJobQueue queue,
     IServiceProvider services,
+    IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
     var databaseConnected = false;
@@ -482,6 +507,8 @@ api.MapGet("/monitoring/health", async (
     var engineRegistered = services.GetService<IWebAssessmentEngine>() is not null
         && services.GetService<IScreenshotCaptureService>() is not null;
     var engineStatus = engineRegistered ? "registered" : "not-registered";
+    var inProcessWorkerRegistered = queue is InMemoryScanJobQueue
+        && configuration.GetValue<bool>("Worker:RunInProcess");
     var messagingReady = messagingStatus is "connected" or "configured-in-memory";
     var overallStatus = databaseConnected && messagingReady && engineRegistered ? "healthy" : "degraded";
 
@@ -491,6 +518,8 @@ api.MapGet("/monitoring/health", async (
         databaseStatus = databaseConnected ? "connected" : "unavailable",
         messagingStatus,
         assessmentEngineStatus = engineStatus,
+        workerExecutionMode = inProcessWorkerRegistered ? "in-process" : "external",
+        configuredWorkerIdentity = configuration["Worker:Identity"] ?? "compose-worker",
         activeProbing = false,
         checkedAt = DateTimeOffset.UtcNow
     });

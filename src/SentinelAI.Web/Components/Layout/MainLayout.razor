@@ -1,6 +1,7 @@
 @inherits LayoutComponentBase
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
+@inject SentinelApiClient ApiClient
 
 <div class="page">
     <aside class="sidebar">
@@ -18,8 +19,8 @@
             </div>
 
             <div class="top-row-right">
-                <a href="setup" class="ghost-button btn-sm" title="System Setup &amp; Health Checklist">
-                    <span class="pulsing-dot" style="color: var(--green);"></span> System Health
+                <a href="/setup" class="ghost-button btn-sm" title="Open the dependency and worker readiness checks">
+                    <span class="status-pill @GetHealthPillClass()">@systemHealthStatus</span> System Health
                 </a>
 
                 @if (!string.IsNullOrWhiteSpace(tenantId))
@@ -47,6 +48,11 @@
         <article class="content">
             @Body
         </article>
+
+        <footer class="app-footer">
+            <span class="app-footer-copy">SentinelAI Platform · Defensive security operations</span>
+            <CreatorProfile />
+        </footer>
     </main>
 </div>
 
@@ -60,6 +66,7 @@
     private string userName = "Operator";
     private string userRole = "Viewer";
     private string tenantId = string.Empty;
+    private string systemHealthStatus = "Checking";
 
     protected override async Task OnInitializedAsync()
     {
@@ -72,8 +79,27 @@
             tenantId = user.FindFirst("tenant_id")?.Value ?? string.Empty;
         }
 
+        try
+        {
+            var health = await ApiClient.GetJsonAsync<SystemHealthRecord>("/api/v1/monitoring/health");
+            systemHealthStatus = health.Status;
+        }
+        catch (SentinelApiException)
+        {
+            systemHealthStatus = "Unavailable";
+        }
+
         Navigation.LocationChanged += (s, e) => StateHasChanged();
     }
+
+    private string GetHealthPillClass() => systemHealthStatus.ToLowerInvariant() switch
+    {
+        "healthy" => "pill-healthy",
+        "degraded" or "checking" => "pill-warning",
+        _ => "pill-danger"
+    };
+
+    private sealed record SystemHealthRecord(string Status);
 
     private string CurrentPageName
     {

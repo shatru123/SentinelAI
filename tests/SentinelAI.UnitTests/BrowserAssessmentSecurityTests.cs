@@ -52,6 +52,29 @@ public sealed class BrowserAssessmentSecurityTests
         Assert.DoesNotContain("/blocked", server.RequestedPaths);
     }
 
+    [BrowserFact]
+    public async Task Browser_session_does_not_execute_mutating_script_requests()
+    {
+        var browser = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge";
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SENTINELAI_PLAYWRIGHT_EXECUTABLE")) && File.Exists(browser)) Environment.SetEnvironmentVariable("SENTINELAI_PLAYWRIGHT_EXECUTABLE", browser);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var server = new ControlledHttpServer(attemptMutatingRequests: true);
+        var tenantId = Guid.NewGuid();
+        var scope = new TargetScope(tenantId, "readonly-browser-test", Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5));
+        var target = new Uri($"http://allowed.test:{server.Port}/");
+        scope.Configure([new TargetDefinition(TargetKind.Web, target.ToString())], [], ["web-assessment-passive"], 100, 120, "controlled-test", false);
+        var validated = new ValidatedExecutionTarget(target.Host, [IPAddress.Loopback], DateTimeOffset.UtcNow, scope.Id, tenantId, scope.ExpiresAt, "web-assessment-passive");
+        var context = new BrowserAssessmentContext(tenantId, Guid.NewGuid(), scope, target, "test-worker", ["web-assessment"], [], validated,
+            _ => Task.FromResult(true), _ => Task.CompletedTask, new ControlledValidator(target, validated), "web-assessment-passive");
+
+        _ = await new PlaywrightScreenshotCaptureService().CaptureAsync(context, cancellation.Token);
+
+        Assert.DoesNotContain("POST", server.RequestedMethods);
+        Assert.DoesNotContain("PUT", server.RequestedMethods);
+        Assert.DoesNotContain("DELETE", server.RequestedMethods);
+        Assert.DoesNotContain("/mutate", server.RequestedPaths);
+    }
+
     private sealed class BrowserFactAttribute : FactAttribute
     {
         public BrowserFactAttribute()
@@ -83,9 +106,11 @@ public sealed class BrowserAssessmentSecurityTests
         private readonly List<string> paths = [];
         private readonly Task loop;
         private readonly bool redirectOutOfScope;
-        public ControlledHttpServer(bool redirectOutOfScope = false) { this.redirectOutOfScope = redirectOutOfScope; listener.Start(); Port = ((IPEndPoint)listener.LocalEndpoint).Port; loop = LoopAsync(); }
+        private readonly bool attemptMutatingRequests;
+        public ControlledHttpServer(bool redirectOutOfScope = false, bool attemptMutatingRequests = false) { this.redirectOutOfScope = redirectOutOfScope; this.attemptMutatingRequests = attemptMutatingRequests; listener.Start(); Port = ((IPEndPoint)listener.LocalEndpoint).Port; loop = LoopAsync(); }
         public int Port { get; }
-        public IReadOnlyCollection<string> RequestedPaths { get { lock (paths) return paths.ToArray(); } }
+        public IReadOnlyCollection<string> RequestedPaths { get { lock (paths) return paths.Select(path => path.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1) ?? path).ToArray(); } }
+        public IReadOnlyCollection<string> RequestedMethods { get { lock (paths) return paths.Select(path => path.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty).ToArray(); } }
         private async Task LoopAsync()
         {
             try
@@ -98,10 +123,14 @@ public sealed class BrowserAssessmentSecurityTests
                     var read = await stream.ReadAsync(buffer, stop.Token);
                     var request = Encoding.ASCII.GetString(buffer, 0, read);
                     var path = request.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1) ?? "/";
-                    lock (paths) paths.Add(path);
+                    var method = request.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(0) ?? string.Empty;
+                    lock (paths) paths.Add($"{method} {path}");
+                    var html = attemptMutatingRequests
+                        ? "<html><body><input type='password' value='secret'><span data-sensitive>token-value</span><script>fetch('/mutate', {method:'POST', body:'state-change'}); fetch('/mutate', {method:'PUT'}); fetch('/mutate', {method:'DELETE'});</script></body></html>"
+                        : "<html><body><input type='password' value='secret'><span data-sensitive>token-value</span><img src='http://blocked.test/blocked.png'></body></html>";
                     var response = redirectOutOfScope && path == "/"
                         ? "HTTP/1.1 302 Found\r\nLocation: http://blocked.test/blocked\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        : $"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {Encoding.UTF8.GetByteCount(path == "/" ? "<html><body><input type='password' value='secret'><span data-sensitive>token-value</span><img src='http://blocked.test/blocked.png'></body></html>" : "blocked")}\r\nConnection: close\r\n\r\n{(path == "/" ? "<html><body><input type='password' value='secret'><span data-sensitive>token-value</span><img src='http://blocked.test/blocked.png'></body></html>" : "blocked")}";
+                        : $"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {Encoding.UTF8.GetByteCount(path == "/" ? html : "blocked")}\r\nConnection: close\r\n\r\n{(path == "/" ? html : "blocked")}";
                     await stream.WriteAsync(Encoding.UTF8.GetBytes(response), stop.Token);
                 }
             }

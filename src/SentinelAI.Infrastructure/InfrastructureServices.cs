@@ -232,7 +232,8 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
                 if (webAssessmentEngine is null) throw new InvalidOperationException("Web assessment execution is not configured.");
                 var assessment = await db.WebAssessments.SingleAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, timeout.Token);
                 var result = await webAssessmentEngine.ExecuteAsync(assessment, job, scopeDefinition, effectiveWorkerIdentity, workerCapabilities, workerPrivateNetworkRanges,
-                    token => HasActiveLeaseAsync(job.Id, effectiveWorkerIdentity, token), timeout.Token);
+                    token => HasActiveLeaseAsync(job.Id, effectiveWorkerIdentity, token), timeout.Token,
+                    token => GetLiveWebWorkerAuthorizationAsync(job.TenantId, effectiveWorkerIdentity, scopeDefinition, token));
                 await db.Entry(job).ReloadAsync(timeout.Token);
                 await db.Entry(execution).ReloadAsync(timeout.Token);
                 await db.Entry(assessment).ReloadAsync(timeout.Token);
@@ -379,6 +380,18 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
 
     private async Task<bool> HasActiveLeaseAsync(Guid jobId, string workerIdentity, CancellationToken cancellationToken)
         => await db.AgentJobs.AsNoTracking().AnyAsync(x => x.Id == jobId && x.Status == ScanJobStatus.Running && x.LeaseOwnerWorkerId == workerIdentity && x.LeaseExpiresAt > DateTimeOffset.UtcNow, cancellationToken);
+
+    private async Task<WorkerExecutionContext?> GetLiveWebWorkerAuthorizationAsync(Guid tenantId, string workerIdentity, TargetScope scope, CancellationToken cancellationToken)
+    {
+        var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Identity == workerIdentity, cancellationToken);
+        if (worker is null || !worker.IsHealthyForAdmission(DateTimeOffset.UtcNow, WorkerStaleAfter) ||
+            !worker.Capabilities.Contains(WebAssessmentCapabilities.WebAssessment, StringComparer.OrdinalIgnoreCase)) return null;
+        if (scope.WebHostingMode == WebHostingMode.Private &&
+            (!string.Equals(scope.PrivateWorkerIdentity, workerIdentity, StringComparison.Ordinal) ||
+             !worker.Capabilities.Contains(WebAssessmentCapabilities.PrivateWebAssessment, StringComparer.OrdinalIgnoreCase) ||
+             !worker.PrivateAssessmentApproved || worker.ApprovedPrivateNetworkRanges.Count == 0)) return null;
+        return new WorkerExecutionContext(worker.Identity, worker.Capabilities.ToArray(), worker.ApprovedPrivateNetworkRanges.ToArray());
+    }
 
     public async Task<bool> RequeueOrFailAsync(Guid jobId, string expectedWorkerIdentity, int attempt, int maxAttempts, string reason, CancellationToken cancellationToken)
     {

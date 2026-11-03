@@ -53,7 +53,7 @@ Integration tests require RabbitMQ. CI provisions it as a service; locally use t
 
 ## Phase 3.1.2 integrity hardening
 
-CI installs the exact central `Microsoft.Playwright` package version from the UnitTests output, verifies the Playwright assembly/script pair and a real Chromium executable, then runs genuine screenshot coverage. The assessment browser blocks service workers and WebSockets, uses a loopback-only policy proxy with Host-header and exact scheme/host/port/path checks, pins DNS results, and closes outstanding proxy connections on cancellation or lease loss.
+CI installs the exact central `Microsoft.Playwright` package version from the UnitTests output, verifies the Playwright assembly/script pair and a real Chromium executable, then runs genuine screenshot coverage. The assessment browser blocks service workers, WebSockets/WSS and non-GET/HEAD requests, uses a loopback-only policy proxy with a host-only HTTPS CONNECT stage followed by exact scheme/host/port/path checks in Playwright, pins DNS results, and closes outstanding proxy connections on cancellation, authorization revocation or lease loss.
 
 Worker identities and capabilities are administrator-provisioned. Registration and heartbeat report state only; they cannot create, add or retain unapproved capabilities. Private web capability requires `web-assessment` plus administrator-approved private CIDRs. Provisioning and authorization revocation are audited in one database transaction, and revocation is re-read by execution-time authorization checks.
 

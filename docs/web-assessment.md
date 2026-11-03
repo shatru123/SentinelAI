@@ -48,3 +48,11 @@ CI installs the exact central `Microsoft.Playwright` package version from the Un
 Worker registration is not enrollment. An administrator must provision the identity and capabilities first; registration and heartbeat cannot self-grant `web-assessment`, `private-web-assessment` or private ranges. Capability updates and private authorization changes are audited atomically, and revocation takes effect on the next execution-time authorization check.
 
 Reports are published only by the worker completion transaction after the job, execution and assessment still share the active lease. Report storage may contain an orphaned temporary artifact after an interrupted run, but no database report pointer is published. Finding-specific screenshots are associated with their actual finding URL and ID; if safe capture is unavailable, the coverage matrix records `FailedToExecute` and no placeholder image is stored.
+
+## Phase 3.1.3 final browser and execution hardening
+
+The browser proxy treats HTTPS `CONNECT` as a host, effective-port and pinned-DNS tunnel authorization only. Playwright separately authorizes every HTTPS URL and path, so a tunnel to an authorized host does not authorize an out-of-scope path. The proxy preserves the original TLS SNI and Host authority and rejects non-GET/HEAD application requests. Browser JavaScript, service workers, WebSockets and WSS are disabled or blocked; forms, uploads and state-changing browser actions are unsupported.
+
+Private worker authorization is read from the control-plane database before each web operation and browser route. Capability removal, private-range changes, worker reassignment, lease loss and scope expiry stop subsequent requests and close browser resources. Endpoint persistence is retry-idempotent across lease takeover, and request budgets use a synchronized sliding one-minute window plus a separate total-attempt budget.
+
+Built-in screenshot redaction selectors are always applied. Configured selectors are additive and cover sensitive input names and explicitly marked DOM elements. The implementation and tests cover the supported passive and bounded safe-active checks only; penetration testing, credential attacks, destructive actions, unrestricted authorization testing and active network discovery remain unsupported or unverified.

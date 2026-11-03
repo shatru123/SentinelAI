@@ -53,7 +53,7 @@ This milestone preserves the passive-only execution boundary and does not add de
 
 ## Phase 3 — Vulnerability intelligence
 
-**Status: In progress — design and acceptance criteria are established.** The implementation plan is in [phase3-vulnerability-intelligence.md](phase3-vulnerability-intelligence.md).
+**Status: In progress — core feed, correlation, triage and lifecycle workflows are implemented on PR #3.** The implementation plan and limits are in [phase3-vulnerability-intelligence.md](phase3-vulnerability-intelligence.md).
 
 - CVE/CPE correlation and source attribution
 - Evidence-backed risk scoring

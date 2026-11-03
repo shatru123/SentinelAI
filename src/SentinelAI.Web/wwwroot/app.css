@@ -724,3 +724,179 @@ pre, code { font-family: 'DM Mono', monospace; }
 .soc-empty-icon {
   margin-bottom: 8px;
 }
+
+
+/* Creator credit and profile modal */
+.creator-credit {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.creator-credit-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.creator-credit-link {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font-size: 0.75rem;
+  text-align: left;
+}
+.creator-credit-link:hover {
+  border-color: rgba(73, 224, 209, 0.3);
+  background: rgba(73, 224, 209, 0.06);
+}
+.creator-credit-link > span:last-child {
+  margin-left: auto;
+  color: var(--cyan);
+}
+.creator-credit-mark {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 1px solid rgba(73, 224, 209, 0.35);
+  border-radius: 50%;
+  color: var(--cyan);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.62rem;
+}
+.creator-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 24px;
+  background: rgba(2, 8, 11, 0.82);
+  backdrop-filter: blur(12px);
+}
+.creator-modal-backdrop.is-open { display: flex; }
+body.modal-open { overflow: hidden; }
+.creator-profile-content {
+  position: relative;
+  width: min(100%, 520px);
+  max-height: min(90vh, 820px);
+  overflow-y: auto;
+  border: 1px solid rgba(73, 224, 209, 0.28);
+  border-radius: 18px;
+  background: linear-gradient(155deg, #102228 0%, #09171b 60%, #071014 100%);
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.55), 0 0 42px rgba(73, 224, 209, 0.08);
+}
+.creator-modal-close {
+  position: absolute;
+  z-index: 2;
+  top: 14px;
+  right: 14px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--text);
+  background: rgba(7, 16, 20, 0.75);
+}
+.creator-modal-close:hover { border-color: var(--cyan); color: var(--cyan); }
+.creator-profile-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 34px 32px 28px;
+  text-align: center;
+}
+.creator-photo-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.creator-photo-glow {
+  position: absolute;
+  top: 8px;
+  width: 162px;
+  height: 162px;
+  border-radius: 50%;
+  background: rgba(73, 224, 209, 0.18);
+  filter: blur(28px);
+}
+.creator-photo {
+  position: relative;
+  width: 142px;
+  height: 142px;
+  object-fit: cover;
+  border: 3px solid rgba(73, 224, 209, 0.7);
+  border-radius: 50%;
+  box-shadow: 0 0 0 7px rgba(73, 224, 209, 0.07), 0 12px 36px rgba(0, 0, 0, 0.4);
+}
+.creator-full-view {
+  position: relative;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.creator-profile-body h2 {
+  margin: 2px 0 6px;
+  color: var(--text);
+  font-size: 1.45rem;
+}
+.creator-profile-role {
+  color: var(--cyan);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+.creator-profile-description {
+  margin: 14px 0 20px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+.creator-profile-links {
+  width: 100%;
+  display: grid;
+  gap: 9px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(7, 16, 20, 0.55);
+  text-align: left;
+}
+.creator-profile-links a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+.creator-profile-links a:hover { color: var(--cyan); }
+.creator-profile-footer {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+}
+.creator-profile-footer a { font-size: 0.8rem; }
+@media (max-width: 768px) {
+  .creator-profile-body { padding: 28px 20px 22px; }
+  .creator-profile-footer { flex-direction: column; align-items: stretch; }
+  .creator-profile-footer a { text-align: center; }
+}

@@ -27,7 +27,15 @@ docker compose --env-file .env.example -f deploy/docker/docker-compose.yml confi
 
 ### Run the in-process local development profile
 
-Run the API and Web app in two separate terminals; keep the API terminal running while testing the dashboard.
+On macOS/Linux, start both applications using the repository launcher:
+
+```bash
+bash scripts/dev-local.sh
+```
+
+The script starts the API, waits for `/health`, then starts the Web app. Press Ctrl+C to stop both processes.
+
+Alternatively, run the API and Web app in two separate terminals; keep the API terminal running while testing the dashboard.
 
 Terminal 1:
 

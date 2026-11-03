@@ -268,3 +268,18 @@ public sealed record VulnerabilityMatchTransitionResponse(
     Guid ActorId,
     string Reason,
     DateTimeOffset OccurredAt);
+
+public sealed record SyncNvdModifiedRequest(
+    DateTimeOffset ModifiedStart,
+    DateTimeOffset ModifiedEnd,
+    int PageSize = 2000,
+    int MaxRecords = 10000,
+    bool Resume = false);
+
+public sealed record SyncNvdModifiedResponse(
+    int ProcessedThisRun,
+    int TotalProcessedInWindow,
+    int NextStartIndex,
+    int TotalResults,
+    bool HasMore,
+    string WindowKey);

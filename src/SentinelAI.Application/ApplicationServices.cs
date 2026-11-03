@@ -37,6 +37,8 @@ public interface IAppDbContext : IAsyncDisposable, IDisposable
     DbSet<VulnerabilitySyncCheckpoint> VulnerabilitySyncCheckpoints { get; }
     DbSet<SoftwareComponent> SoftwareComponents { get; }
     DbSet<AssetVulnerabilityMatch> AssetVulnerabilityMatches { get; }
+    DbSet<VulnerabilityMatchTransition> VulnerabilityMatchTransitions { get; }
+    DbSet<VulnerabilityTriageAssessment> VulnerabilityTriageAssessments { get; }
     Task PersistWebAssessmentEndpointsAsync(Guid tenantId, Guid assessmentId, IReadOnlyCollection<WebAssessmentEndpoint> endpoints, CancellationToken cancellationToken = default);
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
     Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);

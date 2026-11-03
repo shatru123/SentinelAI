@@ -6,7 +6,7 @@
 
 <PageHeader Title="Asset Inventory"
             Eyebrow="Inventory / Attack Surface"
-            Description="Persisted passive observations and host services from authorized tenant scopes. Active scanning is strictly disabled on inventory assets.">
+            Description="Persisted asset declarations, passive observations and recorded service metadata. Network inventory does not probe hosts or ports.">
     <Actions>
         <button class="soc-btn soc-btn-secondary" @onclick="RefreshAsync" disabled="@loading">
             <span class="icon">↻</span> Refresh
@@ -26,11 +26,11 @@
                 Value="@confirmedOnlineCount.ToString("N0")"
                 Icon="●"
                 StatusClass="@(confirmedOnlineCount > 0 ? "healthy" : "neutral")"
-                Subtitle="Observed responding to network probes" />
-    <MetricCard Title="Discovered Services"
+                Subtitle="Recorded successful reachability evidence" />
+    <MetricCard Title="Recorded Services"
                 Value="@observedServicesCount.ToString("N0")"
                 Icon="⚡"
-                Subtitle="Distinct host listening ports & protocols" />
+                Subtitle="Service metadata persisted by authorized workflows" />
     <MetricCard Title="Inventory Engine"
                 Value="Passive Only"
                 Icon="🛡"
@@ -78,7 +78,7 @@
     else if (assets.Count == 0)
     {
         <EmptyState Title="No Assets Found"
-                    Message="@(string.IsNullOrWhiteSpace(searchTerm) ? "No assets have been recorded yet. Register an authorized scope and run a discovery job." : "No assets match your search and filter criteria.")"
+                    Message="@(string.IsNullOrWhiteSpace(searchTerm) ? "No assets have been recorded yet. Register an authorized scope and submit a passive inventory job." : "No assets match your search and filter criteria.")"
                     ActionText="Create Authorized Scope"
                     ActionUrl="/scans" />
     }
@@ -97,7 +97,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var asset in FilteredAssets)
+                    @foreach (var asset in assets)
                     {
                         <tr>
                             <td>
@@ -112,12 +112,12 @@
                                 @if (asset.IsOnline)
                                 {
                                     <span class="soc-badge soc-badge-success">
-                                        <span class="soc-pulse-dot" style="background: var(--color-success);"></span> Online
+                                        <span class="soc-pulse-dot" style="background: var(--color-success);"></span> Reachability Confirmed
                                     </span>
                                 }
                                 else
                                 {
-                                    <span class="soc-badge soc-badge-neutral">Unconfirmed</span>
+                                    <span class="soc-badge soc-badge-neutral">Not Confirmed</span>
                                 }
                             </td>
                             <td class="text-muted" style="font-size: 0.8125rem;">
@@ -130,7 +130,7 @@
                                 <button class="soc-btn soc-btn-secondary"
                                         style="padding: var(--space-1) var(--space-3); font-size: 0.75rem;"
                                         @onclick="() => InspectServicesAsync(asset)">
-                                    Inspect Services
+                                    View Recorded Services
                                 </button>
                             </td>
                         </tr>
@@ -179,8 +179,8 @@
         {
             <div class="soc-empty-state" style="padding: var(--space-6);">
                 <div class="soc-empty-icon" style="font-size: 2rem;">⚡</div>
-                <h4 style="font-size: 0.9375rem; margin-bottom: var(--space-1);">No Services Observed</h4>
-                <p class="text-muted" style="font-size: 0.8125rem;">Passive monitoring has not detected any listening ports or services on this host yet.</p>
+                <h4 style="font-size: 0.9375rem; margin-bottom: var(--space-1);">No Services Recorded</h4>
+                <p class="text-muted" style="font-size: 0.8125rem;">No service metadata has been recorded for this asset. Passive network inventory does not probe ports or discover listening services.</p>
             </div>
         }
         else
@@ -263,16 +263,13 @@
             var parameters = new Dictionary<string, string?>();
             if (!string.IsNullOrWhiteSpace(searchTerm)) parameters["search"] = searchTerm;
             if (selectedKind != "All") parameters["kind"] = selectedKind;
+            if (selectedStatus != "All") parameters["status"] = selectedStatus;
 
             var result = await ApiClient.GetPageAsync<AssetResponse>("/api/v1/assets", page, PageSize, parameters);
             assets = result.Items?.ToList() ?? [];
             totalCount = Math.Max(0, result.TotalCount);
             page = Math.Max(1, result.Page);
 
-            if (confirmedOnlineCount == 0 && assets.Count > 0)
-            {
-                confirmedOnlineCount = assets.Count(a => a.IsOnline);
-            }
         }
         catch (SentinelApiException exception)
         {
@@ -283,17 +280,6 @@
         finally
         {
             loading = false;
-        }
-    }
-
-    private IEnumerable<AssetResponse> FilteredAssets
-    {
-        get
-        {
-            var items = assets.AsEnumerable();
-            if (selectedStatus == "Online") items = items.Where(a => a.IsOnline);
-            else if (selectedStatus == "Unconfirmed") items = items.Where(a => !a.IsOnline);
-            return items;
         }
     }
 
@@ -311,9 +297,11 @@
         await LoadPageAsync();
     }
 
-    private void OnStatusChanged(ChangeEventArgs e)
+    private async Task OnStatusChanged(ChangeEventArgs e)
     {
         selectedStatus = e.Value?.ToString() ?? "All";
+        page = 1;
+        await LoadPageAsync();
     }
 
     private Task RefreshAsync() => LoadPageAsync();

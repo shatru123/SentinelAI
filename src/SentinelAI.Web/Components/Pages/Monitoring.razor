@@ -6,7 +6,7 @@
 
 <PageHeader Title="System Monitoring & Audit Log"
             Eyebrow="Operations / Audit & Observability"
-            Description="Immutable tenant audit trail, real-time worker execution metrics, and integration with OpenTelemetry collectors. Every authorization and job lifecycle change is logged.">
+            Description="Tenant-scoped audit events and dependency health reported by live API checks. Observability consoles are separate from the application health checks.">
     <Actions>
         <button class="soc-btn soc-btn-secondary" @onclick="RefreshAsync" disabled="@loading">
             <span class="icon">↻</span> Refresh
@@ -15,11 +15,11 @@
 </PageHeader>
 
 <div class="metrics-grid" style="margin-bottom: var(--space-6);">
-    <MetricCard Title="Platform Status"
-                Value="Healthy"
+    <MetricCard Title="Platform Dependencies"
+                Value="@(systemHealth?.Status ?? "Unknown")"
                 Icon="●"
-                StatusClass="healthy"
-                Subtitle="Core API and services online" />
+                StatusClass="@(systemHealth?.Status == "healthy" ? "healthy" : "warning")"
+                Subtitle="Database, messaging and component registration" />
     <MetricCard Title="Logged Audit Events"
                 Value="@events.Count.ToString("N0")"
                 Icon="📝"
@@ -29,12 +29,42 @@
                 Icon="◈"
                 StatusClass="@(healthyWorkersCount > 0 ? "healthy" : "warning")"
                 Subtitle="Active nodes acknowledging jobs" />
-    <MetricCard Title="Audit Integrity"
-                Value="Append-Only"
-                Icon="🔒"
-                StatusClass="healthy"
-                Subtitle="Tamper-evident domain log" />
+    <MetricCard Title="Database Status"
+                Value="@(systemHealth?.DatabaseStatus ?? "Unknown")"
+                Icon="▤"
+                StatusClass="@(systemHealth?.DatabaseStatus == "connected" ? "healthy" : "warning")"
+                Subtitle="Live database connectivity check" />
 </div>
+
+<section class="soc-panel" style="margin-bottom: var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <h2 class="soc-panel-title">Dependency Health</h2>
+            <p class="soc-panel-subtitle">Current component state returned by the API. Registration is not the same as a successful browser execution.</p>
+        </div>
+        <span class="soc-badge @(systemHealth?.MessagingStatus == "connected" || systemHealth?.MessagingStatus == "configured-in-memory" ? "soc-badge-success" : "soc-badge-warning")">
+            @(systemHealth?.MessagingStatus ?? "Not checked")
+        </span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-4);">
+        <div>
+            <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Messaging</div>
+            <strong>@(systemHealth?.MessagingStatus ?? "Unknown")</strong>
+        </div>
+        <div>
+            <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Web Assessment Components</div>
+            <strong>@(systemHealth?.AssessmentEngineStatus ?? "Unknown")</strong>
+        </div>
+        <div>
+            <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Network Probing</div>
+            <strong>@(systemHealth?.ActiveProbing == true ? "Enabled" : systemHealth is null ? "Unknown" : "Disabled")</strong>
+        </div>
+        <div>
+            <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Last Checked</div>
+            <strong>@(systemHealth?.CheckedAt.ToLocalTime().ToString("g") ?? "Not checked")</strong>
+        </div>
+    </div>
+</section>
 
 <section class="soc-panel" style="margin-bottom: var(--space-6);">
     <div class="soc-panel-header">
@@ -174,6 +204,7 @@
 @code {
     private List<MonitoringEventResponse> events = [];
     private int healthyWorkersCount;
+    private SystemHealthRecord? systemHealth;
     private bool loading = true;
     private string? error;
 
@@ -193,11 +224,13 @@
         {
             var evTask = ApiClient.GetJsonAsync<List<MonitoringEventResponse>>("/api/v1/monitoring/events");
             var summaryTask = ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
+            var healthTask = ApiClient.GetJsonAsync<SystemHealthRecord>("/api/v1/monitoring/health");
 
-            await Task.WhenAll(evTask, summaryTask);
+            await Task.WhenAll(evTask, summaryTask, healthTask);
 
             events = await evTask ?? [];
             var summary = await summaryTask;
+            systemHealth = await healthTask;
             healthyWorkersCount = summary?.HealthyWorkers ?? 0;
         }
         catch (SentinelApiException ex)
@@ -252,4 +285,11 @@
             return "soc-badge-warning";
         return "soc-badge-neutral";
     }
+    private sealed record SystemHealthRecord(
+        string Status,
+        string DatabaseStatus,
+        string MessagingStatus,
+        string AssessmentEngineStatus,
+        bool ActiveProbing,
+        DateTimeOffset CheckedAt);
 }

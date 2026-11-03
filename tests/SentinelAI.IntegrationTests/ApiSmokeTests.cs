@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
@@ -210,6 +211,13 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal("10.10.0.5", assets.Items.Single().Address);
         Assert.Single(findings.Items);
         Assert.Equal("Seeded finding", findings.Items.Single().Title);
+        var onlineOnly = await client.GetFromJsonAsync<PagedResponse<AssetResponse>>("/api/v1/assets?status=Online");
+        var unconfirmedForTenant = await client.GetFromJsonAsync<PagedResponse<AssetResponse>>("/api/v1/assets?status=Unconfirmed");
+        Assert.NotNull(onlineOnly);
+        Assert.NotNull(unconfirmedForTenant);
+        Assert.Equal(1, onlineOnly.TotalCount);
+        Assert.Equal(0, unconfirmedForTenant.TotalCount);
+
         var services = await client.GetFromJsonAsync<List<AssetServiceResponse>>($"/api/v1/assets/{assets.Items.Single().Id}/services");
         Assert.NotNull(services);
         var service = Assert.Single(services);
@@ -225,6 +233,9 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.NotNull(otherFindings);
         Assert.Single(otherAssets.Items);
         Assert.Equal("10.20.0.5", otherAssets.Items.Single().Address);
+        var otherUnconfirmed = await otherClient.GetFromJsonAsync<PagedResponse<AssetResponse>>("/api/v1/assets?status=Unconfirmed");
+        Assert.NotNull(otherUnconfirmed);
+        Assert.Single(otherUnconfirmed.Items);
         Assert.Empty(otherFindings.Items);
         var foreignServices = await otherClient.GetAsync($"/api/v1/assets/{assets.Items.Single().Id}/services");
         Assert.Equal(HttpStatusCode.NotFound, foreignServices.StatusCode);
@@ -302,6 +313,9 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         var scanResp = await client.PostAsJsonAsync("/api/v1/scans", new CreateScanRequest(createdScope!.Id, "mock-passive"));
         Assert.Equal(HttpStatusCode.Accepted, scanResp.StatusCode);
 
+        var createdScan = await scanResp.Content.ReadFromJsonAsync<ScanResponse>();
+        Assert.NotNull(createdScan);
+
         var listResp = await client.GetAsync("/api/v1/scans?page=1&pageSize=25");
         Assert.Equal(HttpStatusCode.OK, listResp.StatusCode);
 
@@ -309,6 +323,30 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.NotNull(pagedScans);
         Assert.True(pagedScans.TotalCount >= 1);
         Assert.Contains(pagedScans.Items, s => s.ScopeName == "scans-test-scope");
+
+        var byScopeName = await client.GetFromJsonAsync<PagedResponse<ScanJobSummaryResponse>>("/api/v1/scans?search=scans-test-scope");
+        Assert.NotNull(byScopeName);
+        Assert.Contains(byScopeName.Items, s => s.ScopeName == "scans-test-scope");
+
+        var byJobId = await client.GetFromJsonAsync<PagedResponse<ScanJobSummaryResponse>>($"/api/v1/scans?search={createdScan!.Id}");
+        Assert.NotNull(byJobId);
+        Assert.Contains(byJobId.Items, s => s.Id == createdScan.Id);
+    }
+
+    [Fact]
+    public async Task Health_and_provider_readiness_report_verified_facts_not_hardcoded_success()
+    {
+        using var client = CreateAuthenticatedClient(Guid.NewGuid(), Guid.NewGuid(), UserRole.Viewer);
+
+        var health = await client.GetFromJsonAsync<JsonElement>("/api/v1/monitoring/health");
+        Assert.Equal("connected", health.GetProperty("databaseStatus").GetString());
+        Assert.Equal("configured-in-memory", health.GetProperty("messagingStatus").GetString());
+        Assert.Equal("registered", health.GetProperty("assessmentEngineStatus").GetString());
+
+        var providers = await client.GetFromJsonAsync<JsonElement>("/api/v1/ai/providers");
+        Assert.False(providers.GetProperty("connectivityVerified").GetBoolean());
+        Assert.False(providers.GetProperty("inferenceImplemented").GetBoolean());
+        Assert.Equal("advisory-only", providers.GetProperty("executionMode").GetString());
     }
 
     [Fact]

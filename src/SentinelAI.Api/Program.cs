@@ -97,6 +97,8 @@ api.MapGet("/dashboard/summary", async (HttpContext context, IAppDbContext db, C
 
     var activeAssessments = await db.WebAssessments.AsNoTracking().Where(x => x.TenantId == tenantId && (x.Status == WebAssessmentStatus.Running || x.Status == WebAssessmentStatus.Queued)).CountAsync(cancellationToken);
     var runningJobs = await db.AgentJobs.AsNoTracking().Where(x => x.TenantId == tenantId && x.Status == ScanJobStatus.Running).CountAsync(cancellationToken);
+    var queuedJobs = await db.AgentJobs.AsNoTracking().Where(x => x.TenantId == tenantId && x.Status == ScanJobStatus.Queued).CountAsync(cancellationToken);
+    var completedJobs = await db.AgentJobs.AsNoTracking().Where(x => x.TenantId == tenantId && x.Status == ScanJobStatus.Completed).CountAsync(cancellationToken);
     var totalJobs = await db.AgentJobs.AsNoTracking().Where(x => x.TenantId == tenantId).CountAsync(cancellationToken);
 
     var healthyWorkers = await db.Workers.AsNoTracking().Where(x => x.TenantId == tenantId && x.Status == WorkerStatus.Healthy).CountAsync(cancellationToken);
@@ -139,7 +141,7 @@ api.MapGet("/dashboard/summary", async (HttpContext context, IAppDbContext db, C
         assetsObserved, reachabilityConfirmed, observedServices,
         totalFindings, criticalFindings, highFindings, mediumFindings, lowFindings, infoFindings,
         activeAssessments, runningJobs, totalJobs, healthyWorkers, totalWorkers,
-        recentAssessments, recentScans, recentEvents));
+        recentAssessments, recentScans, recentEvents, queuedJobs, completedJobs));
 }).RequireAuthorization("Reader");
 api.MapGet("/scopes", async (HttpContext context, IScopeService service, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default) =>
 {
@@ -281,8 +283,22 @@ api.MapGet("/scans", async (HttpContext context, IAppDbContext db, int page = 1,
 
     if (!string.IsNullOrWhiteSpace(search))
     {
-        var term = search.Trim().ToLower();
-        query = query.Where(x => x.OperationProfile.ToLower().Contains(term) || (x.AssignedWorkerIdentity != null && x.AssignedWorkerIdentity.ToLower().Contains(term)));
+        var term = search.Trim();
+        if (Guid.TryParse(term, out var jobOrScopeId))
+        {
+            query = query.Where(x => x.Id == jobOrScopeId || x.ScopeId == jobOrScopeId);
+        }
+        else
+        {
+            var normalizedTerm = term.ToLowerInvariant();
+            var matchingScopeIds = db.TargetScopes.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Name.ToLower().Contains(normalizedTerm))
+                .Select(x => x.Id);
+            query = query.Where(x =>
+                matchingScopeIds.Contains(x.ScopeId)
+                || x.OperationProfile.ToLower().Contains(normalizedTerm)
+                || (x.AssignedWorkerIdentity != null && x.AssignedWorkerIdentity.ToLower().Contains(normalizedTerm)));
+        }
     }
 
     var total = await query.CountAsync(cancellationToken);
@@ -309,7 +325,7 @@ api.MapGet("/scans/{id:guid}", async (HttpContext context, Guid id, IScanService
 api.MapPost("/scans/{id:guid}/cancel", async (HttpContext context, Guid id, IScanService service, CancellationToken cancellationToken) =>
     await service.CancelAsync(ToPrincipal(context), id, cancellationToken) ? Results.NoContent() : Results.NotFound()).RequireAuthorization("Operator");
 
-api.MapGet("/assets", async (HttpContext context, IAppDbContext db, int page = 1, int pageSize = 25, string? search = null, string? kind = null, CancellationToken cancellationToken = default) =>
+api.MapGet("/assets", async (HttpContext context, IAppDbContext db, int page = 1, int pageSize = 25, string? search = null, string? kind = null, string? status = null, CancellationToken cancellationToken = default) =>
 {
     (page, pageSize) = NormalizePage(page, pageSize);
     var tenantId = ToPrincipal(context).TenantId;
@@ -325,6 +341,14 @@ api.MapGet("/assets", async (HttpContext context, IAppDbContext db, int page = 1
         {
             query = query.Where(x => x.Kind == targetKind);
         }
+    }
+    if (string.Equals(status, "Online", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Where(x => x.LastSuccessfulReachabilityAt != null);
+    }
+    else if (string.Equals(status, "Unconfirmed", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Where(x => x.LastSuccessfulReachabilityAt == null);
     }
     query = query.OrderByDescending(x => x.LastObservedAt);
     var total = await query.CountAsync(cancellationToken);
@@ -404,9 +428,73 @@ api.MapGet("/assets/{id:guid}/services", async (HttpContext context, Guid id, IA
 }).RequireAuthorization("Reader");
 
 api.MapGet("/agents", () => Results.Ok(Array.Empty<AgentResponse>())).RequireAuthorization("Reader");
-api.MapGet("/ai/providers", (IConfiguration configuration) => Results.Ok(new { configured = configuration["AI:DefaultProvider"] ?? "none", providers = new[] { "openai", "anthropic", "ollama" } })).RequireAuthorization("Reader");
-api.MapGet("/ai/health", (IConfiguration configuration) => Results.Ok(new { status = "advisory-only", defaultProvider = configuration["AI:DefaultProvider"] ?? "none" })).RequireAuthorization("Reader");
-api.MapGet("/monitoring/health", () => Results.Ok(new { status = "healthy", activeProbing = false })).RequireAuthorization("Reader");
+api.MapGet("/ai/providers", (IConfiguration configuration) =>
+{
+    var selectedProvider = (configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none").Trim().ToLowerInvariant();
+    return Results.Ok(new
+    {
+        selectedProvider,
+        openAiCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["OPENAI_API_KEY"]),
+        anthropicCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["ANTHROPIC_API_KEY"]),
+        ollamaEndpointConfigured = !string.IsNullOrWhiteSpace(configuration["OLLAMA_BASE_URL"]),
+        connectivityVerified = false,
+        inferenceImplemented = false,
+        executionMode = "advisory-only"
+    });
+}).RequireAuthorization("Reader");
+api.MapGet("/ai/health", (IConfiguration configuration) => Results.Ok(new
+{
+    status = "advisory-only",
+    defaultProvider = configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none",
+    connectivityVerified = false,
+    inferenceImplemented = false
+})).RequireAuthorization("Reader");
+api.MapGet("/monitoring/health", async (
+    AppDbContext db,
+    IScanJobQueue queue,
+    IServiceProvider services,
+    CancellationToken cancellationToken) =>
+{
+    var databaseConnected = false;
+    try { databaseConnected = await db.Database.CanConnectAsync(cancellationToken); }
+    catch { databaseConnected = false; }
+
+    var messagingStatus = "unavailable";
+    if (queue is InMemoryScanJobQueue)
+    {
+        messagingStatus = "configured-in-memory";
+    }
+    else if (queue is RabbitMqScanJobQueue)
+    {
+        var rabbit = services.GetService<RabbitMqConnectionProvider>();
+        if (rabbit is not null)
+        {
+            try
+            {
+                var connection = await rabbit.GetConnectionAsync(cancellationToken);
+                messagingStatus = connection.IsOpen ? "connected" : "unavailable";
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch { messagingStatus = "unavailable"; }
+        }
+    }
+
+    var engineRegistered = services.GetService<IWebAssessmentEngine>() is not null
+        && services.GetService<IScreenshotCaptureService>() is not null;
+    var engineStatus = engineRegistered ? "registered" : "not-registered";
+    var messagingReady = messagingStatus is "connected" or "configured-in-memory";
+    var overallStatus = databaseConnected && messagingReady && engineRegistered ? "healthy" : "degraded";
+
+    return Results.Ok(new
+    {
+        status = overallStatus,
+        databaseStatus = databaseConnected ? "connected" : "unavailable",
+        messagingStatus,
+        assessmentEngineStatus = engineStatus,
+        activeProbing = false,
+        checkedAt = DateTimeOffset.UtcNow
+    });
+}).RequireAuthorization("Reader");
 api.MapGet("/monitoring/events", async (HttpContext context, IAppDbContext db, CancellationToken cancellationToken) =>
 {
     var tenantId = ToPrincipal(context).TenantId;

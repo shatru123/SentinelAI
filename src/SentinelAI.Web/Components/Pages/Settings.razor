@@ -26,7 +26,7 @@
     <MetricCard Title="Default Provider"
                 Value="@(string.IsNullOrWhiteSpace(configuredProvider) ? "none" : configuredProvider)"
                 Icon="⚡"
-                Subtitle="Configured LLM inference backend" />
+                Subtitle="Selected provider · connectivity not verified" />
     <MetricCard Title="Security Boundary"
                 Value="Active Pinning"
                 Icon="🔒"
@@ -74,13 +74,13 @@
                         <tr>
                             <td><strong>OpenAI</strong> (GPT-4o)</td>
                             <td>
-                                @if (configuredProvider == "openai")
+                                @if (providerStatus?.OpenAiCredentialsConfigured == true)
                                 {
-                                    <span class="soc-badge soc-badge-success">Configured Active</span>
+                                    <span class="soc-badge soc-badge-warning">Credentials configured · Not verified</span>
                                 }
                                 else
                                 {
-                                    <span class="soc-badge soc-badge-neutral">Ready (Key required)</span>
+                                    <span class="soc-badge soc-badge-neutral">Credentials not configured</span>
                                 }
                             </td>
                             <td class="text-muted">Cloud REST / Streaming</td>
@@ -88,13 +88,13 @@
                         <tr>
                             <td><strong>Anthropic</strong> (Claude 3.5 Sonnet)</td>
                             <td>
-                                @if (configuredProvider == "anthropic")
+                                @if (providerStatus?.AnthropicCredentialsConfigured == true)
                                 {
-                                    <span class="soc-badge soc-badge-success">Configured Active</span>
+                                    <span class="soc-badge soc-badge-warning">Credentials configured · Not verified</span>
                                 }
                                 else
                                 {
-                                    <span class="soc-badge soc-badge-neutral">Ready (Key required)</span>
+                                    <span class="soc-badge soc-badge-neutral">Credentials not configured</span>
                                 }
                             </td>
                             <td class="text-muted">Cloud Messages API</td>
@@ -102,13 +102,13 @@
                         <tr>
                             <td><strong>Ollama</strong> (Local LLMs)</td>
                             <td>
-                                @if (configuredProvider == "ollama")
+                                @if (providerStatus?.OllamaEndpointConfigured == true)
                                 {
-                                    <span class="soc-badge soc-badge-success">Configured Active</span>
+                                    <span class="soc-badge soc-badge-warning">Endpoint configured · Not verified</span>
                                 }
                                 else
                                 {
-                                    <span class="soc-badge soc-badge-neutral">Self-hosted / Private</span>
+                                    <span class="soc-badge soc-badge-neutral">Endpoint not configured</span>
                                 }
                             </td>
                             <td class="text-muted">Local HTTP REST</td>
@@ -118,9 +118,16 @@
             </div>
 
             <div style="margin-top: var(--space-4); padding: var(--space-3); background: var(--bg-panel-subtle); border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
+                <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1);">Provider execution status</div>
+                <p style="font-size: 0.8125rem; color: var(--text-primary); margin: 0;">
+                    Connectivity: <strong>Not verified</strong> · Live inference: <strong>Not implemented</strong> · AI role: <strong>Advisory only</strong>.
+                </p>
+            </div>
+
+            <div style="margin-top: var(--space-4); padding: var(--space-3); background: var(--bg-panel-subtle); border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
                 <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1);">Configuration Notice</div>
                 <p style="font-size: 0.8125rem; color: var(--text-primary); margin: 0;">
-                    To protect security credentials, API keys and access tokens are never accepted via dashboard inputs or rendered in browser responses. Configure provider keys via environment variables (e.g. <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>).
+                    To protect security credentials, API keys and access tokens are never accepted via dashboard inputs or rendered in browser responses. Configure provider keys via environment variables. SentinelAI currently reports configuration only; it does not verify provider connectivity or perform live inference.
                 </p>
             </div>
         }
@@ -194,6 +201,7 @@
 @code {
     private bool loading = true;
     private string configuredProvider = "none";
+    private AiProviderStatusRecord? providerStatus;
     private string tenantId = string.Empty;
     private string userId = string.Empty;
     private string userName = string.Empty;
@@ -208,7 +216,7 @@
             userName = user.Identity.Name ?? "Authenticated Operator";
             userId = user.FindFirstValue(ClaimTypes.NameIdentifier) ?? "dev-user";
             tenantId = user.FindFirstValue("tenant_id") ?? "00000000-0000-0000-0000-000000000001";
-            role = user.FindFirstValue(ClaimTypes.Role) ?? "Admin";
+            role = user.FindFirstValue(ClaimTypes.Role) ?? "Reader";
         }
 
         await LoadStatusAsync();
@@ -217,14 +225,17 @@
     private async Task LoadStatusAsync()
     {
         loading = true;
+        providerStatus = null;
         try
         {
-            var health = await ApiClient.GetJsonAsync<AiHealthRecord>("/api/v1/ai/health");
-            configuredProvider = health.DefaultProvider ?? "none";
+            providerStatus = await ApiClient.GetJsonAsync<AiProviderStatusRecord>("/api/v1/ai/providers");
+            configuredProvider = string.IsNullOrWhiteSpace(providerStatus.SelectedProvider)
+                ? "none"
+                : providerStatus.SelectedProvider;
         }
-        catch
+        catch (SentinelApiException)
         {
-            configuredProvider = "none";
+            configuredProvider = "unavailable";
         }
         finally
         {
@@ -232,5 +243,12 @@
         }
     }
 
-    private sealed record AiHealthRecord(string Status, string? DefaultProvider);
+    private sealed record AiProviderStatusRecord(
+        string SelectedProvider,
+        bool OpenAiCredentialsConfigured,
+        bool AnthropicCredentialsConfigured,
+        bool OllamaEndpointConfigured,
+        bool ConnectivityVerified,
+        bool InferenceImplemented,
+        string ExecutionMode);
 }

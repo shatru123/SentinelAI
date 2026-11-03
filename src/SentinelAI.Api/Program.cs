@@ -610,6 +610,284 @@ api.MapPost("/workers/{identity}/provision", async (HttpContext context, string 
     return Results.Ok(ToWorkerResponse(worker));
 }).RequireAuthorization("Admin");
 
+
+
+api.MapPost("/vulnerability-intelligence/cves/{cveId}/sync", async (
+    HttpContext context,
+    string cveId,
+    VulnerabilityIntelligenceSyncService sync,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    if (!CveId.TryParse(cveId, out var parsed)) return Results.BadRequest("A valid CVE identifier is required.");
+    var principal = ToPrincipal(context);
+    var processed = await sync.SyncCveAsync(parsed, cancellationToken);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "vulnerability-intelligence.cve.synced",
+        nameof(VulnerabilityCatalogEntry), null, $"NVD CVE sync completed for {parsed.Value}; records processed: {processed}."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(new { cveId = parsed.Value, recordsProcessed = processed });
+}).RequireAuthorization("Admin");
+
+api.MapPost("/vulnerability-intelligence/kev/sync", async (
+    HttpContext context,
+    VulnerabilityIntelligenceSyncService sync,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var processed = await sync.SyncKevAsync(cancellationToken);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "vulnerability-intelligence.kev.synced",
+        "CisaKevCatalog", null, $"CISA KEV catalog sync completed; entries processed: {processed}."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(new { recordsProcessed = processed });
+}).RequireAuthorization("Admin");
+
+api.MapPost("/vulnerability-intelligence/epss/sync", async (
+    HttpContext context,
+    SyncEpssRequest request,
+    VulnerabilityIntelligenceSyncService sync,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    if (request.CveIds is null || request.CveIds.Count is < 1 or > 50)
+        return Results.BadRequest("Provide between 1 and 50 CVE identifiers.");
+    var ids = new List<CveId>();
+    foreach (var value in request.CveIds)
+    {
+        if (!CveId.TryParse(value, out var parsed)) return Results.BadRequest($"Invalid CVE identifier: {value}");
+        ids.Add(parsed);
+    }
+    var uniqueIds = ids.Distinct().ToArray();
+    var knownIds = await db.VulnerabilityCatalogEntries.AsNoTracking()
+        .Where(entry => uniqueIds.Select(id => id.Value).Contains(entry.CveId))
+        .Select(entry => entry.CveId)
+        .ToListAsync(cancellationToken);
+    if (knownIds.Count != uniqueIds.Length)
+        return Results.BadRequest("EPSS enrichment is limited to CVEs already present in the local catalog.");
+
+    var principal = ToPrincipal(context);
+    var processed = await sync.SyncEpssAsync(uniqueIds, cancellationToken);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "vulnerability-intelligence.epss.synced",
+        "FirstEpssFeed", null, $"FIRST EPSS lookup completed; entries processed: {processed}."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(new { recordsProcessed = processed });
+}).RequireAuthorization("Admin");
+
+api.MapGet("/vulnerability-intelligence/cves", async (
+    string? search,
+    int limit,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    limit = Math.Clamp(limit == 0 ? 25 : limit, 1, 100);
+    var query = db.VulnerabilityCatalogEntries.AsNoTracking();
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim();
+        if (term.Length > 128) return Results.BadRequest("Search term is too long.");
+        query = query.Where(entry => entry.CveId.Contains(term) || entry.Description.Contains(term));
+    }
+    var entries = await query.OrderByDescending(entry => entry.LastModifiedAt).Take(limit)
+        .Select(entry => new { entry.CveId, entry.Status, entry.PublishedAt, entry.LastModifiedAt, entry.Description })
+        .ToListAsync(cancellationToken);
+    return Results.Ok(entries);
+}).RequireAuthorization("Reader");
+
+api.MapGet("/vulnerability-intelligence/cves/{cveId}", async (
+    string cveId,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    if (!CveId.TryParse(cveId, out var parsed)) return Results.BadRequest("A valid CVE identifier is required.");
+    var entry = await db.VulnerabilityCatalogEntries.AsNoTracking().SingleOrDefaultAsync(x => x.CveId == parsed.Value, cancellationToken);
+    if (entry is null) return Results.NotFound();
+
+    var metrics = await db.VulnerabilityCvssMetrics.AsNoTracking().Where(x => x.CveId == parsed.Value)
+        .OrderBy(x => x.Version).ThenBy(x => x.Source)
+        .Select(x => new VulnerabilityCvssResponse(x.Version, x.Vector, x.BaseScore, x.Severity, x.Source, x.ObservedAt))
+        .ToListAsync(cancellationToken);
+    var epss = await db.VulnerabilityEpssScores.AsNoTracking().Where(x => x.CveId == parsed.Value)
+        .OrderByDescending(x => x.AsOfDate)
+        .Select(x => new VulnerabilityEpssResponse(x.Score, x.Percentile, x.AsOfDate, x.ImportedAt))
+        .FirstOrDefaultAsync(cancellationToken);
+    var kev = await db.VulnerabilityKevEntries.AsNoTracking().Where(x => x.CveId == parsed.Value && x.IsListed)
+        .Select(x => new VulnerabilityKevResponse(x.IsListed, x.CatalogVersion, x.CatalogReleasedAt,
+            x.VendorProject, x.Product, x.DateAdded, x.DueDate, x.RequiredAction, x.KnownRansomwareCampaignUse))
+        .FirstOrDefaultAsync(cancellationToken);
+
+    var response = new VulnerabilityCatalogResponse(entry.CveId, entry.Status, entry.PublishedAt, entry.LastModifiedAt,
+        entry.Description, JsonSerializer.Deserialize<string[]>(entry.CweIdsJson) ?? [],
+        JsonSerializer.Deserialize<string[]>(entry.ReferencesJson) ?? [], metrics, epss, kev);
+    return Results.Ok(response);
+}).RequireAuthorization("Reader");
+
+api.MapPost("/assets/{assetId:guid}/software-components", async (
+    HttpContext context,
+    Guid assetId,
+    CreateSoftwareComponentRequest request,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    if (!await db.Assets.AnyAsync(x => x.Id == assetId && x.TenantId == principal.TenantId, cancellationToken))
+        return Results.NotFound();
+
+    if (!Cpe23Name.TryParse(request.CpeName, out var cpe)
+        || !string.Equals(cpe!.Vendor, request.Vendor.Trim(), StringComparison.OrdinalIgnoreCase)
+        || !string.Equals(cpe.Product, request.Product.Trim(), StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest("CPE vendor and product must match the supplied product identity.");
+
+    var hasInventoryEvidence = await db.AssetServices.AnyAsync(x =>
+        x.Id == request.EvidenceId && x.AssetId == assetId && x.TenantId == principal.TenantId, cancellationToken);
+    var hasFindingEvidence = await (from evidence in db.Evidence
+                                     join finding in db.Findings on evidence.FindingId equals finding.Id
+                                     where evidence.Id == request.EvidenceId && evidence.TenantId == principal.TenantId
+                                         && finding.TenantId == principal.TenantId && finding.AssetId == assetId
+                                     select evidence.Id).AnyAsync(cancellationToken);
+    if (request.EvidenceId == Guid.Empty || (!hasInventoryEvidence && !hasFindingEvidence))
+        return Results.BadRequest("Evidence must be an inventory service observation or an asset finding belonging to this tenant and asset.");
+
+    var component = new SoftwareComponent(principal.TenantId, assetId, request.Vendor, request.Product,
+        request.Version, cpe.Value, request.IdentificationMethod, request.EvidenceId, request.Confidence);
+    db.SoftwareComponents.Add(component);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "software-component.candidate.created",
+        nameof(SoftwareComponent), component.Id, "An evidence-linked software identity candidate was recorded; it is not operator-confirmed."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Created($"/api/v1/software-components/{component.Id}",
+        new SoftwareComponentResponse(component.Id, component.AssetId, component.Vendor, component.Product, component.Version,
+            component.CpeName, component.IdentificationMethod, component.EvidenceId, component.Confidence,
+            component.IsOperatorConfirmed, component.FirstObservedAt, component.LastObservedAt));
+}).RequireAuthorization("Operator");
+
+api.MapGet("/assets/{assetId:guid}/software-components", async (
+    HttpContext context,
+    Guid assetId,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    if (!await db.Assets.AnyAsync(x => x.Id == assetId && x.TenantId == tenantId, cancellationToken)) return Results.NotFound();
+    var components = await db.SoftwareComponents.AsNoTracking().Where(x => x.TenantId == tenantId && x.AssetId == assetId)
+        .OrderBy(x => x.Vendor).ThenBy(x => x.Product)
+        .Select(x => new SoftwareComponentResponse(x.Id, x.AssetId, x.Vendor, x.Product, x.Version, x.CpeName,
+            x.IdentificationMethod, x.EvidenceId, x.Confidence, x.IsOperatorConfirmed, x.FirstObservedAt, x.LastObservedAt))
+        .ToListAsync(cancellationToken);
+    return Results.Ok(components);
+}).RequireAuthorization("Reader");
+
+api.MapPost("/software-components/{componentId:guid}/confirm", async (
+    HttpContext context,
+    Guid componentId,
+    ConfirmSoftwareComponentRequest request,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var component = await db.SoftwareComponents.SingleOrDefaultAsync(
+        x => x.Id == componentId && x.TenantId == principal.TenantId, cancellationToken);
+    if (component is null) return Results.NotFound();
+
+    var hasInventoryEvidence = await db.AssetServices.AnyAsync(x =>
+        x.Id == request.EvidenceId && x.AssetId == component.AssetId && x.TenantId == principal.TenantId, cancellationToken);
+    var hasFindingEvidence = await (from evidence in db.Evidence
+                                    join finding in db.Findings on evidence.FindingId equals finding.Id
+                                    where evidence.Id == request.EvidenceId && evidence.TenantId == principal.TenantId
+                                        && finding.TenantId == principal.TenantId && finding.AssetId == component.AssetId
+                                    select evidence.Id).AnyAsync(cancellationToken);
+    if (request.EvidenceId == Guid.Empty || (!hasInventoryEvidence && !hasFindingEvidence))
+        return Results.BadRequest("Confirmation requires evidence belonging to this tenant and asset.");
+
+    component.Confirm(request.EvidenceId, request.Confidence);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "software-component.identity.confirmed",
+        nameof(SoftwareComponent), component.Id, "An operator confirmed the product identity using asset-linked evidence."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(new SoftwareComponentResponse(component.Id, component.AssetId, component.Vendor, component.Product,
+        component.Version, component.CpeName, component.IdentificationMethod, component.EvidenceId, component.Confidence,
+        component.IsOperatorConfirmed, component.FirstObservedAt, component.LastObservedAt));
+}).RequireAuthorization("Operator");
+
+api.MapPost("/software-components/{componentId:guid}/evaluate/{cveId}", async (
+    HttpContext context,
+    Guid componentId,
+    string cveId,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    if (!CveId.TryParse(cveId, out var parsed)) return Results.BadRequest("A valid CVE identifier is required.");
+    var principal = ToPrincipal(context);
+    var component = await db.SoftwareComponents.AsNoTracking().SingleOrDefaultAsync(
+        x => x.Id == componentId && x.TenantId == principal.TenantId, cancellationToken);
+    if (component is null) return Results.NotFound();
+
+    var catalog = await db.VulnerabilityCatalogEntries.AsNoTracking().SingleOrDefaultAsync(
+        x => x.CveId == parsed.Value, cancellationToken);
+    if (catalog is null) return Results.NotFound("CVE is not in the local catalog.");
+
+    ApplicabilityNode applicability;
+    try
+    {
+        applicability = catalog.Status.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
+            || catalog.Status.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase)
+            ? new UnsupportedApplicabilityNode("The source marks this CVE as rejected or withdrawn.")
+            : catalog.ApplicabilityJson is null
+                ? new UnsupportedApplicabilityNode("The CVE has no applicability configuration.")
+                : NvdApplicabilityParser.Parse(catalog.ApplicabilityJson);
+    }
+    catch (JsonException)
+    {
+        applicability = new UnsupportedApplicabilityNode("The stored applicability payload is invalid.");
+    }
+
+    var identity = new ProductIdentity(Cpe23Name.Parse(component.CpeName), component.Version,
+        component.IsOperatorConfirmed, component.EvidenceId.ToString());
+    var evaluation = CveAssetMatcher.Evaluate(applicability, identity);
+    var status = evaluation.Status switch
+    {
+        CveAssetMatchStatus.Confirmed => VulnerabilityMatchStatus.Confirmed,
+        CveAssetMatchStatus.Potential => VulnerabilityMatchStatus.Potential,
+        CveAssetMatchStatus.NotAffected => VulnerabilityMatchStatus.NotAffected,
+        _ => VulnerabilityMatchStatus.Inconclusive
+    };
+    var existing = await db.AssetVulnerabilityMatches.SingleOrDefaultAsync(x =>
+        x.TenantId == principal.TenantId && x.SoftwareComponentId == component.Id && x.CveId == parsed.Value,
+        cancellationToken);
+    if (existing is null)
+    {
+        existing = new AssetVulnerabilityMatch(principal.TenantId, component.AssetId, component.Id,
+            parsed.Value, status, evaluation.Explanation, FindFirstCriteriaId(applicability));
+        db.AssetVulnerabilityMatches.Add(existing);
+    }
+    else
+    {
+        existing.Update(status, evaluation.Explanation, FindFirstCriteriaId(applicability));
+    }
+
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "vulnerability.match.evaluated",
+        nameof(AssetVulnerabilityMatch), existing.Id, $"CVE {parsed.Value} evaluated with status {status}."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(new AssetVulnerabilityMatchResponse(existing.Id, existing.AssetId, existing.SoftwareComponentId,
+        existing.CveId, existing.Status, existing.Explanation, existing.CriteriaId, existing.FirstObservedAt, existing.LastObservedAt));
+}).RequireAuthorization("Operator");
+
+api.MapGet("/vulnerability-intelligence/matches", async (
+    HttpContext context,
+    string? status,
+    int limit,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    limit = Math.Clamp(limit == 0 ? 100 : limit, 1, 500);
+    var query = db.AssetVulnerabilityMatches.AsNoTracking().Where(x => x.TenantId == tenantId);
+    if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<VulnerabilityMatchStatus>(status, true, out var parsedStatus))
+        query = query.Where(x => x.Status == parsedStatus);
+    var matches = await query.OrderByDescending(x => x.LastObservedAt).Take(limit)
+        .Select(x => new AssetVulnerabilityMatchResponse(x.Id, x.AssetId, x.SoftwareComponentId, x.CveId,
+            x.Status, x.Explanation, x.CriteriaId, x.FirstObservedAt, x.LastObservedAt))
+        .ToListAsync(cancellationToken);
+    return Results.Ok(matches);
+}).RequireAuthorization("Reader");
+
 app.Run();
 
 static PrincipalContext ToPrincipal(HttpContext context)

@@ -286,6 +286,10 @@
             <span class="form-label">CPE 2.3 name</span>
             <input class="soc-input" @bind="cpeName" placeholder="cpe:2.3:a:vendor:product:version:*:*:*:*:*:*:*" />
         </label>
+        <label>
+            <span class="form-label">Identity confidence (0–1)</span>
+            <input class="soc-input" type="number" min="0" max="1" step="0.05" @bind="identityConfidence" />
+        </label>
     </div>
     <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap; margin-top:var(--space-3);">
         <button class="soc-btn soc-btn-primary" @onclick="CreateComponentAsync" disabled="@(busy || selectedAsset is null || selectedServiceId is null)">
@@ -501,6 +505,7 @@
     private string product = string.Empty;
     private string version = string.Empty;
     private string cpeName = string.Empty;
+    private decimal identityConfidence = 0.5m;
     private List<AssetResponse> assets = [];
     private List<AssetServiceResponse> services = [];
     private List<SoftwareComponentResponse> components = [];
@@ -698,7 +703,7 @@
             await ApiClient.PostJsonAsync<CreateSoftwareComponentRequest, SoftwareComponentResponse>(
                 $"/api/v1/assets/{selectedAsset.Id}/software-components",
                 new CreateSoftwareComponentRequest(vendor, product, string.IsNullOrWhiteSpace(version) ? null : version,
-                    cpeName, "operator-entered-from-inventory", evidenceId, 0.8m));
+                    cpeName, "operator-entered-from-inventory", evidenceId, identityConfidence));
             components = await ApiClient.GetJsonAsync<List<SoftwareComponentResponse>>($"/api/v1/assets/{selectedAsset.Id}/software-components");
             message = "Software identity candidate saved. It is not confirmed until an operator confirms it.";
         }

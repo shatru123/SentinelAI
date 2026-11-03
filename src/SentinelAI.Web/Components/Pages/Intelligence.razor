@@ -323,6 +323,123 @@
     }
 </section>
 
+<section class="soc-panel" style="margin-top:var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <div class="eyebrow">Operator Workflow</div>
+            <h2 class="soc-panel-title">Risk Triage &amp; Remediation Lifecycle</h2>
+        </div>
+    </div>
+
+    <label style="display:block; max-width:520px;">
+        <span class="form-label">Confirmed asset / CVE match</span>
+        <select class="soc-select" value="@selectedMatchId" @onchange="OnMatchChanged">
+            <option value="">Select a confirmed match</option>
+            @foreach (var match in matches.Where(x => x.Status == VulnerabilityMatchStatus.Confirmed))
+            {
+                <option value="@match.Id">@match.CveId · Asset @match.AssetId.ToString()[..8]…</option>
+            }
+        </select>
+    </label>
+
+    @if (selectedMatch is not null)
+    {
+        <div style="display:flex; gap:var(--space-4); flex-wrap:wrap; margin:var(--space-3) 0;">
+            <label style="display:flex; gap:8px; align-items:center;">
+                <input type="checkbox" @bind="isInternetFacing" />
+                <span>Asset is internet-facing</span>
+            </label>
+            <label style="display:flex; gap:8px; align-items:center;">
+                <input type="checkbox" @bind="isBusinessCritical" />
+                <span>Asset is business-critical</span>
+            </label>
+            <button class="soc-btn soc-btn-primary" @onclick="AssessSelectedMatchAsync" disabled="@busy">
+                Calculate explainable priority
+            </button>
+        </div>
+
+        @if (selectedTriage is not null)
+        {
+            <div class="soc-panel" style="padding:var(--space-3); margin-bottom:var(--space-4);">
+                <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap;">
+                    <strong>Suggested priority</strong>
+                    <span class="soc-badge @(selectedTriage.Priority == VulnerabilityRiskPriority.Critical ? "soc-badge-warning" : "soc-badge-neutral")">@selectedTriage.Priority</span>
+                    @if (selectedTriage.IsKnownExploited)
+                    {
+                        <span class="soc-badge soc-badge-warning">CISA KEV</span>
+                    }
+                </div>
+                <div style="display:flex; gap:var(--space-4); flex-wrap:wrap; margin:var(--space-2) 0; font-size:.8rem;">
+                    <span>CVSS: @(selectedTriage.CvssBaseScore?.ToString("0.0") ?? "not available") @(selectedTriage.CvssVersion is null ? "" : $"(v{selectedTriage.CvssVersion})")</span>
+                    <span>EPSS: @(selectedTriage.EpssScore?.ToString("P2") ?? "not available")</span>
+                    <span>KEV: @(selectedTriage.IsKnownExploited ? "Listed" : "Not listed")</span>
+                </div>
+                <ul style="font-size:.8rem; margin:0; padding-left:20px;">
+                    @foreach (var reason in selectedTriage.Reasons)
+                    {
+                        <li>@reason</li>
+                    }
+                </ul>
+                <p class="text-muted" style="font-size:.7rem; margin:8px 0 0;">@selectedTriage.Disclaimer</p>
+            </div>
+        }
+
+        <div style="display:grid; grid-template-columns:minmax(180px,240px) minmax(200px,1fr) auto; gap:var(--space-3); align-items:end;">
+            <label>
+                <span class="form-label">Next lifecycle state</span>
+                <select class="soc-select" @bind="nextLifecycleStatus">
+                    @foreach (var state in Enum.GetValues<VulnerabilityLifecycleStatus>())
+                    {
+                        <option value="@state">@state</option>
+                    }
+                </select>
+            </label>
+            <label>
+                <span class="form-label">Transition reason (required)</span>
+                <input class="soc-input" @bind="lifecycleReason" placeholder="Document the operator decision" />
+            </label>
+            <button class="soc-btn soc-btn-secondary" @onclick="TransitionSelectedMatchAsync" disabled="@busy">
+                Update lifecycle
+            </button>
+        </div>
+
+        @if (matchHistory is not null)
+        {
+            <div style="margin-top:var(--space-4);">
+                <h3 style="margin-bottom:var(--space-2);">Lifecycle history</h3>
+                @if (matchHistory.Count == 0)
+                {
+                    <p class="text-muted" style="font-size:.8rem;">No lifecycle transitions have been recorded.</p>
+                }
+                else
+                {
+                    <div class="soc-table-container">
+                        <table class="soc-table">
+                            <thead><tr><th>From</th><th>To</th><th>Reason</th><th>Actor</th><th>When</th></tr></thead>
+                            <tbody>
+                                @foreach (var transition in matchHistory)
+                                {
+                                    <tr>
+                                        <td>@transition.FromStatus</td>
+                                        <td>@transition.ToStatus</td>
+                                        <td style="white-space:normal;">@transition.Reason</td>
+                                        <td>@transition.ActorId.ToString()[..8]…</td>
+                                        <td class="text-muted">@transition.OccurredAt.ToLocalTime().ToString("g")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        }
+    }
+    else
+    {
+        <p class="text-muted" style="margin-top:var(--space-3); font-size:.8rem;">Only confirmed asset/CVE matches can receive priority guidance. Potential or inconclusive matches must first have their product identity and applicability resolved.</p>
+    }
+</section>
+
 @code {
     private const int PageSize = 100;
     private bool loading = true;
@@ -343,6 +460,14 @@
     private List<AssetVulnerabilityMatchResponse> matches = [];
     private VulnerabilityCatalogResponse? selectedCve;
     private AssetResponse? selectedAsset;
+    private string selectedMatchId = string.Empty;
+    private AssetVulnerabilityMatchResponse? selectedMatch;
+    private bool isInternetFacing;
+    private bool isBusinessCritical;
+    private VulnerabilityLifecycleStatus nextLifecycleStatus = VulnerabilityLifecycleStatus.InReview;
+    private string lifecycleReason = string.Empty;
+    private VulnerabilityTriageAssessmentResponse? selectedTriage;
+    private List<VulnerabilityMatchTransitionResponse>? matchHistory;
 
     protected override async Task OnInitializedAsync() => await RefreshAsync();
 
@@ -514,6 +639,98 @@
         }
         catch (SentinelApiException exception) { error = exception.UserMessage; }
         finally { busy = false; }
+    }
+
+    private async Task OnMatchChanged(ChangeEventArgs args)
+    {
+        selectedMatchId = args.Value?.ToString() ?? string.Empty;
+        selectedMatch = Guid.TryParse(selectedMatchId, out var id) ? matches.SingleOrDefault(x => x.Id == id) : null;
+        selectedTriage = null;
+        matchHistory = null;
+        lifecycleReason = string.Empty;
+        nextLifecycleStatus = VulnerabilityLifecycleStatus.InReview;
+        if (selectedMatch is not null) await LoadMatchHistoryAsync();
+    }
+
+    private async Task AssessSelectedMatchAsync()
+    {
+        if (selectedMatch is null) return;
+        busy = true;
+        error = null;
+        try
+        {
+            selectedTriage = await ApiClient.PostJsonAsync<AssessVulnerabilityRiskRequest, VulnerabilityTriageAssessmentResponse>(
+                $"/api/v1/vulnerability-intelligence/matches/{selectedMatch.Id}/triage",
+                new AssessVulnerabilityRiskRequest(isInternetFacing, isBusinessCritical));
+            matchHistory = await LoadTriageHistoryAsync(selectedMatch.Id);
+            message = $"Generated {selectedTriage.Priority} triage guidance for {selectedMatch.CveId}.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task TransitionSelectedMatchAsync()
+    {
+        if (selectedMatch is null || string.IsNullOrWhiteSpace(lifecycleReason)) return;
+        busy = true;
+        error = null;
+        try
+        {
+            await ApiClient.PostJsonAsync<TransitionVulnerabilityMatchRequest, VulnerabilityMatchTransitionResponse>(
+                $"/api/v1/vulnerability-intelligence/matches/{selectedMatch.Id}/lifecycle",
+                new TransitionVulnerabilityMatchRequest(nextLifecycleStatus, lifecycleReason));
+            lifecycleReason = string.Empty;
+            await LoadMatchHistoryAsync();
+            message = $"Updated {selectedMatch.CveId} lifecycle to {nextLifecycleStatus}.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task LoadMatchHistoryAsync()
+    {
+        if (selectedMatch is null) return;
+        var history = await ApiClient.GetJsonAsync<JsonElement>(
+            $"/api/v1/vulnerability-intelligence/matches/{selectedMatch.Id}/history");
+        matchHistory = history.TryGetProperty("transitions", out var transitions)
+            ? transitions.Deserialize<List<VulnerabilityMatchTransitionResponse>>() ?? []
+            : [];
+        selectedTriage = history.TryGetProperty("triageAssessments", out var assessments) && assessments.GetArrayLength() > 0
+            ? BuildTriageResponseFromHistory(assessments[0], selectedMatch.Id)
+            : null;
+    }
+
+    private async Task<List<VulnerabilityMatchTransitionResponse>> LoadTriageHistoryAsync(Guid matchId)
+    {
+        var history = await ApiClient.GetJsonAsync<JsonElement>(
+            $"/api/v1/vulnerability-intelligence/matches/{matchId}/history");
+        return history.TryGetProperty("transitions", out var transitions)
+            ? transitions.Deserialize<List<VulnerabilityMatchTransitionResponse>>() ?? []
+            : [];
+    }
+
+    private static VulnerabilityTriageAssessmentResponse BuildTriageResponseFromHistory(JsonElement item, Guid matchId)
+    {
+        var reasons = item.TryGetProperty("reasons", out var values)
+            ? values.Deserialize<List<string>>() ?? []
+            : [];
+        return new VulnerabilityTriageAssessmentResponse(
+            item.GetProperty("id").GetGuid(), matchId,
+            item.GetProperty("priority").Deserialize<VulnerabilityRiskPriority>(),
+            item.TryGetProperty("cvssBaseScore", out var cvss) && cvss.ValueKind == JsonValueKind.Number ? cvss.GetDecimal() : null,
+            item.TryGetProperty("cvssVersion", out var cvssVersion) ? cvssVersion.GetString() : null,
+            item.TryGetProperty("cvssVector", out var cvssVector) ? cvssVector.GetString() : null,
+            item.TryGetProperty("cvssObservedAt", out var cvssObserved) && cvssObserved.ValueKind == JsonValueKind.String ? cvssObserved.GetDateTimeOffset() : null,
+            item.TryGetProperty("epssScore", out var epss) && epss.ValueKind == JsonValueKind.Number ? epss.GetDecimal() : null,
+            item.TryGetProperty("epssPercentile", out var percentile) && percentile.ValueKind == JsonValueKind.Number ? percentile.GetDecimal() : null,
+            item.TryGetProperty("epssAsOfDate", out var asOf) && asOf.ValueKind == JsonValueKind.String ? DateOnly.Parse(asOf.GetString()!) : null,
+            item.TryGetProperty("isKnownExploited", out var kev) && kev.GetBoolean(),
+            null, null,
+            item.TryGetProperty("isInternetFacing", out var internet) && internet.GetBoolean(),
+            item.TryGetProperty("isBusinessCritical", out var critical) && critical.GetBoolean(),
+            reasons,
+            item.GetProperty("disclaimer").GetString() ?? string.Empty,
+            item.GetProperty("assessedAt").GetDateTimeOffset());
     }
 
     private async Task ReloadComponentsAsync()

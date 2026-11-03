@@ -1054,6 +1054,104 @@ api.MapGet("/vulnerability-intelligence/matches/{matchId:guid}/history", async (
     });
 }).RequireAuthorization("Reader");
 
+
+
+api.MapGet("/vulnerability-intelligence/report", async (
+    HttpContext context,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var matches = await db.AssetVulnerabilityMatches.AsNoTracking()
+        .Where(x => x.TenantId == tenantId)
+        .OrderByDescending(x => x.LastObservedAt)
+        .Take(20_000)
+        .ToListAsync(cancellationToken);
+    var componentIds = matches.Select(x => x.SoftwareComponentId).Distinct().ToArray();
+    var cveIds = matches.Select(x => x.CveId).Distinct().ToArray();
+
+    var components = await db.SoftwareComponents.AsNoTracking()
+        .Where(x => x.TenantId == tenantId && componentIds.Contains(x.Id))
+        .ToDictionaryAsync(x => x.Id, cancellationToken);
+    var catalog = await db.VulnerabilityCatalogEntries.AsNoTracking()
+        .Where(x => cveIds.Contains(x.CveId))
+        .ToDictionaryAsync(x => x.CveId, cancellationToken);
+    var cvss = await db.VulnerabilityCvssMetrics.AsNoTracking()
+        .Where(x => cveIds.Contains(x.CveId))
+        .OrderByDescending(x => x.Version == "4.0")
+        .ThenByDescending(x => x.ObservedAt)
+        .ToListAsync(cancellationToken);
+    var epss = await db.VulnerabilityEpssScores.AsNoTracking()
+        .Where(x => cveIds.Contains(x.CveId))
+        .OrderByDescending(x => x.AsOfDate)
+        .ToListAsync(cancellationToken);
+    var kev = await db.VulnerabilityKevEntries.AsNoTracking()
+        .Where(x => cveIds.Contains(x.CveId) && x.IsListed)
+        .ToDictionaryAsync(x => x.CveId, cancellationToken);
+    var triage = await db.VulnerabilityTriageAssessments.AsNoTracking()
+        .Where(x => x.TenantId == tenantId && matches.Select(match => match.Id).Contains(x.MatchId))
+        .OrderByDescending(x => x.AssessedAt)
+        .ToListAsync(cancellationToken);
+    var latestTriage = triage.GroupBy(x => x.MatchId).ToDictionary(group => group.Key, group => group.First());
+    var cvssByCve = cvss.GroupBy(x => x.CveId).ToDictionary(group => group.Key, group => group.First());
+    var epssByCve = epss.GroupBy(x => x.CveId).ToDictionary(group => group.Key, group => group.First());
+
+    var rows = new List<string>
+    {
+        string.Join(',', new[]
+        {
+            "MatchId", "AssetId", "Vendor", "Product", "Version", "CPE", "CVE", "CVEStatus",
+            "MatchStatus", "LifecycleStatus", "MatchRationale", "CVSSVersion", "CVSSBaseScore",
+            "EPSSScore", "EPSSAsOfDate", "CISAKEV", "KEVDueDate", "KEVRequiredAction",
+            "Priority", "PriorityReasons", "InternetFacing", "BusinessCritical", "LastEvaluatedAt"
+        }.Select(CsvField))
+    };
+
+    foreach (var match in matches)
+    {
+        components.TryGetValue(match.SoftwareComponentId, out var component);
+        catalog.TryGetValue(match.CveId, out var cve);
+        cvssByCve.TryGetValue(match.CveId, out var metric);
+        epssByCve.TryGetValue(match.CveId, out var epssScore);
+        kev.TryGetValue(match.CveId, out var kevEntry);
+        latestTriage.TryGetValue(match.Id, out var assessment);
+
+        var values = new[]
+        {
+            match.Id.ToString(),
+            match.AssetId.ToString(),
+            component?.Vendor,
+            component?.Product,
+            component?.Version,
+            component?.CpeName,
+            match.CveId,
+            cve?.Status,
+            match.Status.ToString(),
+            match.LifecycleStatus.ToString(),
+            match.Explanation,
+            metric?.Version,
+            metric?.BaseScore.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture),
+            epssScore?.Score.ToString("0.000000", System.Globalization.CultureInfo.InvariantCulture),
+            epssScore?.AsOfDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            kevEntry is null ? "No" : "Yes",
+            kevEntry?.DueDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            kevEntry?.RequiredAction,
+            assessment?.Priority.ToString(),
+            assessment is null ? null : string.Join(" | ", JsonSerializer.Deserialize<string[]>(assessment.ReasonsJson) ?? []),
+            assessment?.IsInternetFacing.ToString(),
+            assessment?.IsBusinessCritical.ToString(),
+            match.LastObservedAt.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+        };
+        rows.Add(string.Join(',', values.Select(CsvField)));
+    }
+
+    var csv = "\uFEFF" + string.Join("\r\n", rows);
+    return Results.File(
+        System.Text.Encoding.UTF8.GetBytes(csv),
+        "text/csv; charset=utf-8",
+        $"sentinelai-vulnerability-report-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.csv");
+}).RequireAuthorization("Reader");
+
 app.Run();
 
 static PrincipalContext ToPrincipal(HttpContext context)
@@ -1066,6 +1164,8 @@ static PrincipalContext ToPrincipal(HttpContext context)
 }
 
 static (int Page, int PageSize) NormalizePage(int page, int pageSize) => (Math.Max(1, page), Math.Clamp(pageSize, 1, 100));
+
+static string CsvField(string? value) => "\"" + (value ?? string.Empty).Replace("\"", "\"\"") + "\"";
 
 static string? FindFirstCriteriaId(ApplicabilityNode node) => node switch
 {

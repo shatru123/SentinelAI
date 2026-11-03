@@ -397,7 +397,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var item in FilteredAssessments)
+                    @foreach (var item in assessments)
                     {
                         <tr>
                             <td>
@@ -693,11 +693,15 @@
         error = null;
         try
         {
-            var result = await ApiClient.GetPageAsync<WebAssessmentResponse>("/api/v1/web-assessments", page, PageSize);
+            var parameters = new Dictionary<string, string?>();
+            if (!string.IsNullOrWhiteSpace(searchTerm)) parameters["search"] = searchTerm;
+            if (selectedStatus != "All") parameters["status"] = selectedStatus;
+
+            var result = await ApiClient.GetPageAsync<WebAssessmentResponse>(
+                "/api/v1/web-assessments", page, PageSize, parameters);
             assessments = result.Items?.ToList() ?? [];
             totalCount = Math.Max(0, result.TotalCount);
             page = Math.Max(1, result.Page);
-            activeAssessmentsCount = assessments.Count(a => a.Status == WebAssessmentStatus.Running || a.Status == WebAssessmentStatus.Queued);
         }
         catch (SentinelApiException exception)
         {
@@ -711,27 +715,18 @@
         }
     }
 
-    private IEnumerable<WebAssessmentResponse> FilteredAssessments
-    {
-        get
-        {
-            var items = assessments.AsEnumerable();
-            if (!string.IsNullOrWhiteSpace(searchTerm))
-                items = items.Where(a => a.TargetUrl.Contains(searchTerm, StringComparison.OrdinalIgnoreCase));
-            if (selectedStatus != "All")
-                items = items.Where(a => a.Status.ToString().Equals(selectedStatus, StringComparison.OrdinalIgnoreCase));
-            return items;
-        }
-    }
-
-    private void OnSearchChanged(ChangeEventArgs e)
+    private async Task OnSearchChanged(ChangeEventArgs e)
     {
         searchTerm = e.Value?.ToString() ?? string.Empty;
+        page = 1;
+        await LoadAsync();
     }
 
-    private void OnStatusChanged(ChangeEventArgs e)
+    private async Task OnStatusChanged(ChangeEventArgs e)
     {
         selectedStatus = e.Value?.ToString() ?? "All";
+        page = 1;
+        await LoadAsync();
     }
 
     private async Task GoToPageAsync(int newPage)

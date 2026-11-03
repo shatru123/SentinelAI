@@ -12,13 +12,16 @@
         <button class="soc-btn soc-btn-secondary" @onclick="LoadWorkersAsync" disabled="@loading">
             <span class="icon">↻</span> Refresh
         </button>
-        <AuthorizeView Roles="Admin">
-            <Authorized>
-                <button class="soc-btn soc-btn-primary" @onclick="OpenProvisionModal">
-                    <span class="icon">+</span> Provision Worker Node
-                </button>
-            </Authorized>
-        </AuthorizeView>
+        @if (!inProcessWorkerEnabled)
+        {
+            <AuthorizeView Roles="Admin">
+                <Authorized>
+                    <button class="soc-btn soc-btn-primary" @onclick="OpenProvisionModal">
+                        <span class="icon">+</span> Provision Worker Node
+                    </button>
+                </Authorized>
+            </AuthorizeView>
+        }
     </Actions>
 </PageHeader>
 
@@ -48,7 +51,7 @@
     <div class="soc-panel-header">
         <div>
             <h2 class="soc-panel-title">Enrolled Worker Fleet</h2>
-            <p class="soc-panel-subtitle">Worker nodes register via authenticated mTLS/bearer token and send heartbeats to acknowledge leases.</p>
+            <p class="soc-panel-subtitle">External workers register using their provisioned identity and bearer token. Heartbeats are used for lease admission and health reporting.</p>
         </div>
         <span class="soc-badge soc-badge-neutral">@workers.Count nodes online/enrolled</span>
     </div>
@@ -61,12 +64,25 @@
     {
         <ErrorState Message="@error" OnRetry="LoadWorkersAsync" />
     }
+    else if (workers.Count == 0 && inProcessWorkerEnabled)
+    {
+        <EmptyState Title="In-Process Execution Enabled"
+                    Message="This local Development profile runs queued jobs inside the API process using the in-memory queue. No external worker node is expected in this mode." />
+    }
     else if (workers.Count == 0)
     {
-        <EmptyState Title="No Worker Nodes Enrolled"
-                    Message="No workers are currently enrolled for this tenant. An administrator can provision a worker identity below, or start the in-process / standalone worker."
-                    ActionText="Provision Worker Node"
-                    OnAction="OpenProvisionModal" />
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <EmptyState Title="No Worker Nodes Enrolled"
+                            Message="@($"Provision the configured identity '{configuredWorkerIdentity}' before starting the standalone Worker service. The worker will retry registration until it is provisioned.")"
+                            ActionText="Provision Configured Worker"
+                            OnAction="OpenProvisionModal" />
+            </Authorized>
+            <NotAuthorized>
+                <EmptyState Title="No Worker Nodes Enrolled"
+                            Message="No external worker is enrolled yet. Ask an administrator to provision the configured worker identity and start its Worker service." />
+            </NotAuthorized>
+        </AuthorizeView>
     }
     else
     {
@@ -181,7 +197,7 @@
             <p class="text-muted" style="font-size: 0.8125rem; margin-bottom: var(--space-3);">
                 Launch the dedicated worker container connected to the internal RabbitMQ broker:
             </p>
-            <pre class="soc-code-block" style="font-size: 0.75rem;">docker compose --env-file .env.example -f deploy/docker/docker-compose.yml up -d sentinelai-worker</pre>
+            <pre class="soc-code-block" style="font-size: 0.75rem;">docker compose --env-file .env -f deploy/docker/docker-compose.yml up -d --build worker</pre>
         </div>
 
         <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-4);">
@@ -262,6 +278,8 @@
 @code {
     private List<WorkerResponse> workers = [];
     private bool loading = true;
+    private bool inProcessWorkerEnabled;
+    private string configuredWorkerIdentity = "compose-worker";
     private string? error;
 
     private int healthyCount => workers.Count(w => w.Status == WorkerStatus.Healthy);
@@ -294,6 +312,9 @@
         error = null;
         try
         {
+            var health = await ApiClient.GetJsonAsync<WorkerExecutionHealthResponse>("/api/v1/monitoring/health");
+            inProcessWorkerEnabled = string.Equals(health.WorkerExecutionMode, "in-process", StringComparison.OrdinalIgnoreCase);
+            configuredWorkerIdentity = string.IsNullOrWhiteSpace(health.ConfiguredWorkerIdentity) ? "compose-worker" : health.ConfiguredWorkerIdentity;
             var result = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers");
             workers = result ?? [];
         }
@@ -311,7 +332,7 @@
     private void OpenProvisionModal()
     {
         isEditingWorker = false;
-        modalIdentity = $"worker-{DateTime.UtcNow:MMdd-HHmm}";
+        modalIdentity = configuredWorkerIdentity;
         modalVersion = "1.0.0";
         modalPrivateRanges = "10.20.0.0/16";
         capPassiveInventory = true;
@@ -388,4 +409,12 @@
         if (age.TotalMinutes < 60) return $"{(int)age.TotalMinutes}m ago";
         return lastHeartbeat.ToLocalTime().ToString("g");
     }
+    private sealed record WorkerExecutionHealthResponse(
+        string Status,
+        string DatabaseStatus,
+        string MessagingStatus,
+        string AssessmentEngineStatus,
+        string WorkerExecutionMode,
+        string ConfiguredWorkerIdentity,
+        bool ActiveProbing);
 }

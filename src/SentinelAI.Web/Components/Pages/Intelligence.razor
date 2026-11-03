@@ -714,9 +714,12 @@
         var reasons = item.TryGetProperty("reasons", out var values)
             ? values.Deserialize<List<string>>() ?? []
             : [];
+        var priorityText = item.GetProperty("priority").GetString();
+        var priority = Enum.TryParse<VulnerabilityRiskPriority>(priorityText, true, out var parsedPriority)
+            ? parsedPriority : VulnerabilityRiskPriority.Standard;
         return new VulnerabilityTriageAssessmentResponse(
             item.GetProperty("id").GetGuid(), matchId,
-            item.GetProperty("priority").Deserialize<VulnerabilityRiskPriority>(),
+            priority,
             item.TryGetProperty("cvssBaseScore", out var cvss) && cvss.ValueKind == JsonValueKind.Number ? cvss.GetDecimal() : null,
             item.TryGetProperty("cvssVersion", out var cvssVersion) ? cvssVersion.GetString() : null,
             item.TryGetProperty("cvssVector", out var cvssVector) ? cvssVector.GetString() : null,

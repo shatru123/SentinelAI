@@ -283,3 +283,12 @@ public sealed record SyncNvdModifiedResponse(
     int TotalResults,
     bool HasMore,
     string WindowKey);
+
+public sealed record VulnerabilitySyncCheckpointResponse(
+    string Source,
+    string? Cursor,
+    string? FeedVersion,
+    DateTimeOffset? LastAttemptAt,
+    DateTimeOffset? LastSucceededAt,
+    int RecordsProcessed,
+    string? LastErrorCategory);

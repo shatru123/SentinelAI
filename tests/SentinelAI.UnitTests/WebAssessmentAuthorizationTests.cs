@@ -624,6 +624,42 @@ public sealed class WebAssessmentAuthorizationTests
         Assert.All(trackingFactory.CreatedContexts, ctx => Assert.True(ctx.IsDisposed));
     }
 
+    [Fact]
+    public async Task WebAssessmentEngine_requires_non_null_independent_context_factory()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var report = new ControlledReportGenerator();
+        var ex = Assert.Throws<ArgumentNullException>(() =>
+            new WebAssessmentEngine(
+                fixture.Db,
+                new ControlledValidator(),
+                fixture.ArtifactStore,
+                new ControlledScreenshotService(),
+                report,
+                new ConfigurationBuilder().Build(),
+                dbFactory: null!));
+
+        Assert.Equal("dbFactory", ex.ParamName);
+        Assert.Contains("independent database context factory", ex.Message);
+    }
+
+    [Fact]
+    public async Task Synchronous_report_setup_failure_yields_precedence_to_security_exception()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync();
+        var trackingFactory = new TrackingDbContextFactory(fixture.Options);
+
+        var throwingReport = new SynchronousThrowingReportGenerator(() =>
+        {
+            fixture.Worker.ProvisionByAdministrator("test", ["passive-mock"], []);
+            fixture.Db.SaveChanges();
+        });
+        var engine = fixture.CreateEngine(throwingReport, trackingFactory);
+
+        await Assert.ThrowsAsync<WebAssessmentAuthorizationRevokedException>(() => fixture.ExecuteAsync(engine));
+        Assert.Equal(WebAssessmentStatus.Cancelled, fixture.Assessment.Status);
+    }
+
     private sealed class AssessmentFixture : IAsyncDisposable
     {
         private AssessmentFixture(DbContextOptions<AppDbContext> options, AppDbContext db, LoopbackHttpServer server, Tenant tenant, User user, TargetScope scope, WorkerRegistration worker, AgentJob job, AgentExecution execution, WebAssessment assessment)
@@ -738,6 +774,11 @@ public sealed class WebAssessmentAuthorizationTests
     private sealed class RevokingEngine : IWebAssessmentEngine
     {
         public Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessment assessment, AgentJob job, TargetScope scope, string workerIdentity,
+            IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<IAppDbContext, CancellationToken, Task<bool>> leaseCheck,
+            CancellationToken cancellationToken, Func<IAppDbContext, CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
+            => throw new WebAssessmentAuthorizationRevokedException();
+
+        public Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessment assessment, AgentJob job, TargetScope scope, string workerIdentity,
             IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<CancellationToken, Task<bool>> leaseCheck,
             CancellationToken cancellationToken, Func<CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
             => throw new WebAssessmentAuthorizationRevokedException();
@@ -749,18 +790,34 @@ public sealed class WebAssessmentAuthorizationTests
             => throw new InvalidOperationException("Disk or rendering failure.");
     }
 
+    private sealed class SynchronousThrowingReportGenerator(Action onGenerate) : IHtmlReportGenerator
+    {
+        public Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken)
+        {
+            onGenerate();
+            throw new InvalidOperationException("Disk or rendering failure during setup.");
+        }
+    }
+
     private sealed class CompletingEngine(IAssessmentArtifactStore artifacts) : IWebAssessmentEngine
     {
         public Func<Task>? OnAfterExecute { get; set; }
         public async Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessment assessment, AgentJob job, TargetScope scope, string workerIdentity,
-            IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<CancellationToken, Task<bool>> leaseCheck,
-            CancellationToken cancellationToken, Func<CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
+            IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<IAppDbContext, CancellationToken, Task<bool>> leaseCheck,
+            CancellationToken cancellationToken, Func<IAppDbContext, CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
         {
             var staged = await artifacts.StageReportAsync(job.TenantId, assessment.Id, [1, 2, 3], cancellationToken);
             var published = await artifacts.PublishReportAsync(job.TenantId, assessment.Id, staged, cancellationToken);
             if (OnAfterExecute is not null) await OnAfterExecute();
             return new WebAssessmentExecutionResult(published, 1);
         }
+
+        public Task<WebAssessmentExecutionResult> ExecuteAsync(WebAssessment assessment, AgentJob job, TargetScope scope, string workerIdentity,
+            IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges, Func<CancellationToken, Task<bool>> leaseCheck,
+            CancellationToken cancellationToken, Func<CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
+            => ExecuteAsync(assessment, job, scope, workerIdentity, workerCapabilities, approvedPrivateNetworkRanges,
+                (_, ct) => leaseCheck(ct), cancellationToken,
+                refreshAuthorization is null ? null : (_, ct) => refreshAuthorization(ct));
     }
 
     private sealed class ControlledReportGenerator : IHtmlReportGenerator

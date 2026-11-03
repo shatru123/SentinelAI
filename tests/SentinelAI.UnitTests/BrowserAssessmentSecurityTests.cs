@@ -163,10 +163,23 @@ public sealed class BrowserAssessmentSecurityTests
         await using var server = new ControlledHttpsServer();
         var initial = CreateHttpsContext(server, "/app", basePath: "/app");
         var worker = new WorkerExecutionContext("test-worker", [WebAssessmentCapabilities.WebAssessment, WebAssessmentCapabilities.PrivateWebAssessment], ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
-        var refreshes = 0;
+        var isAuthorized = true;
+        IPage? capturedPage = null;
+
         var context = initial with
         {
-            RefreshAuthorization = _ => Task.FromResult<WorkerExecutionContext?>(Interlocked.Increment(ref refreshes) < 2 ? worker : null)
+            RefreshAuthorization = _ => Task.FromResult<WorkerExecutionContext?>(isAuthorized ? worker : null),
+            TestOnlyOnNavigated = async page =>
+            {
+                capturedPage = page;
+                // Transition authorization to revoked while browser session is still active
+                isAuthorized = false;
+
+                // Attempt a second navigation through the SAME active browser page, browser context and proxy
+                var afterRevocationUrl = $"https://allowed.test:{server.Port}/after-revocation";
+                await Assert.ThrowsAnyAsync<Exception>(() =>
+                    page.GotoAsync(afterRevocationUrl, new PageGotoOptions { Timeout = 10_000 }));
+            }
         };
 
         byte[]? screenshot = null;
@@ -176,44 +189,16 @@ public sealed class BrowserAssessmentSecurityTests
         });
 
         Assert.Null(screenshot);
-        var pathsCountAfterRevocation = server.RequestedPaths.Count;
 
-        // Exercise post-revocation request through the same active proxy instance transitioning from approved to revoked
-        var authorized = true;
-        await using var proxy = await BrowserPolicyProxy.StartAsync(
-            (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(authorized ? new ValidatedBrowserDestination(server.Address, [server.Address]) : null),
-            CancellationToken.None,
-            (uri, ct) => Task.FromResult<ValidatedBrowserDestination?>(authorized ? new ValidatedBrowserDestination(server.Address, [server.Address]) : null));
+        // 1. Initial navigation to /app succeeded
+        Assert.Contains("/app", server.RequestedPaths);
 
-        using (var client1 = new TcpClient())
-        {
-            await client1.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
-            await using var stream1 = client1.GetStream();
-            var connectMsg = Encoding.ASCII.GetBytes($"CONNECT allowed.test:{server.Port} HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\n\r\n");
-            await stream1.WriteAsync(connectMsg);
-            var responseBuffer = new byte[1024];
-            var read = await stream1.ReadAsync(responseBuffer);
-            var response = Encoding.ASCII.GetString(responseBuffer, 0, read);
-            Assert.Contains("200 Connection Established", response);
-        }
-
-        // Live authorization transition to revoked on the same active proxy
-        authorized = false;
-
-        using (var client2 = new TcpClient())
-        {
-            await client2.ConnectAsync(IPAddress.Loopback, proxy.ProxyUri.Port);
-            await using var stream2 = client2.GetStream();
-            var connectMsg = Encoding.ASCII.GetBytes($"CONNECT allowed.test:{server.Port} HTTP/1.1\r\nHost: allowed.test:{server.Port}\r\n\r\n");
-            await stream2.WriteAsync(connectMsg);
-            var responseBuffer = new byte[1024];
-            var read = await stream2.ReadAsync(responseBuffer);
-            var response = read > 0 ? Encoding.ASCII.GetString(responseBuffer, 0, read) : string.Empty;
-            Assert.DoesNotContain("200 Connection Established", response);
-        }
-
+        // 2. Fixture server NEVER received the request after revocation
         Assert.DoesNotContain("/after-revocation", server.RequestedPaths);
-        Assert.Equal(pathsCountAfterRevocation, server.RequestedPaths.Count);
+
+        // 3. Browser page was closed
+        Assert.NotNull(capturedPage);
+        Assert.True(capturedPage.IsClosed);
     }
 
     [BrowserFact]

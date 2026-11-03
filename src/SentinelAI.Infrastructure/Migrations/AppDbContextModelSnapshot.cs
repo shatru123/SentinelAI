@@ -1041,8 +1041,8 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<string>("Source").IsRequired().HasColumnType("text");
                     b.Property<string>("Cursor").HasColumnType("text");
                     b.Property<string>("FeedVersion").HasColumnType("text");
-                    b.Property<DateTimeOffset>("LastAttemptAt").HasColumnType("timestamp with time zone");
-                    b.Property<DateTimeOffset>("LastSucceededAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("LastAttemptAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("LastSucceededAt").HasColumnType("timestamp with time zone");
                     b.Property<int>("RecordsProcessed").HasColumnType("integer");
                     b.Property<string>("LastErrorCategory").HasColumnType("text");
                     b.HasKey("Id");

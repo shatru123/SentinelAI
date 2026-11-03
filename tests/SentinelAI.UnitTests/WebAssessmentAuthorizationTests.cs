@@ -928,6 +928,8 @@ public sealed class WebAssessmentAuthorizationTests
         public DbSet<AssetVulnerabilityMatch> AssetVulnerabilityMatches => inner.AssetVulnerabilityMatches;
         public DbSet<VulnerabilityMatchTransition> VulnerabilityMatchTransitions => inner.VulnerabilityMatchTransitions;
         public DbSet<VulnerabilityTriageAssessment> VulnerabilityTriageAssessments => inner.VulnerabilityTriageAssessments;
+        public DbSet<VulnerabilityMatchTransition> VulnerabilityMatchTransitions => inner.VulnerabilityMatchTransitions;
+        public DbSet<VulnerabilityTriageAssessment> VulnerabilityTriageAssessments => inner.VulnerabilityTriageAssessments;
         public Task PersistWebAssessmentEndpointsAsync(Guid tenantId, Guid assessmentId, IReadOnlyCollection<WebAssessmentEndpoint> endpoints, CancellationToken cancellationToken = default) => inner.PersistWebAssessmentEndpointsAsync(tenantId, assessmentId, endpoints, cancellationToken);
         public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) => inner.SaveChangesAsync(cancellationToken);
         public Task<IAppDbTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default) => inner.BeginTransactionAsync(cancellationToken);

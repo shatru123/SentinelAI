@@ -17,6 +17,9 @@
         </button>
         <AuthorizeView Roles="Admin">
             <Authorized>
+                <button class="soc-btn soc-btn-secondary" @onclick="SyncNvdModifiedAsync" disabled="@busy">
+                    @(nvdHasMore ? "Continue NVD sync" : "Sync NVD updates (7d)")
+                </button>
                 <button class="soc-btn soc-btn-secondary" @onclick="SyncKevAsync" disabled="@busy">
                     Sync CISA KEV
                 </button>
@@ -470,6 +473,9 @@
     private List<VulnerabilityCatalogListItem> catalog = [];
     private List<AssetVulnerabilityMatchResponse> matches = [];
     private VulnerabilityCatalogResponse? selectedCve;
+    private DateTimeOffset nvdWindowStart = DateTimeOffset.UtcNow.AddDays(-7);
+    private DateTimeOffset nvdWindowEnd = DateTimeOffset.UtcNow;
+    private bool nvdHasMore;
     private AssetResponse? selectedAsset;
     private string selectedMatchId = string.Empty;
     private AssetVulnerabilityMatchResponse? selectedMatch;
@@ -557,6 +563,30 @@
                 new SyncEpssRequest([selectedCve.CveId]));
             await LoadCveAsync(selectedCve.CveId);
             message = $"Refreshed EPSS for {selectedCve.CveId}.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task SyncNvdModifiedAsync()
+    {
+        busy = true;
+        error = null;
+        try
+        {
+            var result = await ApiClient.PostJsonAsync<SyncNvdModifiedRequest, SyncNvdModifiedResponse>(
+                "/api/v1/vulnerability-intelligence/nvd/modified-sync",
+                new SyncNvdModifiedRequest(nvdWindowStart, nvdWindowEnd, 2000, 10000, nvdHasMore));
+            nvdHasMore = result.HasMore;
+            if (!nvdHasMore)
+            {
+                nvdWindowEnd = DateTimeOffset.UtcNow;
+                nvdWindowStart = nvdWindowEnd.AddDays(-7);
+            }
+            await SearchCatalogAsync();
+            message = nvdHasMore
+                ? $"Imported {result.ProcessedThisRun:N0} CVEs. More records remain; select Continue NVD sync to resume at offset {result.NextStartIndex:N0}."
+                : $"NVD modified-date sync completed. Imported {result.ProcessedThisRun:N0} CVEs in this run; {result.TotalProcessedInWindow:N0} in the window.";
         }
         catch (SentinelApiException exception) { error = exception.UserMessage; }
         finally { busy = false; }

@@ -1079,11 +1079,13 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.Property<Guid>("SoftwareComponentId").HasColumnType("uuid");
                     b.Property<string>("CveId").IsRequired().HasMaxLength(20).HasColumnType("character varying(20)");
                     b.Property<int>("Status").HasColumnType("integer");
+                    b.Property<int>("LifecycleStatus").HasColumnType("integer").HasDefaultValue(0);
                     b.Property<string>("Explanation").IsRequired().HasColumnType("text");
                     b.Property<string>("CriteriaId").HasColumnType("text");
                     b.Property<DateTimeOffset>("FirstObservedAt").HasColumnType("timestamp with time zone");
                     b.Property<DateTimeOffset>("LastObservedAt").HasColumnType("timestamp with time zone");
                     b.HasKey("Id");
+                    b.HasAlternateKey("TenantId", "Id");
                     b.HasIndex("CveId");
                     b.HasIndex("TenantId", "SoftwareComponentId", "CveId").IsUnique();
                     b.ToTable("AssetVulnerabilityMatches");
@@ -1110,6 +1112,64 @@ namespace SentinelAI.Infrastructure.Migrations
                         .HasPrincipalKey("TenantId", "Id").OnDelete(DeleteBehavior.Cascade).IsRequired();
                     b.HasOne("SentinelAI.Domain.VulnerabilityCatalogEntry", null)
                         .WithMany().HasForeignKey("CveId").OnDelete(DeleteBehavior.Restrict).IsRequired();
+                });
+
+
+            modelBuilder.Entity("SentinelAI.Domain.VulnerabilityMatchTransition", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<Guid>("TenantId").HasColumnType("uuid");
+                    b.Property<Guid>("MatchId").HasColumnType("uuid");
+                    b.Property<Guid>("ActorId").HasColumnType("uuid");
+                    b.Property<int>("FromStatus").HasColumnType("integer");
+                    b.Property<int>("ToStatus").HasColumnType("integer");
+                    b.Property<string>("Reason").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset>("OccurredAt").HasColumnType("timestamp with time zone");
+                    b.HasKey("Id");
+                    b.HasIndex("TenantId", "MatchId", "OccurredAt");
+                    b.ToTable("VulnerabilityMatchTransitions");
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.VulnerabilityTriageAssessment", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<Guid>("TenantId").HasColumnType("uuid");
+                    b.Property<Guid>("MatchId").HasColumnType("uuid");
+                    b.Property<Guid>("AssessedBy").HasColumnType("uuid");
+                    b.Property<int>("Priority").HasColumnType("integer");
+                    b.Property<decimal?>("CvssBaseScore").HasColumnType("numeric");
+                    b.Property<string>("CvssVersion").HasColumnType("text");
+                    b.Property<string>("CvssVector").HasColumnType("text");
+                    b.Property<string>("CvssSource").HasColumnType("text");
+                    b.Property<DateTimeOffset?>("CvssObservedAt").HasColumnType("timestamp with time zone");
+                    b.Property<decimal?>("EpssScore").HasColumnType("numeric");
+                    b.Property<decimal?>("EpssPercentile").HasColumnType("numeric");
+                    b.Property<DateOnly?>("EpssAsOfDate").HasColumnType("date");
+                    b.Property<bool>("IsKnownExploited").HasColumnType("boolean");
+                    b.Property<string>("KevCatalogVersion").HasColumnType("text");
+                    b.Property<DateTimeOffset?>("KevCatalogReleasedAt").HasColumnType("timestamp with time zone");
+                    b.Property<bool>("IsInternetFacing").HasColumnType("boolean");
+                    b.Property<bool>("IsBusinessCritical").HasColumnType("boolean");
+                    b.Property<string>("ReasonsJson").IsRequired().HasColumnType("text");
+                    b.Property<string>("Disclaimer").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset>("AssessedAt").HasColumnType("timestamp with time zone");
+                    b.HasKey("Id");
+                    b.HasIndex("TenantId", "MatchId", "AssessedAt");
+                    b.ToTable("VulnerabilityTriageAssessments");
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.VulnerabilityMatchTransition", b =>
+                {
+                    b.HasOne("SentinelAI.Domain.AssetVulnerabilityMatch", null)
+                        .WithMany().HasForeignKey("TenantId", "MatchId")
+                        .HasPrincipalKey("TenantId", "Id").OnDelete(DeleteBehavior.Cascade).IsRequired();
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.VulnerabilityTriageAssessment", b =>
+                {
+                    b.HasOne("SentinelAI.Domain.AssetVulnerabilityMatch", null)
+                        .WithMany().HasForeignKey("TenantId", "MatchId")
+                        .HasPrincipalKey("TenantId", "Id").OnDelete(DeleteBehavior.Cascade).IsRequired();
                 });
 
 #pragma warning restore 612, 618

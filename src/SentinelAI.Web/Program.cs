@@ -126,4 +126,13 @@ app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
+app.MapGet("/downloads/vulnerability-intelligence-report", async (
+    SentinelApiClient apiClient,
+    CancellationToken cancellationToken) =>
+{
+    var content = await apiClient.GetBytesAsync("/api/v1/vulnerability-intelligence/report", cancellationToken);
+    return Results.File(content, "text/csv; charset=utf-8",
+        $"sentinelai-vulnerability-report-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.csv");
+}).RequireAuthorization();
+
 app.Run();

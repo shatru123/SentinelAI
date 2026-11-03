@@ -314,7 +314,7 @@
     {
         <div class="soc-table-container">
             <table class="soc-table">
-                <thead><tr><th>CVE</th><th>Asset</th><th>Match status</th><th>Rationale</th><th>Last evaluated</th></tr></thead>
+                <thead><tr><th>CVE</th><th>Asset</th><th>Match status</th><th>Lifecycle</th><th>Rationale</th><th>Last evaluated</th></tr></thead>
                 <tbody>
                     @foreach (var match in matches)
                     {
@@ -322,6 +322,7 @@
                             <td><strong style="font-family:var(--font-mono);">@match.CveId</strong></td>
                             <td>@match.AssetId.ToString()[..8]…</td>
                             <td><span class="soc-badge @(match.Status == VulnerabilityMatchStatus.Confirmed ? "soc-badge-warning" : "soc-badge-neutral")">@match.Status</span></td>
+                            <td><span class="soc-badge soc-badge-neutral">@match.LifecycleStatus</span></td>
                             <td style="font-size:.78rem; white-space:normal; max-width:460px;">@match.Explanation</td>
                             <td class="text-muted" style="font-size:.72rem;">@match.LastObservedAt.ToLocalTime().ToString("g")</td>
                         </tr>
@@ -397,7 +398,7 @@
             <label>
                 <span class="form-label">Next lifecycle state</span>
                 <select class="soc-select" @bind="nextLifecycleStatus">
-                    @foreach (var state in Enum.GetValues<VulnerabilityLifecycleStatus>())
+                    @foreach (var state in AllowedLifecycleStates(selectedMatch.LifecycleStatus))
                     {
                         <option value="@state">@state</option>
                     }
@@ -657,7 +658,9 @@
         selectedTriage = null;
         matchHistory = null;
         lifecycleReason = string.Empty;
-        nextLifecycleStatus = VulnerabilityLifecycleStatus.InReview;
+        nextLifecycleStatus = selectedMatch is null
+            ? VulnerabilityLifecycleStatus.InReview
+            : AllowedLifecycleStates(selectedMatch.LifecycleStatus).FirstOrDefault();
         if (selectedMatch is not null) await LoadMatchHistoryAsync();
     }
 
@@ -717,6 +720,16 @@
             ? transitions.Deserialize<List<VulnerabilityMatchTransitionResponse>>() ?? []
             : [];
     }
+
+    private static IReadOnlyCollection<VulnerabilityLifecycleStatus> AllowedLifecycleStates(VulnerabilityLifecycleStatus current)
+        => current switch
+        {
+            VulnerabilityLifecycleStatus.Open => [VulnerabilityLifecycleStatus.InReview, VulnerabilityLifecycleStatus.AcceptedRisk, VulnerabilityLifecycleStatus.Remediated, VulnerabilityLifecycleStatus.FalsePositive],
+            VulnerabilityLifecycleStatus.InReview => [VulnerabilityLifecycleStatus.Open, VulnerabilityLifecycleStatus.AcceptedRisk, VulnerabilityLifecycleStatus.Remediated, VulnerabilityLifecycleStatus.FalsePositive],
+            VulnerabilityLifecycleStatus.AcceptedRisk or VulnerabilityLifecycleStatus.Remediated or VulnerabilityLifecycleStatus.FalsePositive => [VulnerabilityLifecycleStatus.Reopened],
+            VulnerabilityLifecycleStatus.Reopened => [VulnerabilityLifecycleStatus.InReview, VulnerabilityLifecycleStatus.AcceptedRisk, VulnerabilityLifecycleStatus.Remediated, VulnerabilityLifecycleStatus.FalsePositive],
+            _ => []
+        };
 
     private static bool IsEpssStale(DateOnly asOfDate)
         => DateOnly.FromDateTime(DateTime.UtcNow).DayNumber - asOfDate.DayNumber > 7;

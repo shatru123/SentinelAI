@@ -18,21 +18,33 @@
     [Parameter] public string Value { get; set; } = "0";
     [Parameter] public string? Subtitle { get; set; }
     [Parameter] public string? Icon { get; set; }
-    [Parameter] public string Accent { get; set; } = "cyan"; // cyan, green, amber, red
+    [Parameter] public string Accent { get; set; } = "cyan";
+    [Parameter] public string? StatusClass { get; set; }
 
-    private string CardClass => Accent switch
+    private string EffectiveAccent => StatusClass?.Trim().ToLowerInvariant() switch
     {
-        "green" => "accent-green",
-        "amber" => "accent-amber",
-        "red" => "accent-red",
-        _ => "accent-cyan"
+        "healthy" or "success" or "green" => "green",
+        "warning" or "amber" => "amber",
+        "danger" or "critical" or "red" => "red",
+        "neutral" => "neutral",
+        _ => Accent.Trim().ToLowerInvariant() switch
+        {
+            "green" => "green",
+            "amber" => "amber",
+            "red" => "red",
+            "neutral" => "neutral",
+            _ => "cyan"
+        }
     };
 
-    private string SubtitleClass => Accent switch
+    private string CardClass => $"accent-{EffectiveAccent}";
+
+    private string SubtitleClass => EffectiveAccent switch
     {
         "green" => "text-green",
         "amber" => "text-amber",
         "red" => "text-red",
+        "neutral" => "muted",
         _ => "text-cyan"
     };
 }

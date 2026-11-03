@@ -434,9 +434,9 @@ api.MapGet("/ai/providers", (IConfiguration configuration) =>
     return Results.Ok(new
     {
         selectedProvider,
-        openAiCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["OPENAI_API_KEY"]),
-        anthropicCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["ANTHROPIC_API_KEY"]),
-        ollamaEndpointConfigured = !string.IsNullOrWhiteSpace(configuration["OLLAMA_BASE_URL"]),
+        openAiCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["OPENAI_API_KEY"] ?? configuration["AI:OpenAI:ApiKey"]),
+        anthropicCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["ANTHROPIC_API_KEY"] ?? configuration["AI:Anthropic:ApiKey"]),
+        ollamaEndpointConfigured = !string.IsNullOrWhiteSpace(configuration["OLLAMA_BASE_URL"] ?? configuration["AI:Ollama:Endpoint"]),
         connectivityVerified = false,
         inferenceImplemented = false,
         executionMode = "advisory-only"
@@ -453,6 +453,7 @@ api.MapGet("/monitoring/health", async (
     AppDbContext db,
     IScanJobQueue queue,
     IServiceProvider services,
+    IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
     var databaseConnected = false;
@@ -491,6 +492,8 @@ api.MapGet("/monitoring/health", async (
         databaseStatus = databaseConnected ? "connected" : "unavailable",
         messagingStatus,
         assessmentEngineStatus = engineStatus,
+        workerExecutionMode = configuration.GetValue<bool>("Worker:RunInProcess") ? "in-process" : "external",
+        configuredWorkerIdentity = configuration["Worker:Identity"] ?? "compose-worker",
         activeProbing = false,
         checkedAt = DateTimeOffset.UtcNow
     });

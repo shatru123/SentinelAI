@@ -38,6 +38,7 @@ public static class InfrastructureServices
         services.AddScoped<ScanExecutionService>();
         services.AddScoped<IWebAssessmentEngine, WebAssessmentEngine>();
         services.AddScoped<IHtmlReportGenerator, HtmlReportGenerator>();
+        services.AddScoped<VulnerabilityIntelligenceSyncService>();
         services.AddHttpClient<NvdCveFeedClient>(client =>
         {
             NvdCveFeedClient.Configure(client);

@@ -352,8 +352,13 @@
         await LoadPageAsync();
     }
 
-    private Task RefreshAsync() => LoadPageAsync();
-    private Task RetryAsync() => LoadPageAsync();
+    private async Task RefreshAsync()
+    {
+        await LoadSummaryAsync();
+        await LoadPageAsync();
+    }
+
+    private Task RetryAsync() => RefreshAsync();
 
     private async Task GoToPageAsync(int newPage)
     {

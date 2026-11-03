@@ -867,7 +867,7 @@ api.MapPost("/software-components/{componentId:guid}/evaluate/{cveId}", async (
         nameof(AssetVulnerabilityMatch), existing.Id, $"CVE {parsed.Value} evaluated with status {status}."));
     await db.SaveChangesAsync(cancellationToken);
     return Results.Ok(new AssetVulnerabilityMatchResponse(existing.Id, existing.AssetId, existing.SoftwareComponentId,
-        existing.CveId, existing.Status, existing.Explanation, existing.CriteriaId, existing.FirstObservedAt, existing.LastObservedAt));
+        existing.CveId, existing.Status, existing.LifecycleStatus, existing.Explanation, existing.CriteriaId, existing.FirstObservedAt, existing.LastObservedAt));
 }).RequireAuthorization("Operator");
 
 api.MapGet("/vulnerability-intelligence/matches", async (
@@ -884,7 +884,7 @@ api.MapGet("/vulnerability-intelligence/matches", async (
         query = query.Where(x => x.Status == parsedStatus);
     var matches = await query.OrderByDescending(x => x.LastObservedAt).Take(limit)
         .Select(x => new AssetVulnerabilityMatchResponse(x.Id, x.AssetId, x.SoftwareComponentId, x.CveId,
-            x.Status, x.Explanation, x.CriteriaId, x.FirstObservedAt, x.LastObservedAt))
+            x.Status, x.LifecycleStatus, x.Explanation, x.CriteriaId, x.FirstObservedAt, x.LastObservedAt))
         .ToListAsync(cancellationToken);
     return Results.Ok(matches);
 }).RequireAuthorization("Reader");
@@ -1090,8 +1090,9 @@ api.MapGet("/vulnerability-intelligence/report", async (
     var kev = await db.VulnerabilityKevEntries.AsNoTracking()
         .Where(x => cveIds.Contains(x.CveId) && x.IsListed)
         .ToDictionaryAsync(x => x.CveId, cancellationToken);
+    var matchIds = matches.Select(match => match.Id).ToArray();
     var triage = await db.VulnerabilityTriageAssessments.AsNoTracking()
-        .Where(x => x.TenantId == tenantId && matches.Select(match => match.Id).Contains(x.MatchId))
+        .Where(x => x.TenantId == tenantId && matchIds.Contains(x.MatchId))
         .OrderByDescending(x => x.AssessedAt)
         .ToListAsync(cancellationToken);
     var latestTriage = triage.GroupBy(x => x.MatchId).ToDictionary(group => group.Key, group => group.First());

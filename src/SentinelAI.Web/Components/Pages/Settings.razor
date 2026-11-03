@@ -44,7 +44,7 @@
         <div class="soc-panel-header">
             <div>
                 <h2 class="soc-panel-title">AI Provider Readiness</h2>
-                <p class="soc-panel-subtitle">Multi-provider architecture supporting OpenAI, Anthropic Claude, and local Ollama.</p>
+                <p class="soc-panel-subtitle">Provider configuration visibility for OpenAI, Anthropic Claude, and Ollama. Live inference is not implemented in this milestone.</p>
             </div>
             <span class="soc-badge soc-badge-success">ADVISORY ONLY</span>
         </div>
@@ -72,7 +72,7 @@
                     </thead>
                     <tbody>
                         <tr>
-                            <td><strong>OpenAI</strong> (GPT-4o)</td>
+                            <td><strong>OpenAI</strong> (provider configured only)</td>
                             <td>
                                 @if (providerStatus?.OpenAiCredentialsConfigured == true)
                                 {
@@ -83,10 +83,10 @@
                                     <span class="soc-badge soc-badge-neutral">Credentials not configured</span>
                                 }
                             </td>
-                            <td class="text-muted">Cloud REST / Streaming</td>
+                            <td class="text-muted">Cloud provider · not connected</td>
                         </tr>
                         <tr>
-                            <td><strong>Anthropic</strong> (Claude 3.5 Sonnet)</td>
+                            <td><strong>Anthropic</strong> (provider configured only)</td>
                             <td>
                                 @if (providerStatus?.AnthropicCredentialsConfigured == true)
                                 {
@@ -97,7 +97,7 @@
                                     <span class="soc-badge soc-badge-neutral">Credentials not configured</span>
                                 }
                             </td>
-                            <td class="text-muted">Cloud Messages API</td>
+                            <td class="text-muted">Cloud provider · not connected</td>
                         </tr>
                         <tr>
                             <td><strong>Ollama</strong> (Local LLMs)</td>
@@ -111,7 +111,7 @@
                                     <span class="soc-badge soc-badge-neutral">Endpoint not configured</span>
                                 }
                             </td>
-                            <td class="text-muted">Local HTTP REST</td>
+                            <td class="text-muted">Local endpoint · not verified</td>
                         </tr>
                     </tbody>
                 </table>

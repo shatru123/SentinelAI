@@ -31,9 +31,9 @@
                 Icon="◈"
                 Subtitle="Worker nodes registered to tenant" />
     <MetricCard Title="Assessment Components"
-                Value="Registered / Unavailable"
+                Value="@(checkEngineReady == true ? "Registered" : (checkEngineReady == false ? "Missing" : "Checking"))"
                 Icon="🛡"
-                StatusClass="healthy"
+                StatusClass="@(checkEngineReady == true ? "healthy" : "warning")"
                 Subtitle="Dependency registration only · no live browser run" />
 </div>
 
@@ -156,13 +156,13 @@
             </div>
             <div style="flex: 1;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-1);">
-                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">5. Worker Runtime Handshake</strong>
+                    <strong style="font-size: 0.9375rem; color: var(--text-primary);">5. Worker Capability Enrollment</strong>
                     <span class="soc-badge @(checkWorkerRegistered == true ? "soc-badge-success" : (checkWorkerRegistered == false ? "soc-badge-warning" : "soc-badge-neutral"))">
                         @(checkWorkerRegistered == true ? "Active" : "Pending Registration")
                     </span>
                 </div>
                 <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
-                    A worker is runtime-registered only after it reports a healthy authenticated heartbeat. A provisioned database identity alone does not pass this check.
+                    Verifies that at least one non-disabled worker identity has capabilities assigned. This does not prove that its worker process is running.
                 </p>
             </div>
         </div>
@@ -289,7 +289,7 @@
             var workers = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers") ?? [];
             workersCount = workers.Count;
             checkWorkerProvisioned = workers.Count > 0;
-            checkWorkerRegistered = workers.Any(w => w.Status == WorkerStatus.Healthy);
+            checkWorkerRegistered = workers.Any(w => w.Status != WorkerStatus.Disabled && w.Capabilities.Count > 0);
             var now = DateTimeOffset.UtcNow;
             checkWorkerHeartbeat = workers.Any(w =>
                 w.Status == WorkerStatus.Healthy

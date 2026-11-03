@@ -24,19 +24,19 @@
 
 <div class="metrics-grid" style="margin-bottom: var(--space-6);">
     <MetricCard Title="Total Executed Scans"
-                Value="@totalCount.ToString("N0")"
+                Value="@tenantTotalJobsCount.ToString("N0")"
                 Icon="◎"
-                Subtitle="Lifetime tenant scan jobs" />
+                Subtitle="All tenant jobs, independent of current page" />
     <MetricCard Title="Active / Queued Jobs"
                 Value="@activeJobsCount.ToString("N0")"
                 Icon="⚙"
                 StatusClass="@(activeJobsCount > 0 ? "warning" : "neutral")"
-                Subtitle="Running or pending workers" />
+                Subtitle="Tenant-wide queued and running jobs" />
     <MetricCard Title="Completed Jobs"
                 Value="@completedJobsCount.ToString("N0")"
                 Icon="✓"
                 StatusClass="healthy"
-                Subtitle="Successfully finished assessments" />
+                Subtitle="Tenant-wide completed jobs" />
     <MetricCard Title="Execution Engine"
                 Value="Strict Bounded"
                 Icon="🛡"
@@ -74,8 +74,6 @@
                     <label class="soc-label">Target Kind</label>
                     <select class="soc-select" @bind="formTargetKind">
                         <option value="@TargetKind.Network">Network CIDR / Range</option>
-                        <option value="@TargetKind.Web">Web Application</option>
-                        <option value="@TargetKind.Code">Code Repository</option>
                     </select>
                 </div>
                 <div class="soc-form-group">
@@ -98,7 +96,7 @@
                     <input type="number" class="soc-input" min="1" max="720" @bind="formExpiryHours" />
                 </div>
                 <div class="soc-form-group">
-                    <label class="soc-label">Max Concurrency / Request Limit (req/min)</label>
+                    <label class="soc-label">Maximum Request Rate (requests per minute)</label>
                     <input type="number" class="soc-input" min="1" max="1000" @bind="formRequestLimit" />
                 </div>
             </div>
@@ -268,7 +266,7 @@
                                     </button>
                                     @if (scan.Status == ScanJobStatus.Queued || scan.Status == ScanJobStatus.Running)
                                     {
-                                        <AuthorizeView Roles="Admin,Operator">
+                                        <AuthorizeView Roles="Admin,SecurityAnalyst">
                                             <Authorized>
                                                 <button class="soc-btn soc-btn-danger"
                                                         style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;"
@@ -368,6 +366,7 @@
     private List<ScanJobSummaryResponse> scans = [];
     private int page = 1;
     private int totalCount;
+    private int tenantTotalJobsCount;
     private int activeJobsCount;
     private int completedJobsCount;
     private bool loading = true;
@@ -414,9 +413,14 @@
         try
         {
             var summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
-            activeJobsCount = summary.RunningJobs;
+            tenantTotalJobsCount = summary.TotalJobs;
+            activeJobsCount = summary.RunningJobs + summary.QueuedJobs;
+            completedJobsCount = summary.CompletedJobs;
         }
-        catch { }
+        catch (SentinelApiException ex)
+        {
+            error = ex.UserMessage;
+        }
     }
 
     private async Task LoadPageAsync()
@@ -434,8 +438,6 @@
             totalCount = Math.Max(0, result.TotalCount);
             page = Math.Max(1, result.Page);
 
-            activeJobsCount = scans.Count(s => s.Status == ScanJobStatus.Queued || s.Status == ScanJobStatus.Running);
-            completedJobsCount = scans.Count(s => s.Status == ScanJobStatus.Completed);
         }
         catch (SentinelApiException exception)
         {

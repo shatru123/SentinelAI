@@ -77,14 +77,17 @@ The dashboard adds a Schedules workspace, run history, drift event list and noti
 
 No active network discovery, destructive testing, credential attacks, arbitrary AI-generated commands, automatic remediation, authorization renewal, target expansion or external alert delivery is introduced by this phase.
 
-## Follow-on work
+## Adjacent scope delivered in PR #8
 
-- Phase 4.5: optional advisory summaries in exported reports, sourced only from persisted evidence-grounded analysis and clearly separated from deterministic findings.
-- Phase 5: cloud control-plane deployment, worker certificate rotation, Kubernetes/secret-manager integration and operational resilience testing.
+Optional advisory summaries in exported HTML reports were delivered with this increment. They use only persisted evidence-grounded analysis, are explicitly opt-in, include provenance, and remain separate from deterministic findings. The normal report path is unchanged.
+
+## Next milestone
+
+Phase 5 covers cloud control-plane deployment, worker certificate rotation, Kubernetes/secret-manager integration and operational resilience testing. See `docs/phase5-cloud-operational-hardening.md`.
 
 ## Phase 4.4 implementation notes
 
-The implementation branch `phase4/4.4-scheduled-reassessment-implementation` adds the following runtime pieces:
+The PR #8 implementation adds the following runtime pieces:
 
 - `AssessmentSchedule`, `AssessmentScheduleRun` and `AssessmentDriftEvent` domain entities, with a persisted UTC due time, scope authorization fingerprint, creator identity, end boundary and bounded status transitions.
 - A scheduler hosted by the API process (not each worker) polls every 30 seconds by default, with a configurable batch capped at 100. It re-loads the original scope and verifies that the fingerprint is unchanged before every due occurrence.
@@ -94,9 +97,19 @@ The implementation branch `phase4/4.4-scheduled-reassessment-implementation` add
 - Events and in-app notifications are tenant scoped and linked by a database foreign key. Notification text contains only a safe event type and workspace pointer; no evidence, credential, query string, fragment or screenshot payload is sent. Acknowledgement marks both the drift event and its notification as read.
 - The Blazor Schedules workspace exposes create, run history, pause/resume/disable, drift review and acknowledgement. API Reader/Operator policies remain authoritative.
 
-### Verification status
+### Verification status (2026-11-04)
 
-The first unit tests cover lifecycle boundaries, UTC idempotency, stable finding fingerprints, severity changes, successful-check-aware absence, and coverage regression. The full Release build, PostgreSQL migration path, mult-instance dispatch, tenant/role integration tests, Playwright UI acceptance and Docker Compose validation remain pending until the implementation branch is run through CI. The phase is not marked complete until those checks pass.
+The consolidated GitHub Actions workflow passed on the PR #8 head (`5fc5723006b2f1f7c7b0244b8eb476dd90a69cb3`): Release build (0 warnings, 0 errors), 296 tests (251 unit, 33 integration, 10 security, 2 architecture), Playwright Chromium installation and executable verification, and Docker Compose configuration validation. The workflow also provisioned PostgreSQL and RabbitMQ for the test run. The successful aggregate run is not, by itself, proof of every Phase 4.4 exit criterion.
+
+The following feature-specific acceptance coverage must be added and pass before Phase 4.4 is declared fully closed:
+
+- Two independent scheduler processors racing on the same due occurrence, proving one persisted run/job/outbox entry; retry after a failed dispatch or reconciliation must not lose or duplicate work.
+- Due-time authorization revalidation tests for scope mutation, expiry, public authorization revocation, private worker missing/disabled/unhealthy/capability or CIDR changes, and creator deletion or role downgrade. Each case must fail closed and block the schedule.
+- Tenant-isolation and privacy tests for drift notifications and event summaries, including absence of raw evidence, secrets, query strings, URL fragments and screenshot content; acknowledgement must update the linked notification read state.
+- Browser-driven workflow coverage for schedule creation, pause/resume/disable, blocked authorization, run history, drift display and acknowledgement.
+- PostgreSQL migration-upgrade coverage against the previous released schema, including foreign keys, unique constraints and rollback/recovery behavior.
+
+Until these cases are covered, keep Phase 4.4 implementation status distinct from Phase 4.4 acceptance closure.
 
 ### Implementation choices and limitations
 

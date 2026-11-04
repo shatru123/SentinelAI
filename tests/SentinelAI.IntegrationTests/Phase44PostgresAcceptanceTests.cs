@@ -99,7 +99,6 @@ public sealed class Phase44PostgresAcceptanceTests
             authorization.Approve(Guid.NewGuid(), "ticket-fingerprint-1", "manual verification",
                 now.AddDays(10).AddTicks(3), allowRequesterApproval: true);
             scope.ConfigureVerifications([authorization.ToVerification()]);
-            var expected = scope.GetAuthorizationFingerprint();
 
             await using (var seed = new AppDbContext(options))
             {
@@ -107,8 +106,18 @@ public sealed class Phase44PostgresAcceptanceTests
                 await seed.SaveChangesAsync();
             }
 
+            // The application creates schedules from a scope loaded from PostgreSQL, not from
+            // an unsaved in-memory object. Fingerprint stability is required after that point.
+            string expected;
+            await using (var firstRead = new AppDbContext(options))
+            {
+                var persistedScope = await firstRead.TargetScopes.AsNoTracking()
+                    .SingleAsync(x => x.Id == scope.Id);
+                expected = persistedScope.GetAuthorizationFingerprint();
+            }
+
             await using var verify = new AppDbContext(options);
-            var reloadedScope = await verify.TargetScopes.SingleAsync(x => x.Id == scope.Id);
+            var reloadedScope = await verify.TargetScopes.AsNoTracking().SingleAsync(x => x.Id == scope.Id);
             Assert.Equal(expected, reloadedScope.GetAuthorizationFingerprint());
         }
         finally
@@ -149,23 +158,35 @@ public sealed class Phase44PostgresAcceptanceTests
             worker.ProvisionByAdministrator("test",
                 ["web-assessment", "private-web-assessment"], ["10.0.0.0/8"]);
             worker.Heartbeat(0, 2);
-            var schedule = new AssessmentSchedule(tenant.Id, scope.Id, creatorId,
-                WebAssessmentOperationProfiles.Passive, scope.GetAuthorizationFingerprint(),
-                24, now.AddDays(5), now.AddHours(-25));
 
             await using (var seed = new AppDbContext(options))
             {
-                // The schedule's custom composite scope FK is introduced by raw migration SQL and
-                // has no EF navigation relationship; persist its principals before the dependent.
                 seed.AddRange(tenant, creator, scope, worker);
                 await seed.SaveChangesAsync();
-                seed.AssessmentSchedules.Add(schedule);
-                await seed.SaveChangesAsync();
+            }
+
+            // Match the production service: schedule creation reads the already-persisted scope.
+            string persistedFingerprint;
+            await using (var scopeRead = new AppDbContext(options))
+            {
+                var persistedScope = await scopeRead.TargetScopes.AsNoTracking()
+                    .SingleAsync(x => x.Id == scope.Id);
+                persistedFingerprint = persistedScope.GetAuthorizationFingerprint();
+            }
+
+            var schedule = new AssessmentSchedule(tenant.Id, scope.Id, creatorId,
+                WebAssessmentOperationProfiles.Passive, persistedFingerprint,
+                24, now.AddDays(5), now.AddHours(-25));
+            await using (var seedSchedule = new AppDbContext(options))
+            {
+                seedSchedule.AssessmentSchedules.Add(schedule);
+                await seedSchedule.SaveChangesAsync();
             }
 
             await using (var fingerprintCheck = new AppDbContext(options))
             {
-                var persistedScope = await fingerprintCheck.TargetScopes.SingleAsync(x => x.Id == scope.Id);
+                var persistedScope = await fingerprintCheck.TargetScopes.AsNoTracking()
+                    .SingleAsync(x => x.Id == scope.Id);
                 Assert.Equal(schedule.AuthorizationFingerprint, persistedScope.GetAuthorizationFingerprint());
             }
 

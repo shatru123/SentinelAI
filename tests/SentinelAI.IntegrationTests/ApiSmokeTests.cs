@@ -35,6 +35,26 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task AI_provider_status_is_authenticated_and_does_not_call_unconfigured_providers()
+    {
+        using var anonymous = factory.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/v1/ai/providers")).StatusCode);
+
+        using var reader = CreateAuthenticatedClient(tenantId, userId, UserRole.Viewer);
+        var response = await reader.GetAsync("/api/v1/ai/providers");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var providers = document.RootElement.GetProperty("providers").EnumerateArray().ToArray();
+        Assert.Equal(3, providers.Length);
+        Assert.All(providers, provider =>
+        {
+            Assert.False(provider.GetProperty("configured").GetBoolean());
+            Assert.False(provider.GetProperty("healthy").GetBoolean());
+        });
+    }
+
+    [Fact]
     public async Task Authenticated_operator_can_register_bounded_scope()
     {
         using var client = factory.CreateClient();

@@ -23,7 +23,14 @@ public sealed class AIProviderTests
             Assert.Equal("gpt-test", payload.RootElement.GetProperty("model").GetString());
             Assert.Equal("json_schema", payload.RootElement.GetProperty("text").GetProperty("format").GetProperty("type").GetString());
             Assert.False(payload.RootElement.GetProperty("store").GetBoolean());
-            return JsonResponse("""{"id":"resp_test_1","model":"gpt-test","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"{"summary":"review required"}"}]}],"usage":{"input_tokens":31,"output_tokens":9}}""");
+            return JsonResponse(JsonSerializer.Serialize(new
+            {
+                id = "resp_test_1",
+                model = "gpt-test",
+                status = "completed",
+                output = new[] { new { type = "message", content = new[] { new { type = "output_text", text = JsonSerializer.Serialize(new { summary = "review required" }) } } } },
+                usage = new { input_tokens = 31, output_tokens = 9 }
+            }));
         });
         using var client = new HttpClient(handler);
         var provider = new OpenAIProvider(client, new AIProviderOptions(
@@ -55,7 +62,15 @@ public sealed class AIProviderTests
             using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
             Assert.Equal("claude-test", payload.RootElement.GetProperty("model").GetString());
             Assert.Equal("json_schema", payload.RootElement.GetProperty("output_config").GetProperty("format").GetProperty("type").GetString());
-            return JsonResponse("""{"id":"msg_test_1","type":"message","model":"claude-test","content":[{"type":"text","text":"{"summary":"review required"}"}],"stop_reason":"end_turn","usage":{"input_tokens":21,"output_tokens":8}}""");
+            return JsonResponse(JsonSerializer.Serialize(new
+            {
+                id = "msg_test_1",
+                type = "message",
+                model = "claude-test",
+                content = new[] { new { type = "text", text = JsonSerializer.Serialize(new { summary = "review required" }) } },
+                stop_reason = "end_turn",
+                usage = new { input_tokens = 21, output_tokens = 8 }
+            }));
         });
         using var client = new HttpClient(handler);
         var provider = new AnthropicProvider(client, new AIProviderOptions(
@@ -86,7 +101,16 @@ public sealed class AIProviderTests
             Assert.False(payload.RootElement.GetProperty("stream").GetBoolean());
             Assert.Equal("llama-test", payload.RootElement.GetProperty("model").GetString());
             Assert.Equal("object", payload.RootElement.GetProperty("format").GetProperty("type").GetString());
-            return JsonResponse("""{"model":"llama-test","created_at":"2026-11-04T02:00:00Z","message":{"role":"assistant","content":"{"summary":"review required"}"},"done":true,"done_reason":"stop","prompt_eval_count":44,"eval_count":12}""");
+            return JsonResponse(JsonSerializer.Serialize(new
+            {
+                model = "llama-test",
+                created_at = "2026-11-04T02:00:00Z",
+                message = new { role = "assistant", content = JsonSerializer.Serialize(new { summary = "review required" }) },
+                done = true,
+                done_reason = "stop",
+                prompt_eval_count = 44,
+                eval_count = 12
+            }));
         });
         using var client = new HttpClient(handler);
         var provider = new OllamaProvider(client, new AIProviderOptions(

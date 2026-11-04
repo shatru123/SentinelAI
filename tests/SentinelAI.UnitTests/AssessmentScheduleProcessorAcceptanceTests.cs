@@ -185,6 +185,34 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
     }
 
     [Fact]
+    public async Task Failed_due_cycle_retries_without_losing_or_duplicating_the_scheduled_occurrence()
+    {
+        var options = NewOptions();
+        var seed = await SeedValidPrivateScheduleAsync(options);
+        var validator = new TransientScopeValidator();
+        var processor = CreateProcessor(options, validator);
+
+        await processor.RunOnceAsync();
+        await using (var afterFailure = new AppDbContext(options))
+        {
+            Assert.Empty(await afterFailure.AssessmentScheduleRuns.ToListAsync());
+            Assert.Empty(await afterFailure.AgentJobs.ToListAsync());
+            Assert.Empty(await afterFailure.OutboxMessages.ToListAsync());
+            Assert.Equal(AssessmentScheduleStatus.Active,
+                (await afterFailure.AssessmentSchedules.SingleAsync(x => x.Id == seed.Schedule.Id)).Status);
+        }
+
+        await processor.RunOnceAsync();
+
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(2, validator.ValidationAttempts);
+        Assert.Single(await verify.AssessmentScheduleRuns.Where(x => x.ScheduleId == seed.Schedule.Id).ToListAsync());
+        Assert.Single(await verify.AgentJobs.ToListAsync());
+        Assert.Single(await verify.WebAssessments.ToListAsync());
+        Assert.Single(await verify.OutboxMessages.ToListAsync());
+    }
+
+    [Fact]
     public async Task Drift_notifications_are_tenant_isolated_private_and_acknowledgement_marks_notification_read()
     {
         var options = NewOptions();
@@ -263,8 +291,8 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
             .Options;
 
-    private static AssessmentScheduleProcessor CreateProcessor(DbContextOptions<AppDbContext> options)
-        => new(new ContextFactory(options), new AcceptingScopeValidator(), new EmptyQueue(),
+    private static AssessmentScheduleProcessor CreateProcessor(DbContextOptions<AppDbContext> options, ITargetScopeValidator? validator = null)
+        => new(new ContextFactory(options), validator ?? new AcceptingScopeValidator(), new EmptyQueue(),
             NullLogger<AssessmentScheduleProcessor>.Instance);
 
     private static async Task<SeededSchedule> SeedValidPrivateScheduleAsync(DbContextOptions<AppDbContext> options)
@@ -295,6 +323,37 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
     private sealed class ContextFactory(DbContextOptions<AppDbContext> options) : IAppDbContextFactory
     {
         public IAppDbContext CreateDbContext() => new AppDbContext(options);
+    }
+
+    private sealed class TransientScopeValidator : ITargetScopeValidator
+    {
+        private readonly AcceptingScopeValidator inner = new();
+        private int attempts;
+        public int ValidationAttempts => Volatile.Read(ref attempts);
+
+        public ScopeValidationResult ValidateDefinition(TargetScope scope, Guid tenantId, DateTimeOffset now)
+        {
+            if (Interlocked.Increment(ref attempts) == 1)
+                throw new InvalidOperationException("Simulated transient authorization-store failure.");
+            return inner.ValidateDefinition(scope, tenantId, now);
+        }
+
+        public ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId,
+            string target, string operationProfile, CancellationToken cancellationToken = default)
+            => inner.ValidateExecutionAsync(scope, tenantId, target, operationProfile, cancellationToken);
+
+        public ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId,
+            TargetKind kind, string target, string operationProfile, CancellationToken cancellationToken = default)
+            => inner.ValidateExecutionAsync(scope, tenantId, kind, target, operationProfile, cancellationToken);
+
+        public ValueTask<ScopeValidationResult> ValidateExecutionAsync(TargetScope scope, Guid tenantId,
+            TargetKind kind, string target, string operationProfile, WorkerExecutionContext? worker,
+            CancellationToken cancellationToken = default)
+            => inner.ValidateExecutionAsync(scope, tenantId, kind, target, operationProfile, worker, cancellationToken);
+
+        public ValueTask<ScopeValidationResult> ValidateRedirectAsync(TargetScope scope, Guid tenantId,
+            Uri redirect, string operationProfile, CancellationToken cancellationToken = default)
+            => inner.ValidateRedirectAsync(scope, tenantId, redirect, operationProfile, cancellationToken);
     }
 
     private sealed class AcceptingScopeValidator : ITargetScopeValidator

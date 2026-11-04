@@ -29,13 +29,22 @@
 {
     <div role="alert" style="margin-bottom: var(--space-4);"><ErrorState Message="@pageNotice" /></div>
 }
-@if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
+@if (Configuration.GetValue<bool>("Authorization:AllowAdminSelfApproval"))
+{
+    <div class="soc-panel" style="margin-bottom: var(--space-4); border-color: var(--border-subtle);">
+        <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
+            Development single-admin mode is enabled. An administrator can request and approve their own public-target authorization; the action is recorded in the audit log. Actual target permission, evidence, expiry, and bounded assessment policies are still required.
+            <a href="/auth/login?choose=true">Switch development account</a>.
+        </p>
+    </div>
+}
+else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
 {
     <div class="soc-panel" style="margin-bottom: var(--space-4); border-color: var(--border-subtle);">
         <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
             Local development uses two-person approval. Submit the authorization request as the operator, then
             <a href="/auth/dev-approver?returnUrl=%2Fweb-assessments">switch to the separate development approver</a>
-            to approve it. Use <a href="/auth/login">switch back to the operator</a> when needed.
+            to approve it. Use <a href="/auth/login?choose=true">switch development account</a> when needed.
         </p>
     </div>
 }
@@ -250,8 +259,12 @@
     <div class="soc-panel-header">
         <div>
             <h2 class="soc-panel-title">Public Target Authorizations</h2>
-            <p class="soc-panel-subtitle">Administrators must approve public domains before assessments can be dispatched against them.</p>
-            @if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
+            <p class="soc-panel-subtitle">Public-target approvals are recorded with evidence and expiry before assessments can be dispatched.</p>
+            @if (Configuration.GetValue<bool>("Authorization:AllowAdminSelfApproval"))
+            {
+                <p class="text-muted" style="font-size: 0.75rem; margin: 0;">Single-admin Development policy: the current Admin may approve their own request.</p>
+            }
+            else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
             {
                 <p class="text-muted" style="font-size: 0.75rem; margin: 0;">
                     Local approval identity: <a href="/auth/dev-approver?returnUrl=%2Fweb-assessments">switch to approver</a>

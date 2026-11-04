@@ -68,14 +68,19 @@ This milestone preserves the passive-only execution boundary and does not add de
 
 **Phase 4.3 — Finding AI analysis UI (merged into `main` through PR #7).** Adds an advisory-only AI analysis section to the finding dossier, explicit provider selection and request for Admin/Security Analyst roles, and persisted history for Readers. Opening a finding never submits it to a provider automatically. UI role checks remain usability controls; API authorization is authoritative. See phase4-finding-analysis-ui.md.
 
-**Phase 4.4 — Scheduled reassessment and drift alerts (implemented in PR #8).** Operator-configured bounded schedules, per-occurrence authorization revalidation, transactional outbox dispatch, deterministic drift comparisons and tenant-scoped in-app notifications are implemented. Schedules cannot widen scope or renew authorization; the worker still uses the existing bounded assessment pipeline. See `phase4-scheduled-reassessment.md`.
+**Phase 4.4 — Scheduled reassessment and drift alerts (implementation in PR #8; consolidated CI passed).** Operator-configured bounded schedules, per-occurrence authorization revalidation, transactional outbox dispatch, deterministic drift comparisons and tenant-scoped in-app notifications are implemented. Schedules cannot widen scope or renew authorization; the worker still uses the existing bounded assessment pipeline. Phase-specific concurrency, negative authorization, privacy and browser-workflow acceptance tests remain open; see `phase4-scheduled-reassessment.md`.
 
 **Exported AI advisory summaries (implemented in PR #8).** Operators and readers can explicitly request an HTML report containing the latest persisted evidence-grounded AI summary for each finding. This option is off by default; export performs no AI-provider call and includes advisory labeling and provenance.
 
 ## Phase 5 — Cloud and operational hardening
-- Cloud control-plane deployment
-- Local worker connectivity and certificate rotation
-- Kubernetes deployment and secret manager integration
-- Load, chaos, security and disaster-recovery testing
+
+The Phase 5 execution plan and acceptance gates are maintained in [phase5-cloud-operational-hardening.md](phase5-cloud-operational-hardening.md). The work is divided into four deliverable workstreams:
+
+- Cloud control-plane deployment and production identity/configuration.
+- Local worker connectivity, mutual authentication and safe certificate rotation.
+- Kubernetes packaging, network policy and external secret-manager integration.
+- Load, chaos, security, backup/restore and disaster-recovery validation.
+
+Provider-specific deployment choices remain explicit decisions; credentials, private keys and production secrets must never be committed to the repository.
 
 The timeline is intentionally milestone-based. Phase 3.1 is an authorized web assessment milestone, while vulnerability intelligence/CVE correlation remains a separate future capability. Do not enable active network scans or destructive web testing until a separate security review and milestone acceptance.

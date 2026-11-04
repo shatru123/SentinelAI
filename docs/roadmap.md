@@ -20,7 +20,7 @@
 - Asset and service inventory
 - Safe defaults, explicit exclusions and cancellation
 
-Current implementation status: the passive foundation is implemented. Workers can advertise the `passive-inventory` capability, the fixed adapter records only execution-time validated scope declarations without artificial network-request delays, and asset-service persistence is tenant isolated. Asset observation and reachability timestamps are distinct. Active network discovery remains intentionally disabled until a separately reviewed adapter, egress policy and security test suite are approved.
+**Status: Complete.** The passive foundation is implemented. Workers can advertise the `passive-inventory` capability, the fixed adapter records only execution-time validated scope declarations without artificial network-request delays, and asset-service persistence is tenant isolated. Asset observation and reachability timestamps are distinct. Active network discovery remains intentionally disabled until a separately reviewed adapter, egress policy and security test suite are approved.
 
 ## Phase 3.1 — Authorized web application assessment
 - Dedicated web assessment engine separate from passive network inventory
@@ -30,7 +30,7 @@ Current implementation status: the passive foundation is implemented. Workers ca
 - Authenticated API and Blazor assessment history/report workflow
 - PostgreSQL persistence, lease-aware cancellation and worker capability admission
 
-Coverage is intentionally limited to the checks documented in `docs/web-assessment.md`; destructive exploitation, credential attacks, arbitrary form submission, active network probing and CVE correlation are not part of this milestone.
+**Status: Complete with bounded coverage and security hardening.** See `docs/web-assessment.md`. Coverage is intentionally limited to the checks documented there; destructive exploitation, credential attacks, arbitrary form submission, active network probing and CVE correlation are not part of this milestone.
 
 ## Phase 3.1.1 — Web assessment security hardening
 - Policy-enforced Playwright browser sessions using a per-assessment loopback proxy, execution-time scope checks and pinned DNS destinations
@@ -52,6 +52,9 @@ This milestone does not add destructive attacks, credential testing, arbitrary f
 This milestone preserves the passive-only execution boundary and does not add destructive attacks, credential testing, arbitrary form submission, active network discovery or Phase 3.2 vulnerability intelligence.
 
 ## Phase 3 — Vulnerability intelligence
+
+**Status: Core Phase 3 complete and CI-verified on PR #3.** Release build, 220 unit tests, 28 integration tests, 10 security tests, 2 architecture tests, Playwright browser setup and Docker Compose validation passed. Deferred non-blocking polish is documented in [phase3-vulnerability-intelligence.md](phase3-vulnerability-intelligence.md).
+
 - CVE/CPE correlation and source attribution
 - Evidence-backed risk scoring
 - Deduplication and finding lifecycle

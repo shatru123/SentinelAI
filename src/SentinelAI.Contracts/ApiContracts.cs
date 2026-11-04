@@ -148,3 +148,147 @@ public sealed record FindingDetailResponse(
     DateTimeOffset CreatedAt,
     IReadOnlyCollection<EvidenceResponse> Evidence,
     IReadOnlyCollection<ScreenshotResponse> Screenshots);
+
+
+public sealed record SyncEpssRequest(IReadOnlyCollection<string> CveIds);
+
+public sealed record CreateSoftwareComponentRequest(
+    string Vendor,
+    string Product,
+    string? Version,
+    string CpeName,
+    string IdentificationMethod,
+    Guid EvidenceId,
+    decimal Confidence);
+
+public sealed record ConfirmSoftwareComponentRequest(Guid EvidenceId, decimal Confidence);
+
+public sealed record SoftwareComponentResponse(
+    Guid Id,
+    Guid AssetId,
+    string Vendor,
+    string Product,
+    string? Version,
+    string CpeName,
+    string IdentificationMethod,
+    Guid EvidenceId,
+    decimal Confidence,
+    bool IsOperatorConfirmed,
+    DateTimeOffset FirstObservedAt,
+    DateTimeOffset LastObservedAt);
+
+public sealed record AssetVulnerabilityMatchResponse(
+    Guid Id,
+    Guid AssetId,
+    Guid SoftwareComponentId,
+    string CveId,
+    VulnerabilityMatchStatus Status,
+    VulnerabilityLifecycleStatus LifecycleStatus,
+    string Explanation,
+    string? CriteriaId,
+    DateTimeOffset FirstObservedAt,
+    DateTimeOffset LastObservedAt);
+
+public sealed record VulnerabilityCvssResponse(
+    string Version,
+    string Vector,
+    decimal BaseScore,
+    string Severity,
+    string Source,
+    DateTimeOffset ObservedAt);
+
+public sealed record VulnerabilityEpssResponse(
+    decimal Score,
+    decimal Percentile,
+    DateOnly AsOfDate,
+    DateTimeOffset ImportedAt);
+
+public sealed record VulnerabilityKevResponse(
+    bool IsListed,
+    string CatalogVersion,
+    DateTimeOffset CatalogReleasedAt,
+    string VendorProject,
+    string Product,
+    DateOnly DateAdded,
+    DateOnly DueDate,
+    string RequiredAction,
+    bool? KnownRansomwareCampaignUse);
+
+public sealed record VulnerabilityCatalogResponse(
+    string CveId,
+    string Status,
+    DateTimeOffset PublishedAt,
+    DateTimeOffset LastModifiedAt,
+    string Description,
+    IReadOnlyCollection<string> CweIds,
+    IReadOnlyCollection<string> References,
+    IReadOnlyCollection<VulnerabilityCvssResponse> Cvss,
+    VulnerabilityEpssResponse? Epss,
+    VulnerabilityKevResponse? Kev);
+
+public sealed record VulnerabilityCatalogListItem(
+    string CveId,
+    string Status,
+    DateTimeOffset PublishedAt,
+    DateTimeOffset LastModifiedAt,
+    string Description);
+
+public sealed record VulnerabilitySyncResponse(int RecordsProcessed);
+
+
+public sealed record AssessVulnerabilityRiskRequest(bool IsInternetFacing, bool IsBusinessCritical);
+
+public sealed record VulnerabilityTriageAssessmentResponse(
+    Guid Id,
+    Guid MatchId,
+    VulnerabilityRiskPriority Priority,
+    decimal? CvssBaseScore,
+    string? CvssVersion,
+    string? CvssVector,
+    DateTimeOffset? CvssObservedAt,
+    decimal? EpssScore,
+    decimal? EpssPercentile,
+    DateOnly? EpssAsOfDate,
+    bool IsKnownExploited,
+    string? KevCatalogVersion,
+    DateTimeOffset? KevCatalogReleasedAt,
+    bool IsInternetFacing,
+    bool IsBusinessCritical,
+    IReadOnlyCollection<string> Reasons,
+    string Disclaimer,
+    DateTimeOffset AssessedAt);
+
+public sealed record TransitionVulnerabilityMatchRequest(VulnerabilityLifecycleStatus Status, string Reason);
+
+public sealed record VulnerabilityMatchTransitionResponse(
+    Guid Id,
+    Guid MatchId,
+    VulnerabilityLifecycleStatus FromStatus,
+    VulnerabilityLifecycleStatus ToStatus,
+    Guid ActorId,
+    string Reason,
+    DateTimeOffset OccurredAt);
+
+public sealed record SyncNvdModifiedRequest(
+    DateTimeOffset ModifiedStart,
+    DateTimeOffset ModifiedEnd,
+    int PageSize = 2000,
+    int MaxRecords = 10000,
+    bool Resume = false);
+
+public sealed record SyncNvdModifiedResponse(
+    int ProcessedThisRun,
+    int TotalProcessedInWindow,
+    int NextStartIndex,
+    int TotalResults,
+    bool HasMore,
+    string WindowKey);
+
+public sealed record VulnerabilitySyncCheckpointResponse(
+    string Source,
+    string? Cursor,
+    string? FeedVersion,
+    DateTimeOffset? LastAttemptAt,
+    DateTimeOffset? LastSucceededAt,
+    int RecordsProcessed,
+    string? LastErrorCategory);

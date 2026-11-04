@@ -1,0 +1,863 @@
+@using System.Text.Json
+@page "/intelligence"
+@attribute [Authorize]
+@using SentinelAI.Contracts
+@using SentinelAI.Domain
+@inject SentinelApiClient ApiClient
+
+<PageTitle>Vulnerability Intelligence · SentinelAI</PageTitle>
+
+<PageHeader Title="Vulnerability Intelligence"
+            Eyebrow="Phase 3 / CVE Correlation"
+            Description="Enrich the local CVE catalog, verify product identities against asset evidence, and evaluate CPE applicability without treating uncertain matches as confirmed vulnerabilities.">
+    <Actions>
+        <a class="soc-btn soc-btn-secondary" href="/downloads/vulnerability-intelligence-report">Export CSV</a>
+        <button class="soc-btn soc-btn-secondary" @onclick="RefreshAsync" disabled="@loading">
+            <span class="icon">↻</span> Refresh
+        </button>
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <button class="soc-btn soc-btn-secondary" @onclick="SyncNvdModifiedAsync" disabled="@busy">
+                    @(nvdHasMore ? "Continue NVD sync" : "Sync NVD updates (7d)")
+                </button>
+                <button class="soc-btn soc-btn-secondary" @onclick="SyncKevAsync" disabled="@busy">
+                    Sync CISA KEV
+                </button>
+            </Authorized>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(message))
+{
+    <div class="soc-panel" style="border-left: 3px solid var(--color-success); margin-bottom: var(--space-4);">
+        <span>@message</span>
+    </div>
+}
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="soc-panel" style="border-left: 3px solid var(--color-danger); margin-bottom: var(--space-4);">
+        <span>@error</span>
+    </div>
+}
+
+<div class="metrics-grid" style="margin-bottom: var(--space-6);">
+    <MetricCard Title="Catalog Results" Value="@catalog.Count.ToString("N0")" Icon="⌕" Subtitle="Latest matching CVE records" />
+    <MetricCard Title="Confirmed Matches" Value="@matches.Count(x => x.Status == VulnerabilityMatchStatus.Confirmed).ToString("N0")" Icon="✓" StatusClass="@(matches.Any(x => x.Status == VulnerabilityMatchStatus.Confirmed) ? "warning" : "neutral")" Subtitle="Evidence-backed product identities" />
+    <MetricCard Title="Potential Matches" Value="@matches.Count(x => x.Status == VulnerabilityMatchStatus.Potential).ToString("N0")" Icon="?" StatusClass="@(matches.Any(x => x.Status == VulnerabilityMatchStatus.Potential) ? "warning" : "neutral")" Subtitle="Require identity confirmation" />
+    <MetricCard Title="Inconclusive" Value="@matches.Count(x => x.Status == VulnerabilityMatchStatus.Inconclusive).ToString("N0")" Icon="…" Subtitle="Unsupported or incomplete applicability" />
+</div>
+
+<section class="soc-panel" style="margin-bottom:var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <div class="eyebrow">Feed Operations</div>
+            <h2 class="soc-panel-title">Source Sync Status</h2>
+        </div>
+        <button class="soc-btn soc-btn-secondary" @onclick="LoadSyncStatusesAsync" disabled="@busy">Refresh status</button>
+    </div>
+    @if (syncStatuses.Count == 0)
+    {
+        <p class="text-muted" style="font-size:.8rem;">No feed sync has run yet.</p>
+    }
+    else
+    {
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead><tr><th>Source</th><th>Last success</th><th>Records</th><th>Cursor</th><th>Last error</th></tr></thead>
+                <tbody>
+                    @foreach (var checkpoint in syncStatuses)
+                    {
+                        <tr>
+                            <td><strong>@checkpoint.Source</strong></td>
+                            <td class="text-muted">@((checkpoint.LastSucceededAt)?.ToLocalTime().ToString("g") ?? "Never")</td>
+                            <td>@checkpoint.RecordsProcessed.ToString("N0")</td>
+                            <td>@(string.IsNullOrWhiteSpace(checkpoint.Cursor) ? "Complete" : $"Offset {checkpoint.Cursor}")</td>
+                            <td class="text-muted">@(checkpoint.LastErrorCategory ?? "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<div class="content-grid">
+    <section class="soc-panel">
+        <div class="soc-panel-header">
+            <div>
+                <div class="eyebrow">Global Intelligence Catalog</div>
+                <h2 class="soc-panel-title">CVE Database</h2>
+            </div>
+            <AuthorizeView Roles="Admin">
+                <Authorized>
+                    @if (selectedCve is not null)
+                    {
+                        <button class="soc-btn soc-btn-secondary" @onclick="SyncSelectedCveAsync" disabled="@busy">
+                            Sync selected CVE
+                        </button>
+                    }
+                </Authorized>
+            </AuthorizeView>
+        </div>
+
+        <div style="display:flex; gap:var(--space-2); margin-bottom:var(--space-4);">
+            <input class="soc-input" style="flex:1;" placeholder="Search CVE ID or vulnerability description"
+                   @bind="searchTerm" @bind:event="oninput" />
+            <button class="soc-btn soc-btn-primary" @onclick="SearchCatalogAsync" disabled="@loading">Search</button>
+        </div>
+
+        @if (loading && catalog.Count == 0)
+        {
+            <LoadingState Message="Loading vulnerability intelligence…" />
+        }
+        else if (catalog.Count == 0)
+        {
+            <EmptyState Title="No catalog entries yet"
+                        Message="Search after the catalog has been populated. Administrators can sync an individual CVE or the CISA KEV catalog."
+                        ActionText="Retry"
+                        OnAction="SearchCatalogAsync" />
+        }
+        else
+        {
+            <div class="soc-table-container">
+                <table class="soc-table">
+                    <thead>
+                        <tr>
+                            <th>CVE</th>
+                            <th>Status</th>
+                            <th>Published</th>
+                            <th>Modified</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in catalog)
+                        {
+                            <tr>
+                                <td>
+                                    <strong style="font-family:var(--font-mono);">@item.CveId</strong>
+                                    <div class="text-muted" style="max-width:280px; white-space:normal; font-size:.75rem;">@item.Description</div>
+                                </td>
+                                <td><span class="soc-badge soc-badge-neutral">@item.Status</span></td>
+                                <td class="text-muted">@item.PublishedAt.ToLocalTime().ToString("yyyy-MM-dd")</td>
+                                <td class="text-muted">@item.LastModifiedAt.ToLocalTime().ToString("yyyy-MM-dd")</td>
+                                <td>
+                                    <button class="soc-btn soc-btn-secondary" @onclick="() => LoadCveAsync(item.CveId)">Inspect</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <section class="soc-panel">
+        <div class="soc-panel-header">
+            <div>
+                <div class="eyebrow">Selected Intelligence</div>
+                <h2 class="soc-panel-title">CVE Dossier</h2>
+            </div>
+            @if (selectedCve is not null)
+            {
+                <span class="soc-badge soc-badge-neutral">@selectedCve.CveId</span>
+            }
+        </div>
+
+        @if (selectedCve is null)
+        {
+            <div class="soc-empty-state">
+                <div class="soc-empty-icon">⌕</div>
+                <h3>Select a CVE</h3>
+                <p class="text-muted">CVSS, EPSS, KEV and vendor remediation references will appear here.</p>
+            </div>
+        }
+        else
+        {
+            <h3 style="margin-bottom:var(--space-2);">@selectedCve.Status</h3>
+            <p style="font-size:.875rem; line-height:1.6;">@selectedCve.Description</p>
+
+            <div style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-3); margin:var(--space-4) 0;">
+                <div class="soc-panel" style="padding:var(--space-3);">
+                    <div class="text-muted" style="font-size:.72rem;">CVSS metrics</div>
+                    <strong>@selectedCve.Cvss.Count</strong>
+                    @foreach (var metric in selectedCve.Cvss)
+                    {
+                        <div style="font-size:.75rem; margin-top:4px;">@metric.Version · @metric.BaseScore (@metric.Severity)</div>
+                    }
+                </div>
+                <div class="soc-panel" style="padding:var(--space-3);">
+                    <div class="text-muted" style="font-size:.72rem;">EPSS</div>
+                    @if (selectedCve.Epss is null)
+                    {
+                        <strong>Not imported</strong>
+                    }
+                    else
+                    {
+                        <strong>@selectedCve.Epss.Score.ToString("P2")</strong>
+                        <div style="font-size:.75rem;">Percentile @selectedCve.Epss.Percentile.ToString("P1")</div>
+                        <div class="text-muted" style="font-size:.7rem;">As of @selectedCve.Epss.AsOfDate</div>
+                        @if (IsEpssStale(selectedCve.Epss.AsOfDate))
+                        {
+                            <span class="soc-badge soc-badge-warning">Stale EPSS data</span>
+                        }
+                    }
+                    <AuthorizeView Roles="Admin">
+                        <Authorized>
+                            <button class="soc-btn soc-btn-secondary" style="margin-top:8px; width:100%;" @onclick="SyncSelectedEpssAsync" disabled="@busy">
+                                Refresh EPSS
+                            </button>
+                        </Authorized>
+                    </AuthorizeView>
+                </div>
+            </div>
+
+            <div style="padding:var(--space-3); border:1px solid var(--border-subtle); border-radius:var(--radius-md); margin-bottom:var(--space-3);">
+                @if (selectedCve.Kev is null)
+                {
+                    <span class="soc-badge soc-badge-neutral">Not listed in latest KEV sync</span>
+                }
+                else
+                {
+                    <span class="soc-badge soc-badge-warning">CISA KEV · Known exploited</span>
+                    <p style="font-size:.8rem; margin:8px 0 0;">@selectedCve.Kev.RequiredAction</p>
+                    <div class="text-muted" style="font-size:.72rem; margin-top:6px;">
+                        Catalog @selectedCve.Kev.CatalogVersion · Due @selectedCve.Kev.DueDate
+                    </div>
+                    @if (IsKevStale(selectedCve.Kev.CatalogReleasedAt))
+                    {
+                        <span class="soc-badge soc-badge-warning">Stale KEV catalog</span>
+                    }
+                }
+            </div>
+            <div class="text-muted" style="font-size:.72rem;">
+                Published @selectedCve.PublishedAt.ToLocalTime().ToString("g") · Modified @selectedCve.LastModifiedAt.ToLocalTime().ToString("g")
+            </div>
+            <p class="text-muted" style="font-size:.72rem; margin-top:8px;">
+                KEV membership is a prioritization signal, not proof that a tenant asset is exploitable or compromised. CVSS and EPSS retain their source meanings and dates.
+            </p>
+        }
+    </section>
+</div>
+
+<section class="soc-panel" style="margin-top:var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <div class="eyebrow">Evidence-Backed Product Identity</div>
+            <h2 class="soc-panel-title">Asset Software Components</h2>
+        </div>
+    </div>
+
+    <div class="form-grid" style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-3);">
+        <label>
+            <span class="form-label">Asset</span>
+            <select class="soc-select" value="@selectedAssetId" @onchange="OnAssetChanged">
+                <option value="">Select tenant asset</option>
+                @foreach (var asset in assets)
+                {
+                    <option value="@asset.Id">@asset.Address (@asset.Kind)</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span class="form-label">Inventory evidence</span>
+            <select class="soc-select" value="@selectedServiceId" @onchange="OnServiceChanged" disabled="@(selectedAsset is null || services.Count == 0)">
+                <option value="">Select recorded service observation</option>
+                @foreach (var service in services)
+                {
+                    <option value="@service.Id">@service.Protocol/@service.Port · @(service.Name ?? "Unknown") · @(service.Version ?? "Version unknown")</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span class="form-label">Vendor</span>
+            <input class="soc-input" @bind="vendor" placeholder="e.g. acme" />
+        </label>
+        <label>
+            <span class="form-label">Product</span>
+            <input class="soc-input" @bind="product" placeholder="e.g. server" />
+        </label>
+        <label>
+            <span class="form-label">Version</span>
+            <input class="soc-input" @bind="version" placeholder="Exact observed version" />
+        </label>
+        <label>
+            <span class="form-label">CPE 2.3 name</span>
+            <input class="soc-input" @bind="cpeName" placeholder="cpe:2.3:a:vendor:product:version:*:*:*:*:*:*:*" />
+        </label>
+        <label>
+            <span class="form-label">Identity confidence (0–1)</span>
+            <input class="soc-input" type="number" min="0" max="1" step="0.05" @bind="identityConfidence" />
+        </label>
+    </div>
+    <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap; margin-top:var(--space-3);">
+        <button class="soc-btn soc-btn-primary" @onclick="CreateComponentAsync" disabled="@(busy || selectedAsset is null || selectedServiceId is null)">
+            Save unconfirmed identity candidate
+        </button>
+        <span class="text-muted" style="font-size:.75rem;">Candidates are not used for confirmed CVE matches until an operator explicitly confirms identity.</span>
+    </div>
+
+    @if (selectedAsset is not null)
+    {
+        <div class="soc-table-container" style="margin-top:var(--space-4);">
+            <table class="soc-table">
+                <thead><tr><th>Product identity</th><th>CPE / Version</th><th>Evidence</th><th>Confirmation</th><th>Actions</th></tr></thead>
+                <tbody>
+                    @if (components.Count == 0)
+                    {
+                        <tr><td colspan="5" class="text-muted">No software component candidates for this asset.</td></tr>
+                    }
+                    @foreach (var component in components)
+                    {
+                        <tr>
+                            <td><strong>@component.Vendor / @component.Product</strong></td>
+                            <td style="font-size:.75rem;">@component.CpeName<br />@component.Version</td>
+                            <td class="text-muted" style="font-size:.72rem;">@component.EvidenceId.ToString()[..8]…</td>
+                            <td>
+                                <span class="soc-badge @(component.IsOperatorConfirmed ? "soc-badge-success" : "soc-badge-neutral")">
+                                    @(component.IsOperatorConfirmed ? "Confirmed" : "Candidate")
+                                </span>
+                            </td>
+                            <td style="display:flex; gap:6px; flex-wrap:wrap;">
+                                @if (!component.IsOperatorConfirmed)
+                                {
+                                    <button class="soc-btn soc-btn-secondary" @onclick="() => ConfirmComponentAsync(component)" disabled="@busy">Confirm</button>
+                                }
+                                @if (selectedCve is not null)
+                                {
+                                    <button class="soc-btn soc-btn-secondary" @onclick="() => EvaluateComponentAsync(component)" disabled="@busy">Evaluate CVE</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="soc-panel" style="margin-top:var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <div class="eyebrow">Tenant-Scoped Correlation</div>
+            <h2 class="soc-panel-title">Asset / CVE Matches</h2>
+        </div>
+        <button class="soc-btn soc-btn-secondary" @onclick="LoadMatchesAsync" disabled="@busy">Refresh matches</button>
+    </div>
+    @if (matches.Count == 0)
+    {
+        <div class="soc-empty-state">
+            <h3>No CVE matches recorded</h3>
+            <p class="text-muted">Select a catalog CVE, confirm a product identity and evaluate applicability to create a match record.</p>
+        </div>
+    }
+    else
+    {
+        <div class="soc-table-container">
+            <table class="soc-table">
+                <thead><tr><th>CVE</th><th>Asset</th><th>Match status</th><th>Lifecycle</th><th>Rationale</th><th>Last evaluated</th></tr></thead>
+                <tbody>
+                    @foreach (var match in matches)
+                    {
+                        <tr>
+                            <td><strong style="font-family:var(--font-mono);">@match.CveId</strong></td>
+                            <td>@match.AssetId.ToString()[..8]…</td>
+                            <td><span class="soc-badge @(match.Status == VulnerabilityMatchStatus.Confirmed ? "soc-badge-warning" : "soc-badge-neutral")">@match.Status</span></td>
+                            <td><span class="soc-badge soc-badge-neutral">@match.LifecycleStatus</span></td>
+                            <td style="font-size:.78rem; white-space:normal; max-width:460px;">@match.Explanation</td>
+                            <td class="text-muted" style="font-size:.72rem;">@match.LastObservedAt.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="soc-panel" style="margin-top:var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <div class="eyebrow">Operator Workflow</div>
+            <h2 class="soc-panel-title">Risk Triage &amp; Remediation Lifecycle</h2>
+        </div>
+    </div>
+
+    <label style="display:block; max-width:520px;">
+        <span class="form-label">Confirmed asset / CVE match</span>
+        <select class="soc-select" value="@selectedMatchId" @onchange="OnMatchChanged">
+            <option value="">Select a confirmed match</option>
+            @foreach (var match in matches.Where(x => x.Status == VulnerabilityMatchStatus.Confirmed))
+            {
+                <option value="@match.Id">@match.CveId · Asset @match.AssetId.ToString()[..8]…</option>
+            }
+        </select>
+    </label>
+
+    @if (selectedMatch is not null)
+    {
+        <div style="display:flex; gap:var(--space-4); flex-wrap:wrap; margin:var(--space-3) 0;">
+            <label style="display:flex; gap:8px; align-items:center;">
+                <input type="checkbox" @bind="isInternetFacing" />
+                <span>Asset is internet-facing</span>
+            </label>
+            <label style="display:flex; gap:8px; align-items:center;">
+                <input type="checkbox" @bind="isBusinessCritical" />
+                <span>Asset is business-critical</span>
+            </label>
+            <button class="soc-btn soc-btn-primary" @onclick="AssessSelectedMatchAsync" disabled="@busy">
+                Calculate explainable priority
+            </button>
+        </div>
+
+        @if (selectedTriage is not null)
+        {
+            <div class="soc-panel" style="padding:var(--space-3); margin-bottom:var(--space-4);">
+                <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap;">
+                    <strong>Suggested priority</strong>
+                    <span class="soc-badge @(selectedTriage.Priority == VulnerabilityRiskPriority.Critical ? "soc-badge-warning" : "soc-badge-neutral")">@selectedTriage.Priority</span>
+                    @if (selectedTriage.IsKnownExploited)
+                    {
+                        <span class="soc-badge soc-badge-warning">CISA KEV</span>
+                    }
+                </div>
+                <div style="display:flex; gap:var(--space-4); flex-wrap:wrap; margin:var(--space-2) 0; font-size:.8rem;">
+                    <span>CVSS: @(selectedTriage.CvssBaseScore?.ToString("0.0") ?? "not available") @(selectedTriage.CvssVersion is null ? "" : $"(v{selectedTriage.CvssVersion})")</span>
+                    <span>EPSS: @(selectedTriage.EpssScore?.ToString("P2") ?? "not available")</span>
+                    <span>KEV: @(selectedTriage.IsKnownExploited ? "Listed" : "Not listed")</span>
+                </div>
+                <ul style="font-size:.8rem; margin:0; padding-left:20px;">
+                    @foreach (var reason in selectedTriage.Reasons)
+                    {
+                        <li>@reason</li>
+                    }
+                </ul>
+                <p class="text-muted" style="font-size:.7rem; margin:8px 0 0;">@selectedTriage.Disclaimer</p>
+            </div>
+        }
+
+        <div style="display:grid; grid-template-columns:minmax(180px,240px) minmax(200px,1fr) auto; gap:var(--space-3); align-items:end;">
+            <label>
+                <span class="form-label">Next lifecycle state</span>
+                <select class="soc-select" @bind="nextLifecycleStatus">
+                    @foreach (var state in AllowedLifecycleStates(selectedMatch.LifecycleStatus))
+                    {
+                        <option value="@state">@state</option>
+                    }
+                </select>
+            </label>
+            <label>
+                <span class="form-label">Transition reason (required)</span>
+                <input class="soc-input" @bind="lifecycleReason" placeholder="Document the operator decision" />
+            </label>
+            <button class="soc-btn soc-btn-secondary" @onclick="TransitionSelectedMatchAsync" disabled="@busy">
+                Update lifecycle
+            </button>
+        </div>
+
+        @if (matchHistory is not null)
+        {
+            <div style="margin-top:var(--space-4);">
+                <h3 style="margin-bottom:var(--space-2);">Lifecycle history</h3>
+                @if (matchHistory.Count == 0)
+                {
+                    <p class="text-muted" style="font-size:.8rem;">No lifecycle transitions have been recorded.</p>
+                }
+                else
+                {
+                    <div class="soc-table-container">
+                        <table class="soc-table">
+                            <thead><tr><th>From</th><th>To</th><th>Reason</th><th>Actor</th><th>When</th></tr></thead>
+                            <tbody>
+                                @foreach (var transition in matchHistory)
+                                {
+                                    <tr>
+                                        <td>@transition.FromStatus</td>
+                                        <td>@transition.ToStatus</td>
+                                        <td style="white-space:normal;">@transition.Reason</td>
+                                        <td>@transition.ActorId.ToString()[..8]…</td>
+                                        <td class="text-muted">@transition.OccurredAt.ToLocalTime().ToString("g")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        }
+    }
+    else
+    {
+        <p class="text-muted" style="margin-top:var(--space-3); font-size:.8rem;">Only confirmed asset/CVE matches can receive priority guidance. Potential or inconclusive matches must first have their product identity and applicability resolved.</p>
+    }
+</section>
+
+@code {
+    private const int PageSize = 100;
+    private bool loading = true;
+    private bool busy;
+    private string? error;
+    private string? message;
+    private string searchTerm = string.Empty;
+    private string selectedAssetId = string.Empty;
+    private string selectedServiceId = string.Empty;
+    private string vendor = string.Empty;
+    private string product = string.Empty;
+    private string version = string.Empty;
+    private string cpeName = string.Empty;
+    private decimal identityConfidence = 0.5m;
+    private List<AssetResponse> assets = [];
+    private List<AssetServiceResponse> services = [];
+    private List<SoftwareComponentResponse> components = [];
+    private List<VulnerabilityCatalogListItem> catalog = [];
+    private List<AssetVulnerabilityMatchResponse> matches = [];
+    private List<VulnerabilitySyncCheckpointResponse> syncStatuses = [];
+    private VulnerabilityCatalogResponse? selectedCve;
+    private DateTimeOffset nvdWindowStart = DateTimeOffset.UtcNow.AddDays(-7);
+    private DateTimeOffset nvdWindowEnd = DateTimeOffset.UtcNow;
+    private bool nvdHasMore;
+    private AssetResponse? selectedAsset;
+    private string selectedMatchId = string.Empty;
+    private AssetVulnerabilityMatchResponse? selectedMatch;
+    private bool isInternetFacing;
+    private bool isBusinessCritical;
+    private VulnerabilityLifecycleStatus nextLifecycleStatus = VulnerabilityLifecycleStatus.InReview;
+    private string lifecycleReason = string.Empty;
+    private VulnerabilityTriageAssessmentResponse? selectedTriage;
+    private List<VulnerabilityMatchTransitionResponse>? matchHistory;
+
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    private async Task RefreshAsync()
+    {
+        loading = true;
+        error = null;
+        try
+        {
+            await Task.WhenAll(LoadAssetsAsync(), SearchCatalogAsync(), LoadMatchesAsync(), LoadSyncStatusesAsync());
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { loading = false; }
+    }
+
+    private async Task SearchCatalogAsync()
+    {
+        var encoded = Uri.EscapeDataString(searchTerm.Trim());
+        var endpoint = string.IsNullOrWhiteSpace(searchTerm)
+            ? "/api/v1/vulnerability-intelligence/cves?limit=50"
+            : $"/api/v1/vulnerability-intelligence/cves?search={encoded}&limit=50";
+        catalog = await ApiClient.GetJsonAsync<List<VulnerabilityCatalogListItem>>(endpoint);
+    }
+
+    private async Task LoadAssetsAsync()
+    {
+        var page = await ApiClient.GetPageAsync<AssetResponse>("/api/v1/assets", 1, PageSize);
+        assets = page.Items.ToList();
+        if (selectedAsset is not null && assets.All(x => x.Id != selectedAsset.Id))
+            await OnAssetChanged(new ChangeEventArgs { Value = string.Empty });
+    }
+
+    private async Task LoadMatchesAsync()
+    {
+        matches = await ApiClient.GetJsonAsync<List<AssetVulnerabilityMatchResponse>>("/api/v1/vulnerability-intelligence/matches?limit=250");
+    }
+
+    private async Task LoadSyncStatusesAsync()
+    {
+        syncStatuses = await ApiClient.GetJsonAsync<List<VulnerabilitySyncCheckpointResponse>>(
+            "/api/v1/vulnerability-intelligence/sync-status");
+        var checkpoint = syncStatuses.SingleOrDefault(x => x.Source == "NVD-CVE-MODIFIED");
+        nvdHasMore = !string.IsNullOrWhiteSpace(checkpoint?.Cursor);
+        if (nvdHasMore && checkpoint?.FeedVersion is { } key)
+        {
+            var parts = key.Split('|', 2);
+            if (parts.Length == 2
+                && DateTimeOffset.TryParse(parts[0], out var start)
+                && DateTimeOffset.TryParse(parts[1], out var end))
+            {
+                nvdWindowStart = start;
+                nvdWindowEnd = end;
+            }
+        }
+    }
+
+
+    private async Task LoadCveAsync(string cveId)
+    {
+        busy = true;
+        error = null;
+        try
+        {
+            selectedCve = await ApiClient.GetJsonAsync<VulnerabilityCatalogResponse>(
+                $"/api/v1/vulnerability-intelligence/cves/{Uri.EscapeDataString(cveId)}");
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task SyncSelectedCveAsync()
+    {
+        if (selectedCve is null) return;
+        busy = true;
+        error = null;
+        try
+        {
+            await ApiClient.PostAsync($"/api/v1/vulnerability-intelligence/cves/{Uri.EscapeDataString(selectedCve.CveId)}/sync");
+            await LoadCveAsync(selectedCve.CveId);
+            await SearchCatalogAsync();
+            message = $"Synced {selectedCve.CveId} from NVD.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task SyncSelectedEpssAsync()
+    {
+        if (selectedCve is null) return;
+        busy = true;
+        error = null;
+        try
+        {
+            await ApiClient.PostJsonAsync<SyncEpssRequest, JsonElement>(
+                "/api/v1/vulnerability-intelligence/epss/sync",
+                new SyncEpssRequest([selectedCve.CveId]));
+            await LoadCveAsync(selectedCve.CveId);
+            message = $"Refreshed EPSS for {selectedCve.CveId}.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task SyncNvdModifiedAsync()
+    {
+        busy = true;
+        error = null;
+        try
+        {
+            var result = await ApiClient.PostJsonAsync<SyncNvdModifiedRequest, SyncNvdModifiedResponse>(
+                "/api/v1/vulnerability-intelligence/nvd/modified-sync",
+                new SyncNvdModifiedRequest(nvdWindowStart, nvdWindowEnd, 2000, 10000, nvdHasMore));
+            nvdHasMore = result.HasMore;
+            if (!nvdHasMore)
+            {
+                nvdWindowEnd = DateTimeOffset.UtcNow;
+                nvdWindowStart = nvdWindowEnd.AddDays(-7);
+            }
+            await Task.WhenAll(SearchCatalogAsync(), LoadSyncStatusesAsync());
+            message = nvdHasMore
+                ? $"Imported {result.ProcessedThisRun:N0} CVEs. More records remain; select Continue NVD sync to resume at offset {result.NextStartIndex:N0}."
+                : $"NVD modified-date sync completed. Imported {result.ProcessedThisRun:N0} CVEs in this run; {result.TotalProcessedInWindow:N0} in the window.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task SyncKevAsync()
+    {
+        busy = true;
+        error = null;
+        try
+        {
+            await ApiClient.PostAsync("/api/v1/vulnerability-intelligence/kev/sync");
+            if (selectedCve is not null) await LoadCveAsync(selectedCve.CveId);
+            await Task.WhenAll(SearchCatalogAsync(), LoadSyncStatusesAsync());
+            message = "CISA KEV catalog synchronization completed.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task OnAssetChanged(ChangeEventArgs args)
+    {
+        selectedAssetId = args.Value?.ToString() ?? string.Empty;
+        selectedAsset = Guid.TryParse(selectedAssetId, out var id) ? assets.SingleOrDefault(x => x.Id == id) : null;
+        services = [];
+        components = [];
+        selectedServiceId = string.Empty;
+        if (selectedAsset is null) return;
+        try
+        {
+            services = await ApiClient.GetJsonAsync<List<AssetServiceResponse>>($"/api/v1/assets/{selectedAsset.Id}/services");
+            components = await ApiClient.GetJsonAsync<List<SoftwareComponentResponse>>($"/api/v1/assets/{selectedAsset.Id}/software-components");
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+    }
+
+    private void OnServiceChanged(ChangeEventArgs args)
+    {
+        selectedServiceId = args.Value?.ToString() ?? string.Empty;
+        if (!Guid.TryParse(selectedServiceId, out var serviceId)) return;
+        var service = services.SingleOrDefault(x => x.Id == serviceId);
+        if (service is null) return;
+        product = service.Name ?? string.Empty;
+        version = service.Version ?? string.Empty;
+    }
+
+    private async Task CreateComponentAsync()
+    {
+        if (selectedAsset is null || !Guid.TryParse(selectedServiceId, out var evidenceId)) return;
+        busy = true;
+        error = null;
+        try
+        {
+            await ApiClient.PostJsonAsync<CreateSoftwareComponentRequest, SoftwareComponentResponse>(
+                $"/api/v1/assets/{selectedAsset.Id}/software-components",
+                new CreateSoftwareComponentRequest(vendor, product, string.IsNullOrWhiteSpace(version) ? null : version,
+                    cpeName, "operator-entered-from-inventory", evidenceId, identityConfidence));
+            components = await ApiClient.GetJsonAsync<List<SoftwareComponentResponse>>($"/api/v1/assets/{selectedAsset.Id}/software-components");
+            message = "Software identity candidate saved. It is not confirmed until an operator confirms it.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task ConfirmComponentAsync(SoftwareComponentResponse component)
+    {
+        busy = true;
+        error = null;
+        try
+        {
+            await ApiClient.PostJsonAsync<ConfirmSoftwareComponentRequest, SoftwareComponentResponse>(
+                $"/api/v1/software-components/{component.Id}/confirm",
+                new ConfirmSoftwareComponentRequest(component.EvidenceId, component.Confidence));
+            await ReloadComponentsAsync();
+            message = $"Confirmed {component.Vendor} / {component.Product} using the linked evidence.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task EvaluateComponentAsync(SoftwareComponentResponse component)
+    {
+        if (selectedCve is null) return;
+        busy = true;
+        error = null;
+        try
+        {
+            await ApiClient.PostAsync($"/api/v1/software-components/{component.Id}/evaluate/{Uri.EscapeDataString(selectedCve.CveId)}");
+            await LoadMatchesAsync();
+            message = $"Evaluated {selectedCve.CveId} against {component.Vendor} / {component.Product}.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task OnMatchChanged(ChangeEventArgs args)
+    {
+        selectedMatchId = args.Value?.ToString() ?? string.Empty;
+        selectedMatch = Guid.TryParse(selectedMatchId, out var id) ? matches.SingleOrDefault(x => x.Id == id) : null;
+        selectedTriage = null;
+        matchHistory = null;
+        lifecycleReason = string.Empty;
+        nextLifecycleStatus = selectedMatch is null
+            ? VulnerabilityLifecycleStatus.InReview
+            : AllowedLifecycleStates(selectedMatch.LifecycleStatus).FirstOrDefault();
+        if (selectedMatch is not null) await LoadMatchHistoryAsync();
+    }
+
+    private async Task AssessSelectedMatchAsync()
+    {
+        if (selectedMatch is null) return;
+        busy = true;
+        error = null;
+        try
+        {
+            selectedTriage = await ApiClient.PostJsonAsync<AssessVulnerabilityRiskRequest, VulnerabilityTriageAssessmentResponse>(
+                $"/api/v1/vulnerability-intelligence/matches/{selectedMatch.Id}/triage",
+                new AssessVulnerabilityRiskRequest(isInternetFacing, isBusinessCritical));
+            matchHistory = await LoadTriageHistoryAsync(selectedMatch.Id);
+            message = $"Generated {selectedTriage.Priority} triage guidance for {selectedMatch.CveId}.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task TransitionSelectedMatchAsync()
+    {
+        if (selectedMatch is null || string.IsNullOrWhiteSpace(lifecycleReason)) return;
+        busy = true;
+        error = null;
+        try
+        {
+            await ApiClient.PostJsonAsync<TransitionVulnerabilityMatchRequest, VulnerabilityMatchTransitionResponse>(
+                $"/api/v1/vulnerability-intelligence/matches/{selectedMatch.Id}/lifecycle",
+                new TransitionVulnerabilityMatchRequest(nextLifecycleStatus, lifecycleReason));
+            lifecycleReason = string.Empty;
+            await LoadMatchHistoryAsync();
+            message = $"Updated {selectedMatch.CveId} lifecycle to {nextLifecycleStatus}.";
+        }
+        catch (SentinelApiException exception) { error = exception.UserMessage; }
+        finally { busy = false; }
+    }
+
+    private async Task LoadMatchHistoryAsync()
+    {
+        if (selectedMatch is null) return;
+        var history = await ApiClient.GetJsonAsync<JsonElement>(
+            $"/api/v1/vulnerability-intelligence/matches/{selectedMatch.Id}/history");
+        matchHistory = history.TryGetProperty("transitions", out var transitions)
+            ? transitions.Deserialize<List<VulnerabilityMatchTransitionResponse>>() ?? []
+            : [];
+        selectedTriage = history.TryGetProperty("triageAssessments", out var assessments) && assessments.GetArrayLength() > 0
+            ? BuildTriageResponseFromHistory(assessments[0], selectedMatch.Id)
+            : null;
+    }
+
+    private async Task<List<VulnerabilityMatchTransitionResponse>> LoadTriageHistoryAsync(Guid matchId)
+    {
+        var history = await ApiClient.GetJsonAsync<JsonElement>(
+            $"/api/v1/vulnerability-intelligence/matches/{matchId}/history");
+        return history.TryGetProperty("transitions", out var transitions)
+            ? transitions.Deserialize<List<VulnerabilityMatchTransitionResponse>>() ?? []
+            : [];
+    }
+
+    private static IReadOnlyCollection<VulnerabilityLifecycleStatus> AllowedLifecycleStates(VulnerabilityLifecycleStatus current)
+        => current switch
+        {
+            VulnerabilityLifecycleStatus.Open => [VulnerabilityLifecycleStatus.InReview, VulnerabilityLifecycleStatus.AcceptedRisk, VulnerabilityLifecycleStatus.Remediated, VulnerabilityLifecycleStatus.FalsePositive],
+            VulnerabilityLifecycleStatus.InReview => [VulnerabilityLifecycleStatus.Open, VulnerabilityLifecycleStatus.AcceptedRisk, VulnerabilityLifecycleStatus.Remediated, VulnerabilityLifecycleStatus.FalsePositive],
+            VulnerabilityLifecycleStatus.AcceptedRisk or VulnerabilityLifecycleStatus.Remediated or VulnerabilityLifecycleStatus.FalsePositive => [VulnerabilityLifecycleStatus.Reopened],
+            VulnerabilityLifecycleStatus.Reopened => [VulnerabilityLifecycleStatus.InReview, VulnerabilityLifecycleStatus.AcceptedRisk, VulnerabilityLifecycleStatus.Remediated, VulnerabilityLifecycleStatus.FalsePositive],
+            _ => []
+        };
+
+    private static bool IsEpssStale(DateOnly asOfDate)
+        => DateOnly.FromDateTime(DateTime.UtcNow).DayNumber - asOfDate.DayNumber > 7;
+
+    private static bool IsKevStale(DateTimeOffset releasedAt)
+        => DateTimeOffset.UtcNow - releasedAt > TimeSpan.FromDays(7);
+
+    private static VulnerabilityTriageAssessmentResponse BuildTriageResponseFromHistory(JsonElement item, Guid matchId)
+    {
+        var reasons = item.TryGetProperty("reasons", out var values)
+            ? values.Deserialize<List<string>>() ?? []
+            : [];
+        var priorityText = item.GetProperty("priority").GetString();
+        var priority = Enum.TryParse<VulnerabilityRiskPriority>(priorityText, true, out var parsedPriority)
+            ? parsedPriority : VulnerabilityRiskPriority.Standard;
+        return new VulnerabilityTriageAssessmentResponse(
+            item.GetProperty("id").GetGuid(), matchId,
+            priority,
+            item.TryGetProperty("cvssBaseScore", out var cvss) && cvss.ValueKind == JsonValueKind.Number ? cvss.GetDecimal() : null,
+            item.TryGetProperty("cvssVersion", out var cvssVersion) ? cvssVersion.GetString() : null,
+            item.TryGetProperty("cvssVector", out var cvssVector) ? cvssVector.GetString() : null,
+            item.TryGetProperty("cvssObservedAt", out var cvssObserved) && cvssObserved.ValueKind == JsonValueKind.String ? cvssObserved.GetDateTimeOffset() : null,
+            item.TryGetProperty("epssScore", out var epss) && epss.ValueKind == JsonValueKind.Number ? epss.GetDecimal() : null,
+            item.TryGetProperty("epssPercentile", out var percentile) && percentile.ValueKind == JsonValueKind.Number ? percentile.GetDecimal() : null,
+            item.TryGetProperty("epssAsOfDate", out var asOf) && asOf.ValueKind == JsonValueKind.String ? DateOnly.Parse(asOf.GetString()!) : null,
+            item.TryGetProperty("isKnownExploited", out var kev) && kev.GetBoolean(),
+            null, null,
+            item.TryGetProperty("isInternetFacing", out var internet) && internet.GetBoolean(),
+            item.TryGetProperty("isBusinessCritical", out var critical) && critical.GetBoolean(),
+            reasons,
+            item.GetProperty("disclaimer").GetString() ?? string.Empty,
+            item.GetProperty("assessedAt").GetDateTimeOffset());
+    }
+
+    private async Task ReloadComponentsAsync()
+    {
+        if (selectedAsset is null) return;
+        components = await ApiClient.GetJsonAsync<List<SoftwareComponentResponse>>($"/api/v1/assets/{selectedAsset.Id}/software-components");
+    }
+}

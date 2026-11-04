@@ -30,6 +30,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<WebAssessmentEndpoint> WebAssessmentEndpoints => Set<WebAssessmentEndpoint>();
     public DbSet<AssessmentScreenshot> AssessmentScreenshots => Set<AssessmentScreenshot>();
     public DbSet<WebAssessmentCheck> WebAssessmentChecks => Set<WebAssessmentCheck>();
+    public DbSet<VulnerabilityCatalogEntry> VulnerabilityCatalogEntries => Set<VulnerabilityCatalogEntry>();
+    public DbSet<VulnerabilityCvssMetric> VulnerabilityCvssMetrics => Set<VulnerabilityCvssMetric>();
+    public DbSet<VulnerabilityKevEntry> VulnerabilityKevEntries => Set<VulnerabilityKevEntry>();
+    public DbSet<VulnerabilityEpssScore> VulnerabilityEpssScores => Set<VulnerabilityEpssScore>();
+    public DbSet<VulnerabilitySyncCheckpoint> VulnerabilitySyncCheckpoints => Set<VulnerabilitySyncCheckpoint>();
+    public DbSet<SoftwareComponent> SoftwareComponents => Set<SoftwareComponent>();
+    public DbSet<AssetVulnerabilityMatch> AssetVulnerabilityMatches => Set<AssetVulnerabilityMatch>();
+    public DbSet<VulnerabilityMatchTransition> VulnerabilityMatchTransitions => Set<VulnerabilityMatchTransition>();
+    public DbSet<VulnerabilityTriageAssessment> VulnerabilityTriageAssessments => Set<VulnerabilityTriageAssessment>();
 
     public async Task PersistWebAssessmentEndpointsAsync(Guid tenantId, Guid assessmentId, IReadOnlyCollection<WebAssessmentEndpoint> endpoints, CancellationToken cancellationToken = default)
     {
@@ -100,6 +109,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<WebAssessmentEndpoint>().HasKey(x => x.Id);
         modelBuilder.Entity<AssessmentScreenshot>().HasKey(x => x.Id);
         modelBuilder.Entity<WebAssessmentCheck>().HasKey(x => x.Id);
+        modelBuilder.Entity<VulnerabilityCatalogEntry>().HasKey(x => x.CveId);
+        modelBuilder.Entity<VulnerabilityCvssMetric>().HasKey(x => x.Id);
+        modelBuilder.Entity<VulnerabilityKevEntry>().HasKey(x => x.CveId);
+        modelBuilder.Entity<VulnerabilityEpssScore>().HasKey(x => x.Id);
+        modelBuilder.Entity<VulnerabilitySyncCheckpoint>().HasKey(x => x.Id);
+        modelBuilder.Entity<SoftwareComponent>().HasKey(x => x.Id);
+        modelBuilder.Entity<AssetVulnerabilityMatch>().HasKey(x => x.Id);
+        modelBuilder.Entity<VulnerabilityMatchTransition>().HasKey(x => x.Id);
+        modelBuilder.Entity<VulnerabilityTriageAssessment>().HasKey(x => x.Id);
 
         ConfigureTenant(modelBuilder.Entity<User>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<TargetScope>().Property(x => x.TenantId));
@@ -120,6 +138,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<WebAssessmentEndpoint>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<AssessmentScreenshot>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<WebAssessmentCheck>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<SoftwareComponent>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<AssetVulnerabilityMatch>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<VulnerabilityMatchTransition>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<VulnerabilityTriageAssessment>().Property(x => x.TenantId));
 
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var targetComparer = new ValueComparer<List<TargetDefinition>>((a, b) => JsonSerializer.Serialize(a, jsonOptions) == JsonSerializer.Serialize(b, jsonOptions), v => v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())), v => v.ToList());
@@ -155,6 +177,35 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AssessmentScreenshot>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.Id });
         modelBuilder.Entity<WebAssessmentCheck>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.CheckId, x.AffectedEndpoint }).IsUnique();
         modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.AssessmentId, x.IdempotencyKey }).IsUnique();
+        modelBuilder.Entity<VulnerabilityCatalogEntry>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<VulnerabilityCvssMetric>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<VulnerabilityKevEntry>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<VulnerabilityEpssScore>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<AssetVulnerabilityMatch>().Property(x => x.CveId).HasMaxLength(20);
+        modelBuilder.Entity<VulnerabilityCatalogEntry>().HasIndex(x => x.LastModifiedAt);
+        modelBuilder.Entity<VulnerabilityCvssMetric>().HasIndex(x => new { x.CveId, x.Version, x.Vector, x.Source }).IsUnique();
+        modelBuilder.Entity<VulnerabilityCvssMetric>().HasOne<VulnerabilityCatalogEntry>().WithMany()
+            .HasForeignKey(x => x.CveId).HasPrincipalKey(x => x.CveId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<VulnerabilityKevEntry>().HasIndex(x => new { x.IsListed, x.DueDate });
+        modelBuilder.Entity<VulnerabilityEpssScore>().HasIndex(x => new { x.CveId, x.AsOfDate }).IsUnique();
+        modelBuilder.Entity<VulnerabilitySyncCheckpoint>().HasIndex(x => x.Source).IsUnique();
+        modelBuilder.Entity<SoftwareComponent>().HasAlternateKey(x => new { x.TenantId, x.Id });
+        modelBuilder.Entity<SoftwareComponent>().HasIndex(x => new { x.TenantId, x.AssetId, x.CpeName, x.Version }).IsUnique();
+        modelBuilder.Entity<SoftwareComponent>().HasOne<Asset>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.AssetId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<AssetVulnerabilityMatch>().HasIndex(x => new { x.TenantId, x.SoftwareComponentId, x.CveId }).IsUnique();
+        modelBuilder.Entity<AssetVulnerabilityMatch>().HasOne<SoftwareComponent>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.SoftwareComponentId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<AssetVulnerabilityMatch>().HasOne<VulnerabilityCatalogEntry>().WithMany()
+            .HasForeignKey(x => x.CveId).HasPrincipalKey(x => x.CveId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<AssetVulnerabilityMatch>().HasAlternateKey(x => new { x.TenantId, x.Id });
+        modelBuilder.Entity<AssetVulnerabilityMatch>().Property(x => x.LifecycleStatus).HasDefaultValue(VulnerabilityLifecycleStatus.Open);
+        modelBuilder.Entity<VulnerabilityMatchTransition>().HasIndex(x => new { x.TenantId, x.MatchId, x.OccurredAt });
+        modelBuilder.Entity<VulnerabilityMatchTransition>().HasOne<AssetVulnerabilityMatch>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.MatchId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<VulnerabilityTriageAssessment>().HasIndex(x => new { x.TenantId, x.MatchId, x.AssessedAt });
+        modelBuilder.Entity<VulnerabilityTriageAssessment>().HasOne<AssetVulnerabilityMatch>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.MatchId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
     }
 
     private static void ConfigureTenant(PropertyBuilder<Guid> property) => property.IsRequired();

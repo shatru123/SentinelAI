@@ -38,6 +38,16 @@ public static class InfrastructureServices
         services.AddScoped<ScanExecutionService>();
         services.AddScoped<IWebAssessmentEngine, WebAssessmentEngine>();
         services.AddScoped<IHtmlReportGenerator, HtmlReportGenerator>();
+        services.AddScoped<VulnerabilityIntelligenceSyncService>();
+        services.AddHttpClient<NvdCveFeedClient>(client =>
+        {
+            NvdCveFeedClient.Configure(client);
+            var apiKey = configuration["NVD_API_KEY"] ?? configuration["Nvd:ApiKey"];
+            if (!string.IsNullOrWhiteSpace(apiKey))
+                client.DefaultRequestHeaders.TryAddWithoutValidation("apiKey", apiKey);
+        });
+        services.AddHttpClient<CisaKevFeedClient>(client => CisaKevFeedClient.Configure(client));
+        services.AddHttpClient<FirstEpssFeedClient>(client => FirstEpssFeedClient.Configure(client));
         services.AddScoped<IScreenshotCaptureService, PlaywrightScreenshotCaptureService>();
         services.AddSingleton<IAssessmentArtifactStore, FileSystemAssessmentArtifactStore>();
         services.AddHostedService<AssessmentArtifactCleanupService>();

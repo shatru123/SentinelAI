@@ -517,7 +517,8 @@ api.MapGet("/ai/health", async (
         status = "advisory-only",
         defaultProvider = configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none",
         connectivityVerified = statuses.Any(x => x),
-        inferenceImplemented = true,
+        inferenceImplemented = false,
+        providerAdaptersImplemented = true,
         executionMode = "advisory-only"
     });
 }).RequireAuthorization("Reader");

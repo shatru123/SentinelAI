@@ -25,6 +25,20 @@ public sealed class AssessmentDriftComparerTests
     }
 
     [Fact]
+    public void Severity_decrease_is_reported_without_treating_the_finding_as_resolved()
+    {
+        var previous = Finding("security-headers", FindingSeverity.Critical, "https://example.test/app");
+        var current = Finding("security-headers", FindingSeverity.Medium, "https://example.test/app");
+
+        var change = Assert.Single(AssessmentDriftComparer.Compare([previous], [], [current], []));
+
+        Assert.Equal("SeverityDecreased", change.EventType);
+        Assert.Equal(FindingSeverity.Critical, change.PreviousSeverity);
+        Assert.Equal(FindingSeverity.Medium, change.CurrentSeverity);
+        Assert.Equal(AssessmentDriftComparer.Fingerprint(previous), change.StableIdentifier);
+    }
+
+    [Fact]
     public void New_finding_is_reported_with_a_stable_fingerprint()
     {
         var current = Finding("transport-security", FindingSeverity.Critical, "https://example.test/");
@@ -73,14 +87,28 @@ public sealed class AssessmentDriftComparerTests
     }
 
     [Fact]
-    public void Missing_or_blocked_check_is_reported_as_coverage_regression()
+    public void Missing_successful_check_is_reported_as_coverage_regression()
     {
         var prior = Check(WebCheckStatus.Passed);
         var absent = AssessmentDriftComparer.Compare([], [prior], [], []);
-        var blocked = AssessmentDriftComparer.Compare([], [prior], [], [Check(WebCheckStatus.BlockedByAuthorization)]);
 
         Assert.Contains(absent, x => x.EventType == "CoverageRegression");
-        Assert.Contains(blocked, x => x.EventType == "CoverageRegression");
+    }
+
+    [Theory]
+    [InlineData(WebCheckStatus.Skipped)]
+    [InlineData(WebCheckStatus.BlockedByAuthorization)]
+    [InlineData(WebCheckStatus.Unsupported)]
+    [InlineData(WebCheckStatus.FailedToExecute)]
+    public void Non_successful_recheck_is_reported_as_coverage_regression(WebCheckStatus currentStatus)
+    {
+        var prior = Check(WebCheckStatus.Passed);
+        var current = Check(currentStatus);
+
+        var change = Assert.Single(AssessmentDriftComparer.Compare([], [prior], [], [current]));
+
+        Assert.Equal("CoverageRegression", change.EventType);
+        Assert.Contains("skipped, blocked, unsupported or failed", change.Summary, StringComparison.OrdinalIgnoreCase);
     }
 
     private Finding Finding(string category, FindingSeverity severity, string? url)

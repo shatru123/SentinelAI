@@ -42,22 +42,49 @@ public static class AIProviderServiceCollectionExtensions
         Uri? defaultEndpoint = null)
     {
         var section = configuration.GetSection($"AI:Providers:{sectionName}");
+        var legacySection = configuration.GetSection($"AI:{sectionName}");
         Uri? endpoint = defaultEndpoint;
-        var configuredEndpoint = section["Endpoint"];
+
+        var configuredEndpoint = section["Endpoint"] ?? legacySection["Endpoint"];
+        if (providerName == "ollama")
+            configuredEndpoint ??= configuration["OLLAMA_BASE_URL"];
+
         if (!string.IsNullOrWhiteSpace(configuredEndpoint))
         {
             if (!Uri.TryCreate(configuredEndpoint, UriKind.Absolute, out endpoint))
                 throw new InvalidOperationException($"AI:Providers:{sectionName}:Endpoint must be an absolute URI.");
         }
 
+        var environmentApiKeyName = providerName switch
+        {
+            "openai" => "OPENAI_API_KEY",
+            "anthropic" => "ANTHROPIC_API_KEY",
+            _ => null
+        };
+        var environmentModelName = providerName switch
+        {
+            "openai" => "OPENAI_MODEL",
+            "anthropic" => "ANTHROPIC_MODEL",
+            "ollama" => "OLLAMA_MODEL",
+            _ => null
+        };
+
+        var apiKey = section["ApiKey"] ?? legacySection["ApiKey"];
+        if (apiKey is null && environmentApiKeyName is not null)
+            apiKey = configuration[environmentApiKeyName];
+
+        var model = section["Model"] ?? legacySection["Model"];
+        if (model is null && environmentModelName is not null)
+            model = configuration[environmentModelName];
+
         return new AIProviderOptions(
             providerName,
-            section["Model"] ?? string.Empty,
+            model ?? string.Empty,
             endpoint,
-            section["ApiKey"],
-            section.GetValue("TimeoutSeconds", 60),
-            section.GetValue("MaxResponseBytes", 1_048_576),
-            section.GetValue("DefaultMaxOutputTokens", 2_048),
-            section["ApiVersion"] ?? "2023-06-01");
+            apiKey,
+            section.GetValue("TimeoutSeconds", legacySection.GetValue("TimeoutSeconds", 60)),
+            section.GetValue("MaxResponseBytes", legacySection.GetValue("MaxResponseBytes", 1_048_576)),
+            section.GetValue("DefaultMaxOutputTokens", legacySection.GetValue("DefaultMaxOutputTokens", 2_048)),
+            section["ApiVersion"] ?? legacySection["ApiVersion"] ?? "2023-06-01");
     }
 }

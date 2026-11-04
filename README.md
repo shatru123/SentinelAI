@@ -19,7 +19,8 @@ SentinelAI is designed to discover and inventory explicitly authorized assets, e
 | OpenAI, Claude and Ollama providers (Phase 4.1) | Merged into `main` through PR #5; provider gateway and readiness checks implemented |
 | Evidence-grounded AI finding analysis (Phase 4.2) | Merged into `main` through PR #6; tenant-scoped persistence and evidence-reference validation implemented |
 | Finding AI analysis experience (Phase 4.3) | Merged into `main` through PR #7; advisory history is part of the finding dossier |
-| Scheduled reassessment and drift alerts (Phase 4.4) | Implementation branch adds bounded schedules, per-run authorization revalidation, outbox dispatch, deterministic drift events and in-app notifications; CI verification pending |\n| SOC dashboard and monitoring | Phase 3.1 MVP and runtime acceptance fixes merged |
+| Scheduled reassessment and drift alerts (Phase 4.4) | Implemented in PR #8: bounded schedules, per-run authorization revalidation, outbox dispatch, deterministic drift events, in-app notifications, and optional persisted AI advisory summaries in HTML exports; awaiting consolidated CI |
+| SOC dashboard and monitoring | Phase 3.1 MVP and runtime acceptance fixes merged |
 | Cloud/local deployment | Docker Compose development stack available; production deployment hardening remains |
 
 ## Architecture at a glance

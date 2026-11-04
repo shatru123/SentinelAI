@@ -378,13 +378,53 @@ api.MapGet("/web-assessments/{id:guid}/findings/{findingId:guid}/evidence", asyn
     return Results.Ok(evidence);
 }).RequireAuthorization("Reader");
 
-api.MapGet("/web-assessments/{id:guid}/report", async (HttpContext context, Guid id, IAppDbContext db, IAssessmentArtifactStore artifacts, CancellationToken cancellationToken) =>
+api.MapGet("/web-assessments/{id:guid}/report", async (
+    HttpContext context,
+    Guid id,
+    IAppDbContext db,
+    IAssessmentArtifactStore artifacts,
+    IHtmlReportGenerator reports,
+    bool includeAiSummaries = false,
+    CancellationToken cancellationToken = default) =>
 {
     var tenantId = ToPrincipal(context).TenantId;
     var assessment = await db.WebAssessments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
-    if (assessment is null || assessment.Status != WebAssessmentStatus.Completed || string.IsNullOrWhiteSpace(assessment.ReportStorageKey)) return Results.NotFound();
-    var content = await artifacts.GetPublishedReportAsync(tenantId, assessment.Id, assessment.ReportStorageKey, cancellationToken);
-    return content is null ? Results.NotFound() : Results.File(content, "text/html; charset=utf-8", $"sentinelai-{assessment.Id:N}.html");
+    if (assessment is null || assessment.Status != WebAssessmentStatus.Completed) return Results.NotFound();
+
+    if (!includeAiSummaries)
+    {
+        if (string.IsNullOrWhiteSpace(assessment.ReportStorageKey)) return Results.NotFound();
+        var existingContent = await artifacts.GetPublishedReportAsync(tenantId, assessment.Id, assessment.ReportStorageKey, cancellationToken);
+        return existingContent is null
+            ? Results.NotFound()
+            : Results.File(existingContent, "text/html; charset=utf-8", $"sentinelai-{assessment.Id:N}.html");
+    }
+
+    var scope = await db.TargetScopes.AsNoTracking()
+        .SingleOrDefaultAsync(x => x.Id == assessment.ScopeId && x.TenantId == tenantId, cancellationToken);
+    if (scope is null) return Results.NotFound();
+
+    string? stagingKey = null;
+    string? publishedKey = null;
+    try
+    {
+        stagingKey = await reports.GenerateAsync(tenantId, assessment, scope, cancellationToken, includeAdvisoryAiSummaries: true);
+        publishedKey = await artifacts.PublishReportAsync(tenantId, assessment.Id, stagingKey, cancellationToken);
+        var reportContent = await artifacts.GetPublishedReportAsync(tenantId, assessment.Id, publishedKey, cancellationToken);
+        return reportContent is null
+            ? Results.NotFound()
+            : Results.File(reportContent, "text/html; charset=utf-8", $"sentinelai-{assessment.Id:N}-ai-advisory.html");
+    }
+    finally
+    {
+        var temporaryKey = publishedKey ?? stagingKey;
+        if (!string.IsNullOrWhiteSpace(temporaryKey))
+        {
+            try { await artifacts.DiscardReportAsync(tenantId, assessment.Id, temporaryKey, CancellationToken.None); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
 }).RequireAuthorization("Reader");
 
 api.MapGet("/scans", async (HttpContext context, IAppDbContext db, int page = 1, int pageSize = 25, string? status = null, string? search = null, CancellationToken cancellationToken = default) =>

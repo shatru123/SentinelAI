@@ -516,9 +516,14 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
             @if (selectedAssessment.Status == WebAssessmentStatus.Completed)
             {
                 <div style="margin-top: var(--space-3);">
-                    <button class="soc-btn soc-btn-primary" style="font-size: 0.8125rem;" @onclick="() => DownloadReportAsync(selectedAssessment)">
-                        📥 Download Full Audit HTML Report
-                    </button>
+                    <div style="display: flex; flex-wrap: wrap; gap: var(--space-2);">
+                        <button class="soc-btn soc-btn-primary" style="font-size: 0.8125rem;" @onclick="() => DownloadReportAsync(selectedAssessment)">
+                            📥 Download Full Audit HTML Report
+                        </button>
+                        <button class="soc-btn soc-btn-secondary" style="font-size: 0.8125rem;" @onclick="() => DownloadReportAsync(selectedAssessment, includeAiSummaries: true)">
+                            Download with AI Advisory Summaries
+                        </button>
+                    </div>
                 </div>
             }
         </div>
@@ -1005,12 +1010,15 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
         }
     }
 
-    private async Task DownloadReportAsync(WebAssessmentResponse item)
+    private async Task DownloadReportAsync(WebAssessmentResponse item, bool includeAiSummaries = false)
     {
         try
         {
-            var bytes = await ApiClient.GetBytesAsync($"/api/v1/web-assessments/{item.Id}/report");
-            await JS.InvokeVoidAsync("sentinelaiDownload", $"sentinelai-assessment-{item.Id:N}.html", "text/html", bytes);
+            var reportUrl = $"/api/v1/web-assessments/{item.Id}/report" +
+                (includeAiSummaries ? "?includeAiSummaries=true" : string.Empty);
+            var bytes = await ApiClient.GetBytesAsync(reportUrl);
+            var suffix = includeAiSummaries ? "-ai-advisory" : string.Empty;
+            await JS.InvokeVoidAsync("sentinelaiDownload", $"sentinelai-assessment-{item.Id:N}{suffix}.html", "text/html", bytes);
         }
         catch (SentinelApiException ex)
         {

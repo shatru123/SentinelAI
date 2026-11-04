@@ -68,9 +68,9 @@ This milestone preserves the passive-only execution boundary and does not add de
 
 **Phase 4.3 — Finding AI analysis UI (merged into `main` through PR #7).** Adds an advisory-only AI analysis section to the finding dossier, explicit provider selection and request for Admin/Security Analyst roles, and persisted history for Readers. Opening a finding never submits it to a provider automatically. UI role checks remain usability controls; API authorization is authoritative. See phase4-finding-analysis-ui.md.
 
-Remaining Phase 4 work:
-- Optional clearly labeled advisory summaries in exported reports, based only on persisted evidence-grounded analysis.
-- Scheduled re-assessment, drift detection and tenant-scoped in-app alerts (Phase 4.4 implementation on `phase4/4.4-scheduled-reassessment-implementation`; Release/Playwright/Compose verification pending).
+**Phase 4.4 — Scheduled reassessment and drift alerts (implemented in PR #8).** Operator-configured bounded schedules, per-occurrence authorization revalidation, transactional outbox dispatch, deterministic drift comparisons and tenant-scoped in-app notifications are implemented. Schedules cannot widen scope or renew authorization; the worker still uses the existing bounded assessment pipeline. See `phase4-scheduled-reassessment.md`.
+
+**Exported AI advisory summaries (implemented in PR #8).** Operators and readers can explicitly request an HTML report containing the latest persisted evidence-grounded AI summary for each finding. This option is off by default; export performs no AI-provider call and includes advisory labeling and provenance.
 
 ## Phase 5 — Cloud and operational hardening
 - Cloud control-plane deployment

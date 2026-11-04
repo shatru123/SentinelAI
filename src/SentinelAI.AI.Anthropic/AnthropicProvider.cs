@@ -79,13 +79,13 @@ public sealed class AnthropicProvider(HttpClient httpClient, AIProviderOptions o
     {
         if (!IsConfigured) return false;
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Get,
-            AIProviderHttpSupport.CreateEndpoint(options, DefaultEndpoint, "v1/models?limit=1"));
-        request.Headers.TryAddWithoutValidation("x-api-key", options.ApiKey);
-        request.Headers.TryAddWithoutValidation("anthropic-version", options.ApiVersion);
         try
         {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                AIProviderHttpSupport.CreateEndpoint(options, DefaultEndpoint, "v1/models?limit=1"));
+            request.Headers.TryAddWithoutValidation("x-api-key", options.ApiKey);
+            request.Headers.TryAddWithoutValidation("anthropic-version", options.ApiVersion);
             return await AIProviderHttpSupport.SendAsync(
                 httpClient, request, options, cancellationToken,
                 (_, _) => Task.FromResult(true),

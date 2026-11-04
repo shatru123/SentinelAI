@@ -80,7 +80,7 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         InvalidOperationException invalid when app.Environment.IsDevelopment() => invalid.Message,
         _ => null
     };
-    await Results.Problem(statusCode: context.Response.StatusCode, title: "Request could not be completed", detail).ExecuteAsync(context);
+    await Results.Problem(statusCode: context.Response.StatusCode, title: "Request could not be completed", detail: detail).ExecuteAsync(context);
 }));
 app.UseAuthentication();
 app.UseAuthorization();

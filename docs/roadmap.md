@@ -66,11 +66,11 @@ This milestone preserves the passive-only execution boundary and does not add de
 
 **Phase 4.2 — Evidence-grounded finding analysis (merged into `main` through PR #6).** Adds explicit Operator-triggered analysis, bounded summaries and redacted evidence input, structured output validation, evidence-ID allow-listing, tenant-scoped persistence and provider/prompt/input-hash/token provenance. AI output remains advisory and cannot mutate findings or authorize execution. See phase4-finding-analysis.md.
 
-**Phase 4.3 — Finding AI analysis UI (implemented on `phase4/finding-ai-analysis-ui`; PR #7).** Adds an advisory-only AI analysis section to the finding dossier, explicit provider selection and request for Admin/Security Analyst roles, and persisted history for Readers. Opening a finding never submits it to a provider automatically. UI role checks remain usability controls; API authorization is authoritative. Fresh CI is required after the merge-conflict resolution. See phase4-finding-analysis-ui.md.
+**Phase 4.3 — Finding AI analysis UI (merged into `main` through PR #7).** Adds an advisory-only AI analysis section to the finding dossier, explicit provider selection and request for Admin/Security Analyst roles, and persisted history for Readers. Opening a finding never submits it to a provider automatically. UI role checks remain usability controls; API authorization is authoritative. See phase4-finding-analysis-ui.md.
 
 Remaining Phase 4 work:
 - Optional clearly labeled advisory summaries in exported reports, based only on persisted evidence-grounded analysis.
-- Scheduled re-assessment, drift detection and alert workflows under explicit operator-configured schedules.
+- Scheduled re-assessment, drift detection and tenant-scoped in-app alerts (Phase 4.4 implementation on `phase4/4.4-scheduled-reassessment-implementation`; Release/Playwright/Compose verification pending).
 
 ## Phase 5 — Cloud and operational hardening
 - Cloud control-plane deployment

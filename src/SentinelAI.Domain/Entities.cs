@@ -40,12 +40,29 @@ public sealed class User
     private User() { }
     public User(Guid tenantId, string subject, string displayName, UserRole role)
     { Id = Guid.NewGuid(); TenantId = tenantId; Subject = subject; DisplayName = displayName; Role = role; CreatedAt = DateTimeOffset.UtcNow; }
+    public User(Guid id, Guid tenantId, string subject, string displayName, UserRole role)
+    {
+        if (id == Guid.Empty) throw new ArgumentException("A stable authenticated user id is required.", nameof(id));
+        Id = id;
+        TenantId = tenantId;
+        Subject = subject;
+        DisplayName = displayName;
+        Role = role;
+        CreatedAt = DateTimeOffset.UtcNow;
+    }
     public Guid Id { get; private set; }
     public Guid TenantId { get; private set; }
     public string Subject { get; private set; } = string.Empty;
     public string DisplayName { get; private set; } = string.Empty;
     public UserRole Role { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
+
+    public void SyncAuthenticatedIdentity(string subject, string displayName, UserRole role)
+    {
+        Subject = string.IsNullOrWhiteSpace(subject) ? Id.ToString("N") : subject.Trim();
+        DisplayName = string.IsNullOrWhiteSpace(displayName) ? Subject : displayName.Trim();
+        Role = role;
+    }
 }
 
 public sealed class TargetScope
@@ -515,7 +532,7 @@ public sealed class Finding
     public string? IdempotencyKey { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
 
-    public void ConfigureAssessmentDetails(Guid assessmentId, string category, string confidence, string affectedUrl,
+    public void ConfigureAssessmentDetails(Guid assessmentId, string category, string confidence, string? affectedUrl,
         string? httpMethod, string? parameter, string? description, string? impact, string? reproduction,
         string? remediation, string? references, WebCheckStatus checkStatus)
     {
@@ -685,10 +702,23 @@ public sealed class AIAnalysis
 public sealed class Notification
 {
     private Notification() { }
-    public Notification(Guid tenantId, string channel, string message) { Id = Guid.NewGuid(); TenantId = tenantId; Channel = channel; Message = message; CreatedAt = DateTimeOffset.UtcNow; }
+    public Notification(Guid tenantId, string channel, string message, Guid? resourceId = null)
+    {
+        Id = Guid.NewGuid(); TenantId = tenantId; Channel = channel; Message = message;
+        ResourceId = resourceId; CreatedAt = DateTimeOffset.UtcNow;
+    }
     public Guid Id { get; private set; }
     public Guid TenantId { get; private set; }
     public string Channel { get; private set; } = string.Empty;
     public string Message { get; private set; } = string.Empty;
+    public Guid? ResourceId { get; private set; }
+    public bool IsRead { get; private set; }
+    public DateTimeOffset? ReadAt { get; private set; }
+    public Guid? ReadBy { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
+    public void MarkRead(Guid userId)
+    {
+        if (IsRead) return;
+        IsRead = true; ReadAt = DateTimeOffset.UtcNow; ReadBy = userId;
+    }
 }

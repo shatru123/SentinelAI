@@ -158,6 +158,72 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task Scheduled_reassessment_requires_existing_approved_scope_and_operator_role()
+    {
+        var analystId = Guid.NewGuid();
+        using var analyst = CreateAuthenticatedClient(tenantId, analystId, UserRole.SecurityAnalyst);
+        var requested = await analyst.PostAsJsonAsync("/api/v1/public-target-authorizations",
+            new PublicTargetAuthorizationRequest("https://example.com", "Approved recurring assessment integration test"));
+        Assert.Equal(HttpStatusCode.Created, requested.StatusCode);
+        var authorization = await requested.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(authorization);
+
+        using var administrator = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Admin);
+        var approved = await administrator.PostAsJsonAsync(
+            $"/api/v1/public-target-authorizations/{authorization!.Id}/approve",
+            new PublicTargetAuthorizationApprovalRequest("ticket-schedule-1", "schedule-test", DateTimeOffset.UtcNow.AddDays(8)));
+        Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
+
+        var expiresAt = DateTimeOffset.UtcNow.AddDays(7);
+        var scopeRequest = new CreateScopeRequest(
+            "scheduled-public-web-scope",
+            [new TargetDefinition(TargetKind.Web, "https://example.com")],
+            [],
+            [WebAssessmentOperationProfiles.Passive],
+            30,
+            300,
+            "ticket-schedule-1",
+            expiresAt,
+            false,
+            null,
+            [authorization.Id]);
+        var createdScope = await analyst.PostAsJsonAsync("/api/v1/scopes", scopeRequest);
+        Assert.Equal(HttpStatusCode.Created, createdScope.StatusCode);
+        var scope = await createdScope.Content.ReadFromJsonAsync<ScopeResponse>();
+        Assert.NotNull(scope);
+
+        var request = new CreateAssessmentScheduleRequest(
+            scope!.Id,
+            WebAssessmentOperationProfiles.Passive,
+            24,
+            scope.ExpiresAt.AddTicks(-1));
+        var createdSchedule = await analyst.PostAsJsonAsync("/api/v1/assessment-schedules", request);
+        Assert.Equal(HttpStatusCode.Created, createdSchedule.StatusCode);
+        var schedule = await createdSchedule.Content.ReadFromJsonAsync<AssessmentScheduleResponse>();
+        Assert.NotNull(schedule);
+        Assert.Equal(tenantId, scope.TenantId);
+        Assert.Equal(scope.Id, schedule!.ScopeId);
+        Assert.Equal(AssessmentScheduleStatus.Active, schedule.Status);
+        Assert.NotNull(schedule.NextRunAt);
+
+        var invalidEnd = request with { EndsAt = scope.ExpiresAt };
+        var rejectedExpiry = await analyst.PostAsJsonAsync("/api/v1/assessment-schedules", invalidEnd);
+        Assert.Equal(HttpStatusCode.BadRequest, rejectedExpiry.StatusCode);
+
+        using var viewer = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Viewer);
+        var visible = await viewer.GetFromJsonAsync<List<AssessmentScheduleResponse>>("/api/v1/assessment-schedules");
+        Assert.NotNull(visible);
+        Assert.Contains(visible!, item => item.Id == schedule.Id);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await viewer.PostAsync($"/api/v1/assessment-schedules/{schedule.Id}/pause", content: null)).StatusCode);
+
+        using var otherTenant = CreateAuthenticatedClient(Guid.NewGuid(), Guid.NewGuid(), UserRole.Viewer);
+        var isolated = await otherTenant.GetFromJsonAsync<List<AssessmentScheduleResponse>>("/api/v1/assessment-schedules");
+        Assert.NotNull(isolated);
+        Assert.Empty(isolated!);
+    }
+
+    [Fact]
     public async Task Worker_can_register_and_heartbeat_through_authenticated_endpoint()
     {
         using var administrator = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Admin);

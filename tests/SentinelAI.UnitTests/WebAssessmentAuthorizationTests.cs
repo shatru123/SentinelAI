@@ -913,6 +913,9 @@ public sealed class WebAssessmentAuthorizationTests
         public DbSet<AIAnalysis> AIAnalyses => inner.AIAnalyses;
         public DbSet<FindingAIAnalysis> FindingAIAnalyses => inner.FindingAIAnalyses;
         public DbSet<Notification> Notifications => inner.Notifications;
+        public DbSet<AssessmentSchedule> AssessmentSchedules => inner.AssessmentSchedules;
+        public DbSet<AssessmentScheduleRun> AssessmentScheduleRuns => inner.AssessmentScheduleRuns;
+        public DbSet<AssessmentDriftEvent> AssessmentDriftEvents => inner.AssessmentDriftEvents;
         public DbSet<WorkerRegistration> Workers => inner.Workers;
         public DbSet<PublicTargetAuthorization> PublicTargetAuthorizations => inner.PublicTargetAuthorizations;
         public DbSet<OutboxMessage> OutboxMessages => inner.OutboxMessages;

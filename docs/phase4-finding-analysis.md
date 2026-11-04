@@ -22,7 +22,7 @@ The selected provider must be configured. Provider transport remains subject to 
 
 ## Persisted provenance
 
-Each result stores tenant, finding and requesting actor IDs; provider and model; prompt-template version; SHA-256 of the exact serialized analysis input; structured result; input/output token counts; provider response ID and finish reason where available; and creation time. The child record has a composite tenant/finding foreign key and is deleted with its finding.
+Each result stores tenant, finding and requesting actor IDs; provider and model; prompt-template version; SHA-256 of the exact bounded evidence set included in the analysis input; structured result; input/output token counts; provider response ID and finish reason where available; and creation time. The child record has a composite tenant/finding foreign key and is deleted with its finding.
 
 ## Safety
 

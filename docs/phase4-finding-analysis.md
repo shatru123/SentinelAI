@@ -30,6 +30,6 @@ AI recommendations are text for human review only. The analysis service does not
 
 ## Follow-on Phase 4 work
 
-- Phase 4.3 adds the Findings dossier action and history panel; see `phase4-finding-analysis-ui.md`.
-- Add optional AI summaries to exported HTML reports with clear advisory labeling.
-- Introduce scheduled reassessment, drift detection and alert workflows under explicit operator-configured schedules.
+- Phase 4.3 adds the Findings dossier action and persisted advisory analysis history; see `phase4-finding-analysis-ui.md`.
+- Optional AI summaries in exported HTML reports remain separate work and must be clearly labeled advisory.
+- Scheduled reassessment, drift detection and alert workflows are specified in `phase4-scheduled-reassessment.md` and remain a later increment.

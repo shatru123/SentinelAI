@@ -62,13 +62,14 @@ This milestone preserves the passive-only execution boundary and does not add de
 
 ## Phase 4 — AI analysis and monitoring
 
-**Phase 4.1 — Provider gateway (implementation on phase4/ai-provider-gateway; PR #5).** Activates the OpenAI Responses, Anthropic Messages and Ollama Chat adapters with bounded transport, structured JSON-schema output, token usage/provenance and authenticated readiness diagnostics. CI passed; the PR remains the dependency for Phase 4.2. See phase4-ai-provider-gateway.md.
+**Phase 4.1 — Provider gateway (merged into `main` through PR #5).** Activates the OpenAI Responses, Anthropic Messages and Ollama Chat adapters with bounded transport, structured JSON-schema output, token usage/provenance and authenticated readiness diagnostics. The provider gateway and readiness checks are now part of `main`. See phase4-ai-provider-gateway.md.
 
-**Phase 4.2 — Evidence-grounded finding analysis (implementation on phase4/evidence-grounded-finding-analysis).** Adds explicit Operator-triggered analysis, bounded summaries and redacted evidence input, structured output validation, evidence-ID allow-listing, tenant-scoped persistence and provider/prompt/input-hash/token provenance. AI output remains advisory and cannot mutate findings or authorize execution. See phase4-finding-analysis.md.
+**Phase 4.2 — Evidence-grounded finding analysis (merged into `main` through PR #6).** Adds explicit Operator-triggered analysis, bounded summaries and redacted evidence input, structured output validation, evidence-ID allow-listing, tenant-scoped persistence and provider/prompt/input-hash/token provenance. AI output remains advisory and cannot mutate findings or authorize execution. See phase4-finding-analysis.md.
+
+**Phase 4.3 — Finding AI analysis UI (implemented on `phase4/finding-ai-analysis-ui`; PR #7).** Adds an advisory-only AI analysis section to the finding dossier, explicit provider selection and request for Admin/Security Analyst roles, and persisted history for Readers. Opening a finding never submits it to a provider automatically. UI role checks remain usability controls; API authorization is authoritative. Fresh CI is required after the merge-conflict resolution. See phase4-finding-analysis-ui.md.
 
 Remaining Phase 4 work:
-- **Phase 4.3 — Finding AI analysis UI:** implemented on `phase4/finding-ai-analysis-ui`, stacked on Phase 4.2 PR #6. See `phase4-finding-analysis-ui.md`.
-- Optional clearly labeled advisory summaries in exported reports.
+- Optional clearly labeled advisory summaries in exported reports, based only on persisted evidence-grounded analysis.
 - Scheduled re-assessment, drift detection and alert workflows under explicit operator-configured schedules.
 
 ## Phase 5 — Cloud and operational hardening

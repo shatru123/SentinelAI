@@ -78,20 +78,83 @@ app.Use(async (context, next) =>
             return;
         }
 
+        var environment = context.RequestServices.GetRequiredService<IHostEnvironment>();
+        if (!environment.IsDevelopment())
+        {
+            await Results.Problem("Passwordless development login is available only in the Development environment.", statusCode: StatusCodes.Status404NotFound).ExecuteAsync(context);
+            return;
+        }
+
+        if (string.Equals(context.Request.Query["choose"], "true", StringComparison.OrdinalIgnoreCase))
+        {
+            context.Response.ContentType = "text/html; charset=utf-8";
+            await context.Response.WriteAsync("""
+                <!doctype html>
+                <html lang="en">
+                <head>
+                  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+                  <title>SentinelAI · Development Sign In</title>
+                  <style>
+                    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1220;color:#e8eef8;font:16px system-ui,sans-serif}
+                    main{width:min(92vw,520px);padding:32px;border:1px solid #26354b;border-radius:18px;background:#121d2d}
+                    h1{margin:0 0 8px}p{color:#aab8cc;line-height:1.5}
+                    a{display:block;margin-top:14px;padding:15px 18px;border:1px solid #344862;border-radius:10px;color:#f5f8fc;text-decoration:none}
+                    a:hover{background:#1b2d43}small{display:block;color:#91a1b7;margin-top:24px}
+                  </style>
+                </head>
+                <body><main>
+                  <h1>Sign in to SentinelAI</h1>
+                  <p>Choose a local Development identity. These passwordless accounts are for local testing only.</p>
+                  <a href="/auth/login?as=admin"><strong>Primary Admin</strong><br><span>development-admin · Full administration</span></a>
+                  <a href="/auth/login?as=analyst"><strong>Security Analyst</strong><br><span>development-analyst · Operational access</span></a>
+                  <a href="/auth/login?as=viewer"><strong>Read-only Viewer</strong><br><span>development-viewer · Read-only access</span></a>
+                  <small>Development mode only. Configure real authentication before exposing SentinelAI to a network.</small>
+                </main></body></html>
+                """);
+            return;
+        }
+
         var tenant = configuration["Dashboard:TenantId"];
-        var user = configuration["Dashboard:UserId"];
+        var account = context.Request.Query["as"].ToString().Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(account)) account = "admin";
+
+        string? user;
+        string userName;
+        string role;
+        switch (account)
+        {
+            case "admin":
+                user = configuration["Dashboard:UserId"];
+                userName = configuration["Dashboard:UserName"] ?? "development-admin";
+                role = "Admin";
+                break;
+            case "analyst":
+                user = configuration["Dashboard:AnalystUserId"];
+                userName = configuration["Dashboard:AnalystUserName"] ?? "development-analyst";
+                role = "SecurityAnalyst";
+                break;
+            case "viewer":
+                user = configuration["Dashboard:ViewerUserId"];
+                userName = configuration["Dashboard:ViewerUserName"] ?? "development-viewer";
+                role = "Viewer";
+                break;
+            default:
+                await Results.Problem("Unknown Development account. Choose admin, analyst, or viewer.", statusCode: StatusCodes.Status400BadRequest).ExecuteAsync(context);
+                return;
+        }
+
         if (!Guid.TryParse(tenant, out _) || !Guid.TryParse(user, out _))
         {
-            await Results.Problem("Dashboard development identity is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
+            await Results.Problem("The selected Development identity is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
             return;
         }
 
         var claims = new[]
         {
             new Claim(ClaimTypes.NameIdentifier, user!),
-            new Claim(ClaimTypes.Name, configuration["Dashboard:UserName"] ?? "operator"),
+            new Claim(ClaimTypes.Name, userName),
             new Claim("tenant_id", tenant!),
-            new Claim(ClaimTypes.Role, configuration["Dashboard:Role"] ?? "SecurityAnalyst")
+            new Claim(ClaimTypes.Role, role)
         };
         await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)));
         context.Response.Redirect("/");
@@ -135,7 +198,7 @@ app.Use(async (context, next) =>
     if (context.Request.Path.Equals("/auth/logout", StringComparison.OrdinalIgnoreCase))
     {
         await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-        context.Response.Redirect("/auth/login");
+        context.Response.Redirect("/auth/login?choose=true");
         return;
     }
 

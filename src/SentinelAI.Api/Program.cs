@@ -91,24 +91,6 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "sentinela
 app.MapGet("/api/v1/auth/me", (HttpContext context) => Results.Ok(ToPrincipal(context).ToResponse())).RequireAuthorization();
 
 var api = app.MapGroup("/api/v1").RequireAuthorization();
-api.MapGet("/ai/providers", async (IAIProviderFactory providers, CancellationToken cancellationToken) =>
-{
-    var results = new List<object>();
-    foreach (var name in providers.GetNames())
-    {
-        var provider = providers.Get(name);
-        var healthy = provider.IsConfigured && await provider.IsHealthyAsync(cancellationToken);
-        results.Add(new
-        {
-            provider = provider.Name,
-            configured = provider.IsConfigured,
-            healthy
-        });
-    }
-
-    return Results.Ok(new { checkedAtUtc = DateTimeOffset.UtcNow, providers = results });
-}).RequireAuthorization("Reader");
-
 api.MapGet("/dashboard/summary", async (HttpContext context, IAppDbContext db, CancellationToken cancellationToken) =>
 {
     var tenantId = ToPrincipal(context).TenantId;
@@ -480,27 +462,60 @@ api.MapGet("/assets/{id:guid}/services", async (HttpContext context, Guid id, IA
 }).RequireAuthorization("Reader");
 
 api.MapGet("/agents", () => Results.Ok(Array.Empty<AgentResponse>())).RequireAuthorization("Reader");
-api.MapGet("/ai/providers", (IConfiguration configuration) =>
+api.MapGet("/ai/providers", async (
+    IAIProviderFactory providers,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
 {
+    var openAi = providers.Get("openai");
+    var anthropic = providers.Get("anthropic");
+    var ollama = providers.Get("ollama");
+
+    var openAiHealthy = openAi.IsConfigured && await openAi.IsHealthyAsync(cancellationToken);
+    var anthropicHealthy = anthropic.IsConfigured && await anthropic.IsHealthyAsync(cancellationToken);
+    var ollamaHealthy = ollama.IsConfigured && await ollama.IsHealthyAsync(cancellationToken);
     var selectedProvider = (configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none").Trim().ToLowerInvariant();
+
     return Results.Ok(new
     {
         selectedProvider,
-        openAiCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["OPENAI_API_KEY"] ?? configuration["AI:OpenAI:ApiKey"]),
-        anthropicCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["ANTHROPIC_API_KEY"] ?? configuration["AI:Anthropic:ApiKey"]),
-        ollamaEndpointConfigured = !string.IsNullOrWhiteSpace(configuration["OLLAMA_BASE_URL"] ?? configuration["AI:Ollama:Endpoint"]),
-        connectivityVerified = false,
-        inferenceImplemented = false,
+        openAiCredentialsConfigured = openAi.IsConfigured,
+        anthropicCredentialsConfigured = anthropic.IsConfigured,
+        ollamaEndpointConfigured = ollama.IsConfigured,
+        openAiHealthy,
+        anthropicHealthy,
+        ollamaHealthy,
+        connectivityVerified = openAiHealthy || anthropicHealthy || ollamaHealthy,
+        inferenceImplemented = true,
+        executionMode = "advisory-only",
+        checkedAtUtc = DateTimeOffset.UtcNow,
+        providers = new[]
+        {
+            new { provider = openAi.Name, configured = openAi.IsConfigured, healthy = openAiHealthy },
+            new { provider = anthropic.Name, configured = anthropic.IsConfigured, healthy = anthropicHealthy },
+            new { provider = ollama.Name, configured = ollama.IsConfigured, healthy = ollamaHealthy }
+        }
+    });
+}).RequireAuthorization("Reader");
+api.MapGet("/ai/health", async (
+    IAIProviderFactory providers,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var statuses = await Task.WhenAll(providers.GetNames().Select(async name =>
+    {
+        var provider = providers.Get(name);
+        return provider.IsConfigured && await provider.IsHealthyAsync(cancellationToken);
+    }));
+    return Results.Ok(new
+    {
+        status = "advisory-only",
+        defaultProvider = configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none",
+        connectivityVerified = statuses.Any(x => x),
+        inferenceImplemented = true,
         executionMode = "advisory-only"
     });
 }).RequireAuthorization("Reader");
-api.MapGet("/ai/health", (IConfiguration configuration) => Results.Ok(new
-{
-    status = "advisory-only",
-    defaultProvider = configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none",
-    connectivityVerified = false,
-    inferenceImplemented = false
-})).RequireAuthorization("Reader");
 api.MapGet("/monitoring/health", async (
     AppDbContext db,
     IScanJobQueue queue,

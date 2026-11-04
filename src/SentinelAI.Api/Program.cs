@@ -71,9 +71,16 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         BadHttpRequestException => StatusCodes.Status400BadRequest,
         KeyNotFoundException => StatusCodes.Status404NotFound,
         UnauthorizedAccessException => StatusCodes.Status403Forbidden,
+        InvalidOperationException => StatusCodes.Status409Conflict,
         _ => StatusCodes.Status500InternalServerError
     };
-    await Results.Problem(statusCode: context.Response.StatusCode, title: "Request could not be completed", detail: exception is ScopeValidationException scope ? string.Join(" ", scope.Errors) : null).ExecuteAsync(context);
+    var detail = exception switch
+    {
+        ScopeValidationException scope => string.Join(" ", scope.Errors),
+        InvalidOperationException invalid when app.Environment.IsDevelopment() => invalid.Message,
+        _ => null
+    };
+    await Results.Problem(statusCode: context.Response.StatusCode, title: "Request could not be completed", detail).ExecuteAsync(context);
 }));
 app.UseAuthentication();
 app.UseAuthorization();

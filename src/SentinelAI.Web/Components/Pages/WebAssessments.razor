@@ -337,7 +337,7 @@
                                     <Authorized>
                                         @if (auth.Status == PublicTargetAuthorizationStatus.Requested)
                                         {
-                                            @if (currentUserId is Guid userId && auth.RequestedBy != userId)
+                                            @if (currentUserId is Guid userId && (auth.RequestedBy != userId || (currentUserIsAdmin && Configuration.GetValue<bool>("Authorization:AllowAdminSelfApproval"))))
                                             {
                                                 <button class="soc-btn soc-btn-primary" style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;" @onclick="() => ApproveAuthAsync(auth)">
                                                     Approve Target
@@ -639,6 +639,7 @@
     private int activeAssessmentsCount;
     private bool loading = true;
     private Guid? currentUserId;
+    private bool currentUserIsAdmin;
     private string? error;
     private string? pageNotice;
 
@@ -690,6 +691,7 @@
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         if (Guid.TryParse(authState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var userId))
             currentUserId = userId;
+        currentUserIsAdmin = authState.User.IsInRole("Admin");
 
         await RefreshAllAsync();
     }

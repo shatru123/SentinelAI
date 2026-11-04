@@ -78,11 +78,11 @@ public sealed class OllamaProvider(HttpClient httpClient, AIProviderOptions opti
     {
         if (!IsConfigured) return false;
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Get,
-            AIProviderHttpSupport.CreateEndpoint(options, DefaultEndpoint, "api/tags", allowHttpLoopback: true));
         try
         {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                AIProviderHttpSupport.CreateEndpoint(options, DefaultEndpoint, "api/tags", allowHttpLoopback: true));
             return await AIProviderHttpSupport.SendAsync(
                 httpClient, request, options, cancellationToken,
                 (_, _) => Task.FromResult(true),

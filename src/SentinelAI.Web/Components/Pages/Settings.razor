@@ -78,7 +78,7 @@
                                 {
                                     <span class="soc-badge soc-badge-neutral">Not configured</span>
                                 }
-                                else if (providerStatus.OpenAiHealthy)
+                                else if (providerStatus?.OpenAiHealthy == true)
                                 {
                                     <span class="soc-badge soc-badge-success">Connected · verified</span>
                                 }
@@ -96,7 +96,7 @@
                                 {
                                     <span class="soc-badge soc-badge-neutral">Not configured</span>
                                 }
-                                else if (providerStatus.AnthropicHealthy)
+                                else if (providerStatus?.AnthropicHealthy == true)
                                 {
                                     <span class="soc-badge soc-badge-success">Connected · verified</span>
                                 }
@@ -114,7 +114,7 @@
                                 {
                                     <span class="soc-badge soc-badge-neutral">Model not configured</span>
                                 }
-                                else if (providerStatus.OllamaHealthy)
+                                else if (providerStatus?.OllamaHealthy == true)
                                 {
                                     <span class="soc-badge soc-badge-success">Connected · verified</span>
                                 }

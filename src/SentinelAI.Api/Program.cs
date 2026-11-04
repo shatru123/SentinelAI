@@ -471,9 +471,13 @@ api.MapGet("/ai/providers", async (
     var anthropic = providers.Get("anthropic");
     var ollama = providers.Get("ollama");
 
-    var openAiHealthy = openAi.IsConfigured && await openAi.IsHealthyAsync(cancellationToken);
-    var anthropicHealthy = anthropic.IsConfigured && await anthropic.IsHealthyAsync(cancellationToken);
-    var ollamaHealthy = ollama.IsConfigured && await ollama.IsHealthyAsync(cancellationToken);
+    var health = await Task.WhenAll(
+        CheckProviderAsync(openAi, cancellationToken),
+        CheckProviderAsync(anthropic, cancellationToken),
+        CheckProviderAsync(ollama, cancellationToken));
+    var openAiHealthy = health[0];
+    var anthropicHealthy = health[1];
+    var ollamaHealthy = health[2];
     var selectedProvider = (configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none").Trim().ToLowerInvariant();
 
     return Results.Ok(new
@@ -1251,6 +1255,9 @@ api.MapGet("/vulnerability-intelligence/report", async (
         "text/csv; charset=utf-8",
         $"sentinelai-vulnerability-report-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.csv");
 }).RequireAuthorization("Reader");
+
+static Task<bool> CheckProviderAsync(IAIProvider provider, CancellationToken cancellationToken)
+    => provider.IsConfigured ? provider.IsHealthyAsync(cancellationToken) : Task.FromResult(false);
 
 app.Run();
 

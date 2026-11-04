@@ -259,10 +259,13 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
         var tenantBNotifications = await service.ListNotificationsAsync(tenantBReader, CancellationToken.None);
 
         Assert.Contains(tenantAEvents, x => x.Id == driftEvent.Id);
-        Assert.Contains(tenantANotifications, x => x.ResourceId == driftEvent.Id);
+        Assert.Contains(tenantANotifications, x => x.EventId == driftEvent.Id);
         Assert.Empty(tenantBEvents);
         Assert.Empty(tenantBNotifications);
-        Assert.False(await service.AcknowledgeAsync(tenantBReader with { Role = UserRole.SecurityAnalyst }, driftEvent.Id, CancellationToken.None));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            service.AcknowledgeAsync(tenantAReader, driftEvent.Id, CancellationToken.None));
+        Assert.False(await service.AcknowledgeAsync(tenantBReader with { Role = UserRole.SecurityAnalyst },
+            driftEvent.Id, CancellationToken.None));
 
         var tenantAOperator = tenantAReader with { Role = UserRole.SecurityAnalyst };
         Assert.True(await service.AcknowledgeAsync(tenantAOperator, driftEvent.Id, CancellationToken.None));

@@ -133,7 +133,10 @@ public sealed class TargetScope
         var canonical = new StringBuilder();
         Append(canonical, TenantId.ToString("N"));
         Append(canonical, Id.ToString("N"));
-        Append(canonical, ExpiresAt.ToUniversalTime().Ticks);
+        // PostgreSQL timestamptz persists microseconds (not .NET's 100-nanosecond ticks).
+        // Canonicalize at database precision so a normal save/reload cannot invalidate an otherwise
+        // unchanged authorization fingerprint.
+        Append(canonical, ToDatabasePrecisionTicks(ExpiresAt));
         Append(canonical, RequestsPerMinute);
         Append(canonical, MaxTotalRequests);
         Append(canonical, MaxConcurrentRequests);
@@ -166,12 +169,17 @@ public sealed class TargetScope
             Append(canonical, verification.Evidence);
             Append(canonical, verification.Verifier);
             Append(canonical, verification.Method);
-            Append(canonical, verification.VerifiedAt.ToUniversalTime().Ticks);
-            Append(canonical, verification.ExpiresAt?.ToUniversalTime().Ticks);
+            Append(canonical, ToDatabasePrecisionTicks(verification.VerifiedAt));
+            Append(canonical, verification.ExpiresAt is { } verificationExpiresAt
+                ? ToDatabasePrecisionTicks(verificationExpiresAt)
+                : null);
             Append(canonical, verification.AuthorizationId?.ToString("N"));
         }
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString())));
+
+        static long ToDatabasePrecisionTicks(DateTimeOffset value)
+            => value.ToUniversalTime().Ticks / 10;
 
         static void Append(StringBuilder builder, object? value)
         {

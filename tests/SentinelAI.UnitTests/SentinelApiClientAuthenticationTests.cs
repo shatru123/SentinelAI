@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -125,6 +126,37 @@ public sealed class SentinelApiClientAuthenticationTests
         Assert.Equal("Bearer expired-token", Assert.Single(handler.Requests).Authorization);
     }
 
+    [Fact]
+    public async Task Development_API_validation_problem_is_included_in_action_feedback()
+    {
+        const string detail = "No current approved authorization matches https://example.com.";
+        var handler = new CapturingHandler(HttpStatusCode.BadRequest, detail);
+        var client = CreateClient(handler, CreatePrincipal(null, "tenant-dev"), "Development", useDevelopmentHeaders: true);
+
+        var exception = await Assert.ThrowsAsync<SentinelApiException>(
+            () => client.PostJsonAsync<PublicTargetAuthorizationRequest, PublicTargetAuthorizationResponse>(
+                "/api/v1/public-target-authorizations",
+                new PublicTargetAuthorizationRequest("https://example.com", "owned target")));
+
+        Assert.Equal(SentinelApiFailureKind.Unexpected, exception.Kind);
+        Assert.Contains(detail, exception.UserMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Production_API_error_feedback_does_not_expose_problem_details()
+    {
+        const string detail = "database connection password must not be exposed";
+        var handler = new CapturingHandler(HttpStatusCode.BadRequest, detail);
+        var client = CreateClient(handler, CreatePrincipal("production-token", "tenant-prod"));
+
+        var exception = await Assert.ThrowsAsync<SentinelApiException>(
+            () => client.PostJsonAsync<PublicTargetAuthorizationRequest, PublicTargetAuthorizationResponse>(
+                "/api/v1/public-target-authorizations",
+                new PublicTargetAuthorizationRequest("https://example.com", "owned target")));
+
+        Assert.DoesNotContain(detail, exception.UserMessage, StringComparison.Ordinal);
+    }
+
     private static SentinelApiClient CreateClient(
         CapturingHandler handler,
         ClaimsPrincipal principal,
@@ -181,7 +213,9 @@ public sealed class SentinelApiClientAuthenticationTests
         public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider();
     }
 
-    private sealed class CapturingHandler(HttpStatusCode statusCode = HttpStatusCode.OK) : HttpMessageHandler
+    private sealed class CapturingHandler(
+        HttpStatusCode statusCode = HttpStatusCode.OK,
+        string? problemDetail = null) : HttpMessageHandler
     {
         public ConcurrentBag<CapturedRequest> Requests { get; } = [];
 
@@ -194,7 +228,10 @@ public sealed class SentinelApiClientAuthenticationTests
             {
                 Content = statusCode == HttpStatusCode.OK
                     ? JsonContent.Create(new PagedResponse<AssetResponse>([], 1, 25, 0))
-                    : new StringContent(string.Empty)
+                    : new StringContent(
+                        System.Text.Json.JsonSerializer.Serialize(new { title = "Bad Request", status = (int)statusCode, detail = problemDetail }),
+                        Encoding.UTF8,
+                        "application/problem+json")
             };
             return Task.FromResult(response);
         }

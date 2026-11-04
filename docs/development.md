@@ -12,7 +12,7 @@ Development defaults to EF Core InMemory. Production uses PostgreSQL and the mig
 
 ## Safety boundary
 
-`SentinelAI.Security.Policy` is deterministic and independent of AI providers. Public targets require a separate persisted request and administrator approval containing evidence, authenticated approver, method, timestamp and expiry; the legacy request Boolean and caller-supplied verification records are ignored. The policy validates strict IPv4/IPv6 and CIDR syntax, special-purpose ranges, IPv6 ULA, domain boundaries, CIDR exclusions, execution-time DNS results, DNS rebinding, and web redirects. The resulting validated execution target pins approved addresses for adapters while preserving the original hostname for protocol headers/SNI. AI remains advisory and cannot add targets or bypass policy.
+`SentinelAI.Security.Policy` is deterministic and independent of AI providers. Public targets require a persisted authorization record with evidence, administrator identity, verification method, timestamp and expiry. Development can enable a single-admin self-approval policy for a local Admin; this is explicitly audited and does not disable target authorization, URL/DNS/CIDR validation, expiry, or bounded execution controls. The production default keeps self-approval disabled unless an operator explicitly configures it. The legacy request Boolean and caller-supplied verification records are ignored. The policy validates strict IPv4/IPv6 and CIDR syntax, special-purpose ranges, IPv6 ULA, domain boundaries, CIDR exclusions, execution-time DNS results, DNS rebinding, and web redirects. The resulting validated execution target pins approved addresses for adapters while preserving the original hostname for protocol headers/SNI. AI remains advisory and cannot add targets or bypass policy.
 
 The Blazor dashboard uses a server-side cookie/OIDC-compatible authentication model. Development login is generated from server configuration and the authenticated principal is translated into API headers; production forwards a saved OIDC access token from the server-side authentication context or encrypted authentication ticket when an interactive circuit has no `HttpContext`. No browser local storage or user-selected tenant header is trusted. Use `/auth/login` for the local development sign-in flow.
 
@@ -49,7 +49,29 @@ Terminal 2:
 dotnet run --project src/SentinelAI.Web --launch-profile http
 ```
 
-Open `http://localhost:5056/auth/login` once, then continue to `http://localhost:5056/`. The API listens on `http://localhost:5109`. Development API settings use EF Core InMemory, an InMemory queue, and `Worker:RunInProcess=true`; scan jobs are consumed inside the API process. No separate Worker project is required in this mode. The in-memory database is reset whenever the API process restarts.
+Open `http://localhost:5056/auth/login` once, then continue to `http://localhost:5056/`. The API listens on `http://localhost:5109`. Development API settings use EF Core InMemory, an InMemory queue, `Worker:RunInProcess=true`, and `Authorization:AllowAdminSelfApproval=true`; scan jobs are consumed inside the API process. No separate Worker project is required in this mode. The in-memory database is reset whenever the API process restarts.
+
+#### Development accounts
+
+Use `/auth/login?choose=true` to open the local account selector. These passwordless identities are for local Development only and are not production credentials:
+
+- Primary Admin: `development-admin` (role `Admin`, user ID `00000000-0000-0000-0000-000000000002`)
+- Security Analyst: `development-analyst` (role `SecurityAnalyst`, user ID `00000000-0000-0000-0000-000000000004`)
+- Read-only Viewer: `development-viewer` (role `Viewer`, user ID `00000000-0000-0000-0000-000000000005`)
+
+The tenant ID for all three local identities is `00000000-0000-0000-0000-000000000001`. Sign Out clears the cookie and returns to the account selector. The primary Admin can perform administrator operations and approve their own public target authorization under the configured single-admin Development policy. Analyst and Viewer identities remain useful for permission testing.
+
+#### First local public web assessment
+
+1. Sign in as **Primary Admin**.
+2. Open `/web-assessments` and request authorization for the exact public site you control. Supply a meaningful business reason.
+3. The request appears as `Requested`; the Admin can click **Approve Target** without switching accounts. Approval evidence, method and expiry are recorded in the audit log.
+4. Create a public assessment for the same authorized scheme, host, port and path using the `web-assessment-passive` profile.
+5. Keep Hosting Mode set to **Public** for a public website. Private CIDR configuration is only required for private targets and privately authorized workers.
+
+The approval must cover the assessment's scheme, host, port and path. An approval for one site is not a blanket approval for unrelated domains. The local in-process worker is auto-registered for passive inventory and public web assessment; it deliberately has no `private-web-assessment` capability. Use the Compose worker and administrator-approved private CIDRs for private targets.
+
+The Development database is in-memory: restarting the API clears authorizations, scopes, assets and assessment history. Repeat the authorization steps after a restart.
 
 ### Run the full Docker Compose profile
 
@@ -61,6 +83,8 @@ docker compose --env-file .env -f deploy/docker/docker-compose.yml up --build
 Open `http://127.0.0.1:5081/auth/login`, then `http://127.0.0.1:5081/`. The local Compose dashboard defaults to the Development Admin role so the first external worker can be provisioned from Setup or Workers. On the Setup page, provision the configured `compose-worker` identity; the separate worker container will then register and begin sending heartbeats. Do not use this Development role configuration in a shared or production environment. Set `DASHBOARD_ROLE=SecurityAnalyst` in `.env` to test a restricted analyst view after the worker has been provisioned.
 
 The browser-facing API is `http://127.0.0.1:5080`; the Web container calls it internally at `http://api:8080`. The Development Web launch profile uses `http://localhost:5109`; do not change it to the Compose host port.
+
+In Compose mode, request public target authorization while signed in as the dashboard operator, then sign in as the configured separate approver using `/auth/dev-approver?returnUrl=%2Fweb-assessments`, approve the request, and sign back in at `/auth/login`. Provision the `compose-worker` in Setup before submitting work. The local in-process worker is disabled in Compose; queued work is executed only by the separate worker container.
 
 To exercise the broker path, inspect `docker compose --env-file .env -f deploy/docker/docker-compose.yml logs -f api worker`. The worker should log a successful registration after its identity is provisioned. Grafana is at `http://127.0.0.1:3000` with Prometheus and Tempo provisioned from `deploy/observability`; local credentials default to `admin` / `admin` and can be changed with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`.
 

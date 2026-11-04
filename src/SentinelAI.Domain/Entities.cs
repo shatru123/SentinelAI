@@ -377,9 +377,9 @@ public sealed class PublicTargetAuthorization
     public PublicTargetAuthorizationStatus GetStatus(DateTimeOffset now)
         => Status == PublicTargetAuthorizationStatus.Approved && ExpiresAt is not null && ExpiresAt <= now ? PublicTargetAuthorizationStatus.Expired : Status;
 
-    public void Approve(Guid approver, string evidence, string method, DateTimeOffset expiresAt)
+    public void Approve(Guid approver, string evidence, string method, DateTimeOffset expiresAt, bool allowRequesterApproval = false)
     {
-        if (approver == RequestedBy) throw new InvalidOperationException("The requester cannot approve their own authorization.");
+        if (approver == RequestedBy && !allowRequesterApproval) throw new InvalidOperationException("The requester cannot approve their own authorization unless administrator self-approval is enabled.");
         if (Status != PublicTargetAuthorizationStatus.Requested) throw new InvalidOperationException("Only requested authorizations can be approved.");
         if (string.IsNullOrWhiteSpace(evidence) || string.IsNullOrWhiteSpace(method)) throw new InvalidOperationException("Evidence and verification method are required.");
         if (expiresAt <= DateTimeOffset.UtcNow) throw new InvalidOperationException("Authorization expiry must be in the future.");
@@ -572,7 +572,16 @@ public sealed class WebAssessment
     public void Cancel() { if (Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Failed) return; Status = WebAssessmentStatus.Cancelled; FailureReason = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; }
     public void RevokeAuthorization() { if (Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Failed) return; Status = WebAssessmentStatus.Cancelled; FailureReason = "Worker authorization was revoked during execution."; CompletedAt = DateTimeOffset.UtcNow; ReportStorageKey = null; }
     public void ResetForRetry() { if (Status == WebAssessmentStatus.Completed) return; Status = WebAssessmentStatus.Queued; StartedAt = null; CompletedAt = null; FailureReason = "Recovered for retry."; ReportStorageKey = null; }
-    public void Expire() { if (Status is WebAssessmentStatus.Queued or WebAssessmentStatus.Running) { Status = WebAssessmentStatus.Expired; CompletedAt = DateTimeOffset.UtcNow; } }
+    public void Expire(string reason = "Execution duration limit was reached.")
+    {
+        if (Status is WebAssessmentStatus.Queued or WebAssessmentStatus.Running)
+        {
+            Status = WebAssessmentStatus.Expired;
+            FailureReason = string.IsNullOrWhiteSpace(reason) ? "Execution duration limit was reached." : reason.Trim();
+            ReportStorageKey = null;
+            CompletedAt = DateTimeOffset.UtcNow;
+        }
+    }
 }
 
 public sealed class WebAssessmentEndpoint

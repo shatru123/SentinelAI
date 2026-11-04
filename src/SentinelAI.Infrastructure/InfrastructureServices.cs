@@ -66,7 +66,8 @@ public static class InfrastructureServices
         else
         {
             services.AddSingleton<IScanJobQueue, InMemoryScanJobQueue>();
-            if (configuration.GetValue("Worker:RunInProcess", false)) services.AddHostedService<ScanJobProcessor>();
+            if (environment.IsDevelopment() && configuration.GetValue("Worker:RunInProcess", false))
+                services.AddHostedService<ScanJobProcessor>();
         }
         return services;
     }
@@ -491,9 +492,23 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             }
             if (job.Status is ScanJobStatus.Queued or ScanJobStatus.Running)
             {
-                job.Expire(); execution.Cancel();
-                db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.expired", nameof(AgentJob), job.Id, "Execution duration limit was reached."));
-                await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Expired;
+                var expiryReason = $"Execution duration limit ({scopeDefinition.MaxExecutionSeconds} seconds) was reached.";
+                job.Expire();
+                execution.Cancel();
+
+                var webAssessment = await db.WebAssessments.SingleOrDefaultAsync(
+                    x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, CancellationToken.None);
+                if (webAssessment is not null)
+                {
+                    webAssessment.Expire(expiryReason);
+                    db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "web-assessment.expired",
+                        nameof(WebAssessment), webAssessment.Id, expiryReason));
+                }
+
+                db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.expired",
+                    nameof(AgentJob), job.Id, expiryReason));
+                await db.SaveChangesAsync(CancellationToken.None);
+                return ScanExecutionOutcome.Expired;
             }
             return ScanExecutionOutcome.AlreadyRunning;
         }
@@ -572,38 +587,225 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
         var job = await db.AgentJobs.SingleOrDefaultAsync(x => x.Id == jobId, cancellationToken);
         if (job is null || !job.IsLeaseOwnedBy(expectedWorkerIdentity, DateTimeOffset.UtcNow)) return false;
         var execution = await db.AgentExecutions.SingleOrDefaultAsync(x => x.AgentJobId == job.Id, cancellationToken);
+        var webAssessment = await db.WebAssessments.SingleOrDefaultAsync(x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, cancellationToken);
         if (attempt >= maxAttempts)
         {
-            execution?.Fail(reason); job.Fail(reason);
+            execution?.Fail(reason);
+            webAssessment?.Fail(reason);
+            job.Fail(reason);
         }
         else
         {
             job.ReleaseLeaseForRetry(reason);
             execution?.ResetForRetry();
+            webAssessment?.ResetForRetry();
         }
         await db.SaveChangesAsync(cancellationToken);
         return true;
     }
 }
 
-public sealed class ScanJobProcessor(IServiceScopeFactory scopeFactory, IScanJobQueue queue, WorkerCancellationRegistry cancellations, ILogger<ScanJobProcessor> logger) : BackgroundService
+public sealed class ScanJobProcessor(
+    IServiceScopeFactory scopeFactory,
+    IScanJobQueue queue,
+    WorkerCancellationRegistry cancellations,
+    ILogger<ScanJobProcessor> logger) : BackgroundService
 {
+    private const string WorkerIdentity = "in-process";
+    private const string WorkerVersion = "development";
+    private static readonly string[] Capabilities =
+        ["passive-mock", "passive-inventory", WebAssessmentCapabilities.WebAssessment];
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var job in queue.ReadAllAsync(cancellationToken: stoppingToken))
+        await using (var recoveryScope = scopeFactory.CreateAsyncScope())
         {
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            var cancellationTask = Task.Run(async () => { await foreach (var id in queue.ReadCancellationsAsync(job.TenantId, "in-process", linked.Token)) if (id == job.JobId) linked.Cancel(); }, linked.Token);
             try
             {
-                cancellations.Register(job.JobId, linked.Token);
-                await using var scope = scopeFactory.CreateAsyncScope();
-                await scope.ServiceProvider.GetRequiredService<ScanExecutionService>().ExecuteAsync(job.JobId, linked.Token);
-                await job.AcknowledgeAsync(stoppingToken);
+                await recoveryScope.ServiceProvider.GetRequiredService<ScanExecutionService>()
+                    .RecoverExpiredLeasesAsync(stoppingToken);
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-            catch (Exception exception) { logger.LogError(exception, "In-process job {JobId} failed.", job.JobId); await job.RejectAsync(true, stoppingToken); }
-            finally { cancellations.Remove(job.JobId); linked.Cancel(); try { await cancellationTask; } catch (OperationCanceledException) { } }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "In-process worker startup recovery failed; queued work will still be processed.");
+            }
+        }
+
+        await foreach (var delivery in queue.ReadAllAsync(cancellationToken: stoppingToken))
+        {
+            using var hostLinked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            CancellationToken executionToken = default;
+            CancellationTokenSource? maintenanceStop = null;
+            Task? cancellationListener = null;
+            Task? maintenance = null;
+
+            try
+            {
+                await EnsureWorkerReadyAsync(delivery.TenantId, activeJobs: 1, stoppingToken);
+                executionToken = cancellations.Register(delivery.JobId, hostLinked.Token);
+                cancellationListener = ListenForCancellationsAsync(delivery.JobId, delivery.TenantId, hostLinked.Token);
+
+                maintenanceStop = CancellationTokenSource.CreateLinkedTokenSource(executionToken);
+                maintenance = MaintainWorkerPresenceAsync(delivery.JobId, delivery.TenantId, maintenanceStop.Token);
+
+                await using var executionScope = scopeFactory.CreateAsyncScope();
+                var outcome = await executionScope.ServiceProvider.GetRequiredService<ScanExecutionService>()
+                    .ExecuteAsync(delivery.JobId, executionToken, delivery.TenantId, WorkerIdentity);
+
+                if (outcome == ScanExecutionOutcome.Unauthorized)
+                {
+                    logger.LogError("In-process worker could not authorize job {JobId}.", delivery.JobId);
+                    await MarkQueuedJobFailedAsync(delivery.JobId, delivery.TenantId,
+                        "The local development worker could not authorize this job. Private web assessments require the separately enrolled private worker; use the Docker Compose worker for private targets.",
+                        stoppingToken);
+                }
+                else if (outcome == ScanExecutionOutcome.Missing)
+                {
+                    logger.LogError("In-process worker received a delivery for missing job {JobId}.", delivery.JobId);
+                }
+
+                await delivery.AcknowledgeAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                await delivery.RejectAsync(true, CancellationToken.None);
+                return;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "In-process worker failed job {JobId}.", delivery.JobId);
+                try
+                {
+                    await using var failureScope = scopeFactory.CreateAsyncScope();
+                    var persistedFailure = await failureScope.ServiceProvider.GetRequiredService<ScanExecutionService>()
+                        .RequeueOrFailAsync(delivery.JobId, WorkerIdentity, 1, 1, exception.Message, CancellationToken.None);
+                    if (!persistedFailure)
+                    {
+                        await MarkQueuedJobFailedAsync(delivery.JobId, delivery.TenantId, exception.Message, CancellationToken.None);
+                    }
+                    await delivery.AcknowledgeAsync(CancellationToken.None);
+                }
+                catch (Exception persistenceException)
+                {
+                    logger.LogError(persistenceException, "Could not persist the in-process failure state for job {JobId}.", delivery.JobId);
+                    await delivery.RejectAsync(false, CancellationToken.None);
+                }
+            }
+            finally
+            {
+                maintenanceStop?.Cancel();
+                if (maintenance is not null)
+                {
+                    try { await maintenance; }
+                    catch (OperationCanceledException) { }
+                }
+
+                cancellations.Remove(delivery.JobId);
+                try { await EnsureWorkerReadyAsync(delivery.TenantId, activeJobs: 0, CancellationToken.None); }
+                catch (Exception exception) { logger.LogWarning(exception, "Could not refresh the idle in-process worker heartbeat."); }
+
+                hostLinked.Cancel();
+                if (cancellationListener is not null)
+                {
+                    try { await cancellationListener; }
+                    catch (OperationCanceledException) { }
+                }
+                maintenanceStop?.Dispose();
+            }
+        }
+    }
+
+    private async Task MarkQueuedJobFailedAsync(Guid jobId, Guid tenantId, string reason, CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+        var job = await db.AgentJobs.SingleOrDefaultAsync(
+            item => item.Id == jobId && item.TenantId == tenantId, cancellationToken);
+        if (job is null || job.Status != ScanJobStatus.Queued) return;
+
+        job.Fail(reason);
+        var execution = await db.AgentExecutions.SingleOrDefaultAsync(item => item.AgentJobId == jobId, cancellationToken);
+        execution?.Fail(reason);
+        var assessment = await db.WebAssessments.SingleOrDefaultAsync(
+            item => item.AgentJobId == jobId && item.TenantId == tenantId, cancellationToken);
+        assessment?.Fail(reason);
+        db.AuditEvents.Add(new AuditEvent(tenantId, job.RequestedBy, "job.execution.failed",
+            nameof(AgentJob), job.Id, reason));
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task EnsureWorkerReadyAsync(Guid tenantId, int activeJobs, CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+        var worker = await db.Workers.SingleOrDefaultAsync(
+            item => item.TenantId == tenantId && item.Identity == WorkerIdentity, cancellationToken);
+
+        if (worker is null)
+        {
+            worker = new WorkerRegistration(tenantId, WorkerIdentity, WorkerVersion, Capabilities);
+            db.Workers.Add(worker);
+        }
+        else
+        {
+            // This reserved identity is managed only by the Development in-process host.
+            // It deliberately never receives private-web-assessment capability.
+            worker.ProvisionByAdministrator(WorkerVersion, Capabilities, []);
+        }
+
+        worker.Heartbeat(activeJobs, capacity: 1);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task ListenForCancellationsAsync(Guid jobId, Guid tenantId, CancellationToken cancellationToken)
+    {
+        await foreach (var cancelledJobId in queue.ReadCancellationsAsync(tenantId, WorkerIdentity, cancellationToken))
+        {
+            if (cancelledJobId == jobId)
+            {
+                cancellations.Cancel(jobId);
+                return;
+            }
+        }
+    }
+
+    private async Task MaintainWorkerPresenceAsync(Guid jobId, Guid tenantId, CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await using var scope = scopeFactory.CreateAsyncScope();
+                var execution = scope.ServiceProvider.GetRequiredService<ScanExecutionService>();
+                if (!await execution.RenewLeaseAsync(jobId, WorkerIdentity, cancellationToken))
+                {
+                    logger.LogWarning("In-process worker lost the execution lease for job {JobId}; cancelling execution.", jobId);
+                    cancellations.Cancel(jobId);
+                    return;
+                }
+
+                var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+                var worker = await db.Workers.SingleOrDefaultAsync(
+                    item => item.TenantId == tenantId && item.Identity == WorkerIdentity, cancellationToken);
+                if (worker is null || worker.Status == WorkerStatus.Disabled ||
+                    !worker.Capabilities.Contains(WebAssessmentCapabilities.WebAssessment, StringComparer.OrdinalIgnoreCase))
+                {
+                    logger.LogWarning("In-process worker authorization changed while job {JobId} was running.", jobId);
+                    cancellations.Cancel(jobId);
+                    return;
+                }
+
+                worker.Heartbeat(activeJobs: 1, capacity: 1);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "In-process worker lease/heartbeat maintenance failed for job {JobId}; cancelling execution.", jobId);
+            cancellations.Cancel(jobId);
         }
     }
 }

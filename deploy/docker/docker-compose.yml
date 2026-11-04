@@ -53,6 +53,8 @@ services:
       Api__UseDevelopmentHeaders: "true"
       Dashboard__TenantId: ${WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000001}
       Dashboard__UserId: 00000000-0000-0000-0000-000000000002
+      Dashboard__ApproverUserId: ${DASHBOARD_APPROVER_USER_ID:-00000000-0000-0000-0000-000000000003}
+      Dashboard__ApproverUserName: compose-approver
       Dashboard__UserName: compose-operator
       # Compose is a local Development environment. Use DASHBOARD_ROLE=SecurityAnalyst to test a non-admin view.
       Dashboard__Role: ${DASHBOARD_ROLE:-Admin}

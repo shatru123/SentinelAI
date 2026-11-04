@@ -4,6 +4,8 @@
 @using SentinelAI.Domain
 @inject SentinelApiClient ApiClient
 @inject IJSRuntime JS
+@inject IConfiguration Configuration
+@inject AuthenticationStateProvider AuthStateProvider
 <PageTitle>Web Assessments · SentinelAI SOC</PageTitle>
 
 <PageHeader Title="Authorized Web Assessments"
@@ -22,6 +24,30 @@
         </AuthorizeView>
     </Actions>
 </PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(pageNotice))
+{
+    <div role="alert" style="margin-bottom: var(--space-4);"><ErrorState Message="@pageNotice" /></div>
+}
+@if (Configuration.GetValue<bool>("Authorization:AllowAdminSelfApproval"))
+{
+    <div class="soc-panel" style="margin-bottom: var(--space-4); border-color: var(--border-subtle);">
+        <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
+            Development single-admin mode is enabled. An administrator can request and approve their own public-target authorization; the action is recorded in the audit log. Actual target permission, evidence, expiry, and bounded assessment policies are still required.
+            <a href="/auth/login?choose=true">Switch development account</a>.
+        </p>
+    </div>
+}
+else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
+{
+    <div class="soc-panel" style="margin-bottom: var(--space-4); border-color: var(--border-subtle);">
+        <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">
+            Local development uses two-person approval. Submit the authorization request as the operator, then
+            <a href="/auth/dev-approver?returnUrl=%2Fweb-assessments">switch to the separate development approver</a>
+            to approve it. Use <a href="/auth/login?choose=true">switch development account</a> when needed.
+        </p>
+    </div>
+}
 
 <div class="metrics-grid" style="margin-bottom: var(--space-6);">
     <MetricCard Title="Total Web Assessments"
@@ -105,11 +131,7 @@
                         Public web assessments require an administrator-approved target authorization matching the target URL scheme, host, and port.
                     </p>
 
-                    @{
-                        var approvedAuths = authorizations.Where(a => a.Status == PublicTargetAuthorizationStatus.Approved).ToList();
-                    }
-
-                    @if (approvedAuths.Count == 0)
+                    @if (matchingApprovedAuths.Count == 0)
                     {
                         <div class="soc-empty-state" style="padding: var(--space-4);">
                             <span class="soc-empty-icon" style="font-size: 1.5rem;">⚠️</span>
@@ -125,7 +147,7 @@
                             <label class="soc-label">Select Matching Approved Target Authorization</label>
                             <select class="soc-select" @bind="selectedAuthId">
                                 <option value="">Auto-match based on target URL (@formTargetUrl)</option>
-                                @foreach (var auth in approvedAuths)
+                                @foreach (var auth in matchingApprovedAuths)
                                 {
                                     <option value="@auth.Id.ToString()">@auth.Target (Expires: @DisplayTime(auth.ExpiresAt))</option>
                                 }
@@ -190,8 +212,9 @@
                     <input type="number" class="soc-input" min="1" max="500" @bind="formRequestLimit" />
                 </div>
                 <div class="soc-form-group">
-                    <label class="soc-label">Timeout Bounded Limit (Seconds)</label>
-                    <input type="number" class="soc-input" min="30" max="600" value="300" disabled />
+                    <label class="soc-label">Execution Timeout (Seconds)</label>
+                    <input type="number" class="soc-input" min="30" max="600" step="30" @bind="formTimeoutSeconds" />
+                    <p class="text-muted" style="font-size: 0.75rem; margin: 0;">Choose 30–600 seconds. Default: 600 seconds (10 minutes).</p>
                 </div>
             </div>
 
@@ -237,7 +260,17 @@
     <div class="soc-panel-header">
         <div>
             <h2 class="soc-panel-title">Public Target Authorizations</h2>
-            <p class="soc-panel-subtitle">Administrators must approve public domains before assessments can be dispatched against them.</p>
+            <p class="soc-panel-subtitle">Public-target approvals are recorded with evidence and expiry before assessments can be dispatched.</p>
+            @if (Configuration.GetValue<bool>("Authorization:AllowAdminSelfApproval"))
+            {
+                <p class="text-muted" style="font-size: 0.75rem; margin: 0;">Single-admin Development policy: the current Admin may approve their own request.</p>
+            }
+            else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
+            {
+                <p class="text-muted" style="font-size: 0.75rem; margin: 0;">
+                    Local approval identity: <a href="/auth/dev-approver?returnUrl=%2Fweb-assessments">switch to approver</a>
+                </p>
+            }
         </div>
         <button class="soc-btn soc-btn-secondary" @onclick="() => showAuthRequest = !showAuthRequest">
             @(showAuthRequest ? "Hide Request Form" : "+ Request Public Authorization")
@@ -318,9 +351,16 @@
                                     <Authorized>
                                         @if (auth.Status == PublicTargetAuthorizationStatus.Requested)
                                         {
-                                            <button class="soc-btn soc-btn-primary" style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;" @onclick="() => ApproveAuthAsync(auth)">
-                                                Approve Target
-                                            </button>
+                                            @if (currentUserId is Guid userId && (auth.RequestedBy != userId || (currentUserIsAdmin && Configuration.GetValue<bool>("Authorization:AllowAdminSelfApproval"))))
+                                            {
+                                                <button class="soc-btn soc-btn-primary" style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;" @onclick="() => ApproveAuthAsync(auth)">
+                                                    Approve Target
+                                                </button>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-muted" style="font-size: 0.75rem;">Awaiting a different administrator</span>
+                                            }
                                         }
                                         @if (auth.Status == PublicTargetAuthorizationStatus.Approved)
                                         {
@@ -467,6 +507,12 @@
             <div class="text-muted" style="font-size: 0.8125rem;">
                 Hosting: @selectedAssessment.HostingMode · Profile: @selectedAssessment.Profile · Created: @DisplayTime(selectedAssessment.CreatedAt)
             </div>
+            @if (!string.IsNullOrWhiteSpace(selectedAssessment.FailureReason))
+            {
+                <p class="text-muted" style="font-size: 0.8125rem; margin-top: var(--space-2);">
+                    <strong>Execution reason:</strong> @selectedAssessment.FailureReason
+                </p>
+            }
             @if (selectedAssessment.Status == WebAssessmentStatus.Completed)
             {
                 <div style="margin-top: var(--space-3);">
@@ -612,7 +658,15 @@
     private int totalCount;
     private int activeAssessmentsCount;
     private bool loading = true;
+    private Guid? currentUserId;
+    private bool currentUserIsAdmin;
     private string? error;
+    private string? pageNotice;
+
+    private List<PublicTargetAuthorizationResponse> matchingApprovedAuths => authorizations
+        .Where(auth => auth.Status == PublicTargetAuthorizationStatus.Approved &&
+            AuthorizationMatchesTarget(auth.Target, formTargetUrl))
+        .ToList();
 
     private string searchTerm = string.Empty;
     private string selectedStatus = "All";
@@ -635,6 +689,7 @@
     private string formEvidence = "security-operations-charter";
     private int formExpiryHours = 24;
     private int formRequestLimit = 30;
+    private int formTimeoutSeconds = 600;
     private string selectedAuthId = string.Empty;
 
     // Public authorization request
@@ -654,11 +709,17 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (Guid.TryParse(authState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var userId))
+            currentUserId = userId;
+        currentUserIsAdmin = authState.User.IsInRole("Admin");
+
         await RefreshAllAsync();
     }
 
     private async Task RefreshAllAsync()
     {
+        pageNotice = null;
         await LoadSummaryAsync();
         await LoadAuthorizationsAndWorkersAsync();
         await LoadAsync();
@@ -671,7 +732,10 @@
             var summary = await ApiClient.GetJsonAsync<DashboardSummaryResponse>("/api/v1/dashboard/summary");
             activeAssessmentsCount = summary.ActiveAssessments;
         }
-        catch { }
+        catch (SentinelApiException exception)
+        {
+            pageNotice = $"Dashboard summary could not be loaded: {exception.UserMessage}";
+        }
     }
 
     private async Task LoadAuthorizationsAndWorkersAsync()
@@ -684,7 +748,10 @@
             var w = await ApiClient.GetJsonAsync<List<WorkerResponse>>("/api/v1/workers");
             workers = w ?? [];
         }
-        catch { }
+        catch (SentinelApiException exception)
+        {
+            pageNotice = $"Authorizations or worker registrations could not be loaded: {exception.UserMessage}";
+        }
     }
 
     private async Task LoadAsync()
@@ -779,12 +846,22 @@
             wizardError = "Private assessments require an enrolled private worker.";
             return;
         }
+        if (formHostingMode == WebHostingMode.Public && matchingApprovedAuths.Count == 0)
+        {
+            wizardError = $"No current approved authorization matches {formTargetUrl}. Request authorization below, approve it with a different administrator identity, and refresh this page.";
+            return;
+        }
         wizardStep = 3;
     }
 
     private async Task SubmitAssessmentAsync()
     {
         if (!confirmedAssessmentPolicy) return;
+        if (formTimeoutSeconds is < 30 or > 600)
+        {
+            wizardError = "Execution timeout must be between 30 and 600 seconds.";
+            return;
+        }
         submitting = true;
         wizardError = null;
 
@@ -793,15 +870,17 @@
             var ranges = string.IsNullOrWhiteSpace(formPrivateRange) ? Array.Empty<string>() : [formPrivateRange.Trim()];
 
             List<Guid> boundAuthIds = [];
-            if (!string.IsNullOrWhiteSpace(selectedAuthId) && Guid.TryParse(selectedAuthId, out var parsedGuid))
+            var matchingApprovals = matchingApprovedAuths;
+            var selectedApproval = Guid.TryParse(selectedAuthId, out var parsedGuid)
+                ? matchingApprovals.FirstOrDefault(item => item.Id == parsedGuid)
+                : null;
+            var matchingApproval = selectedApproval ?? matchingApprovals.FirstOrDefault();
+            if (formHostingMode == WebHostingMode.Public && matchingApproval is null)
             {
-                boundAuthIds.Add(parsedGuid);
+                wizardError = $"No current approved authorization matches {formTargetUrl}.";
+                return;
             }
-            else
-            {
-                var matching = authorizations.FirstOrDefault(x => x.Status == PublicTargetAuthorizationStatus.Approved && string.Equals(x.Target, formTargetUrl, StringComparison.OrdinalIgnoreCase));
-                if (matching is not null) boundAuthIds.Add(matching.Id);
-            }
+            if (matchingApproval is not null) boundAuthIds.Add(matchingApproval.Id);
 
             var request = new CreateWebAssessmentRequest(
                 formName.Trim(),
@@ -811,7 +890,7 @@
                 formProfile,
                 [],
                 formRequestLimit,
-                300,
+                formTimeoutSeconds,
                 formEvidence.Trim(),
                 DateTimeOffset.UtcNow.AddHours(Math.Clamp(formExpiryHours, 1, 720)),
                 false,
@@ -839,15 +918,16 @@
         submittingAuth = true;
         try
         {
-            await ApiClient.PostJsonAsync<PublicTargetAuthorizationRequest, PublicTargetAuthorizationResponse>(
+            var created = await ApiClient.PostJsonAsync<PublicTargetAuthorizationRequest, PublicTargetAuthorizationResponse>(
                 "/api/v1/public-target-authorizations",
                 new PublicTargetAuthorizationRequest(authTargetInput.Trim(), authReasonInput.Trim()));
             showAuthRequest = false;
+            pageNotice = $"Authorization request for {created.Target} was submitted. It must be approved by a different administrator before an assessment can start.";
             await LoadAuthorizationsAndWorkersAsync();
         }
         catch (SentinelApiException ex)
         {
-            error = ex.UserMessage;
+            pageNotice = ex.UserMessage;
         }
         finally
         {
@@ -862,11 +942,12 @@
             await ApiClient.PostJsonAsync<PublicTargetAuthorizationApprovalRequest, PublicTargetAuthorizationResponse>(
                 $"/api/v1/public-target-authorizations/{auth.Id}/approve",
                 new PublicTargetAuthorizationApprovalRequest("secops-engagement-charter", "admin-approval-granted", DateTimeOffset.UtcNow.AddHours(24)));
+            pageNotice = $"Authorization for {auth.Target} was approved.";
             await LoadAuthorizationsAndWorkersAsync();
         }
         catch (SentinelApiException ex)
         {
-            error = ex.UserMessage;
+            pageNotice = ex.UserMessage;
         }
     }
 
@@ -875,11 +956,12 @@
         try
         {
             await ApiClient.PostAsync($"/api/v1/public-target-authorizations/{auth.Id}/revoke");
+            pageNotice = $"Authorization for {auth.Target} was revoked.";
             await LoadAuthorizationsAndWorkersAsync();
         }
         catch (SentinelApiException ex)
         {
-            error = ex.UserMessage;
+            pageNotice = ex.UserMessage;
         }
     }
 
@@ -892,7 +974,7 @@
         }
         catch (SentinelApiException ex)
         {
-            error = ex.UserMessage;
+            pageNotice = ex.UserMessage;
         }
     }
 
@@ -915,7 +997,7 @@
         }
         catch (SentinelApiException ex)
         {
-            error = ex.UserMessage;
+            pageNotice = ex.UserMessage;
         }
         finally
         {
@@ -932,9 +1014,29 @@
         }
         catch (SentinelApiException ex)
         {
-            error = ex.UserMessage;
+            pageNotice = ex.UserMessage;
         }
     }
+
+    private static bool AuthorizationMatchesTarget(string authorizedTarget, string assessmentTarget)
+    {
+        if (!Uri.TryCreate(authorizedTarget, UriKind.Absolute, out var authorized) ||
+            !Uri.TryCreate(assessmentTarget, UriKind.Absolute, out var requested))
+            return string.Equals(authorizedTarget.Trim().TrimEnd('/'), assessmentTarget.Trim().TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+
+        if (!authorized.Scheme.Equals(requested.Scheme, StringComparison.OrdinalIgnoreCase) ||
+            !authorized.Host.Equals(requested.Host, StringComparison.OrdinalIgnoreCase) ||
+            EffectivePort(authorized) != EffectivePort(requested))
+            return false;
+
+        var basePath = string.IsNullOrWhiteSpace(authorized.AbsolutePath) ? "/" : "/" + authorized.AbsolutePath.Trim('/');
+        var candidatePath = string.IsNullOrWhiteSpace(requested.AbsolutePath) ? "/" : requested.AbsolutePath;
+        return candidatePath.Equals(basePath, StringComparison.OrdinalIgnoreCase) ||
+            candidatePath.StartsWith(basePath == "/" ? "/" : basePath + "/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int EffectivePort(Uri uri) =>
+        uri.IsDefaultPort ? (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? 443 : 80) : uri.Port;
 
     private static string DisplayTime(DateTimeOffset? value) => value is null || value == default ? "—" : value.Value.ToLocalTime().ToString("g");
 }

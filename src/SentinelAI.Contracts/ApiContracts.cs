@@ -61,7 +61,8 @@ public sealed record CreateWebAssessmentRequest(
     int MaxResponseBytes = 512 * 1024);
 public sealed record WebAssessmentResponse(Guid Id, Guid JobId, Guid ScopeId, string TargetUrl, string Profile,
     WebHostingMode HostingMode, WebAssessmentStatus Status, ScanJobStatus JobStatus, DateTimeOffset CreatedAt,
-    DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, int DiscoveredEndpointCount, string? ReportStorageKey);
+    DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, int DiscoveredEndpointCount, string? ReportStorageKey,
+    string? FailureReason = null);
 public sealed record WebAssessmentEndpointResponse(Guid Id, string Url, string Method, int Depth, string Kind, DateTimeOffset DiscoveredAt);
 public sealed record WebAssessmentFindingResponse(Guid Id, string Title, FindingSeverity Severity, string? Category, string? Confidence,
     string? AffectedUrl, string? HttpMethod, string? Parameter, string? Description, string? Impact, string? Reproduction,

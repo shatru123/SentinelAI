@@ -71,9 +71,16 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         BadHttpRequestException => StatusCodes.Status400BadRequest,
         KeyNotFoundException => StatusCodes.Status404NotFound,
         UnauthorizedAccessException => StatusCodes.Status403Forbidden,
+        InvalidOperationException => StatusCodes.Status409Conflict,
         _ => StatusCodes.Status500InternalServerError
     };
-    await Results.Problem(statusCode: context.Response.StatusCode, title: "Request could not be completed", detail: exception is ScopeValidationException scope ? string.Join(" ", scope.Errors) : null).ExecuteAsync(context);
+    var detail = exception switch
+    {
+        ScopeValidationException scope => string.Join(" ", scope.Errors),
+        InvalidOperationException invalid when app.Environment.IsDevelopment() => invalid.Message,
+        _ => null
+    };
+    await Results.Problem(statusCode: context.Response.StatusCode, title: "Request could not be completed", detail: detail).ExecuteAsync(context);
 }));
 app.UseAuthentication();
 app.UseAuthorization();
@@ -116,7 +123,7 @@ api.MapGet("/dashboard/summary", async (HttpContext context, IAppDbContext db, C
                 assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl,
                 assessment.Profile, assessment.HostingMode, assessment.Status, job.Status,
                 assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt,
-                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey))
+                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey, assessment.FailureReason))
         .ToListAsync(cancellationToken);
 
     var recentScans = await db.AgentJobs.AsNoTracking()
@@ -220,7 +227,7 @@ api.MapGet("/web-assessments", async (HttpContext context, IAppDbContext db, int
                 assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl,
                 assessment.Profile, assessment.HostingMode, assessment.Status, job.Status,
                 assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt,
-                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey))
+                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey, assessment.FailureReason))
         .ToListAsync(cancellationToken);
 
     return Results.Ok(new PagedResponse<WebAssessmentResponse>(items, page, pageSize, total));

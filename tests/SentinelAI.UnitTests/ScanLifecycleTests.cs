@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using SentinelAI.Agent.Vulnerability;
 using SentinelAI.Application;
 using SentinelAI.Contracts;
 using SentinelAI.Domain;
@@ -350,6 +351,48 @@ public sealed class ScanLifecycleTests
     }
 
     [Fact]
+    public async Task Web_assessment_timeout_expires_the_linked_assessment_with_a_reason()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var db = new AppDbContext(options);
+
+        var tenant = new Tenant("Web timeout tenant");
+        var user = new User(tenant.Id, "web-timeout-analyst", "Web Timeout Analyst", UserRole.SecurityAnalyst);
+        const string workerId = "web-timeout-worker";
+        var scope = new TargetScope(tenant.Id, "private-web-timeout", user.Id, DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://private.example.test/")], [],
+            ["web-assessment-passive"], 10, 1, "approved-timeout-test", false);
+        scope.ConfigureWebHosting(WebHostingMode.Private, workerId, ["10.20.0.0/16"]);
+
+        var worker = new WorkerRegistration(tenant.Id, workerId, "test",
+            ["web-assessment", "private-web-assessment"]);
+        worker.ConfigurePrivateAssessmentAuthorization(["10.20.0.0/16"]);
+        worker.Heartbeat(0, 1);
+
+        var job = new AgentJob(tenant.Id, scope.Id, user.Id, "web-assessment-passive");
+        var execution = new AgentExecution(job.Id, "BlockingWebAssessmentEngine");
+        var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, "https://private.example.test/",
+            "web-assessment-passive", WebHostingMode.Private);
+        db.AddRange(tenant, user, scope, worker, job, execution, assessment);
+        await db.SaveChangesAsync();
+
+        var service = new ScanExecutionService(db, new TargetScopeValidator(new PrivateWebResolver()),
+            new ConfigurationBuilder().Build(), NullLogger<ScanExecutionService>.Instance,
+            webAssessmentEngine: new BlockingWebAssessmentEngine());
+
+        var outcome = await service.ExecuteAsync(job.Id, CancellationToken.None, tenant.Id, workerId);
+
+        Assert.Equal(ScanExecutionOutcome.Expired, outcome);
+        Assert.Equal(ScanJobStatus.Expired, job.Status);
+        Assert.Equal(AgentExecutionStatus.Cancelled, execution.Status);
+        Assert.Equal(WebAssessmentStatus.Expired, assessment.Status);
+        Assert.Contains("1 seconds", assessment.FailureReason ?? string.Empty);
+        Assert.Null(assessment.ReportStorageKey);
+        Assert.Contains(db.AuditEvents.Local, audit => audit.Action == "web-assessment.expired" && audit.ResourceId == assessment.Id);
+    }
+
+    [Fact]
     public async Task Duplicate_completed_delivery_is_idempotent()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
@@ -366,6 +409,25 @@ public sealed class ScanLifecycleTests
         var outcome = await service.ExecuteAsync(job.Id, CancellationToken.None, tenant.Id, "worker-b");
 
         Assert.Equal(ScanExecutionOutcome.AlreadyCompleted, outcome);
+    }
+
+    private sealed class BlockingWebAssessmentEngine : IWebAssessmentEngine
+    {
+        public async Task<WebAssessmentExecutionResult> ExecuteAsync(
+            WebAssessment assessment, AgentJob job, TargetScope scope, string workerIdentity,
+            IReadOnlyCollection<string> workerCapabilities, IReadOnlyCollection<string>? approvedPrivateNetworkRanges,
+            Func<IAppDbContext, CancellationToken, Task<bool>> leaseCheck, CancellationToken cancellationToken,
+            Func<IAppDbContext, CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new WebAssessmentExecutionResult(null, 0);
+        }
+    }
+
+    private sealed class PrivateWebResolver : IHostAddressResolver
+    {
+        public Task<IReadOnlyCollection<System.Net.IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyCollection<System.Net.IPAddress>>([System.Net.IPAddress.Parse("10.20.0.20")]);
     }
 
     private sealed class StubResolver : IHostAddressResolver

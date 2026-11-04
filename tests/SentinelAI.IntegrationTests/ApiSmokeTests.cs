@@ -1,12 +1,17 @@
 using System.Net;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using SentinelAI.Contracts;
+using SentinelAI.Agent.Vulnerability;
+using SentinelAI.Application;
 using SentinelAI.Domain;
 using SentinelAI.Infrastructure;
+using SentinelAI.Security.Policy;
 
 namespace SentinelAI.IntegrationTests;
 
@@ -389,6 +394,189 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         var forbiddenResp = await otherClient.GetAsync($"/api/v1/findings/{findingId}");
         Assert.Equal(HttpStatusCode.NotFound, forbiddenResp.StatusCode);
     }
+
+    [Fact]
+    public async Task Administrator_can_self_approve_public_target_when_single_admin_policy_is_enabled()
+    {
+        var tenant = Guid.NewGuid();
+        var administrator = Guid.NewGuid();
+        using var localFactory = factory.WithWebHostBuilder(builder =>
+            builder.UseEnvironment("Development")
+                .UseSetting("Database:Provider", "InMemory")
+                .UseSetting("Authorization:AllowAdminSelfApproval", "true"));
+
+        using var adminClient = CreateAuthenticatedClient(localFactory, tenant, administrator, UserRole.Admin);
+        var requestResponse = await adminClient.PostAsJsonAsync(
+            "/api/v1/public-target-authorizations",
+            new PublicTargetAuthorizationRequest("https://owned.example.test", "Administrator-confirmed authorized test target"));
+        Assert.Equal(HttpStatusCode.Created, requestResponse.StatusCode);
+        var requested = await requestResponse.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(requested);
+        Assert.Equal(PublicTargetAuthorizationStatus.Requested, requested.Status);
+
+        var approvalResponse = await adminClient.PostAsJsonAsync(
+            $"/api/v1/public-target-authorizations/{requested.Id}/approve",
+            new PublicTargetAuthorizationApprovalRequest(
+                "admin-authorization-attestation",
+                "administrator-self-approval",
+                DateTimeOffset.UtcNow.AddHours(1)));
+        Assert.Equal(HttpStatusCode.OK, approvalResponse.StatusCode);
+        var approved = await approvalResponse.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(approved);
+        Assert.Equal(PublicTargetAuthorizationStatus.Approved, approved.Status);
+        Assert.Equal(administrator, approved.ApprovedBy);
+    }
+
+    [Fact]
+    public async Task In_process_worker_completes_an_authorized_public_web_assessment()
+    {
+        var tenant = Guid.NewGuid();
+        var requester = Guid.NewGuid();
+        var approver = Guid.NewGuid();
+        var probe = new InProcessWorkerProbe();
+
+        using var localFactory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development")
+                .UseSetting("Database:Provider", "InMemory")
+                .UseSetting("Messaging:Mode", "InMemory")
+                .UseSetting("Worker:RunInProcess", "true");
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IHostAddressResolver>();
+                services.AddSingleton<IHostAddressResolver, FixedPublicAddressResolver>();
+                services.RemoveAll<IWebAssessmentEngine>();
+                services.AddSingleton(probe);
+                services.AddScoped<IWebAssessmentEngine, InProcessWorkerProbeEngine>();
+            });
+        });
+
+        using var requesterClient = CreateAuthenticatedClient(localFactory, tenant, requester, UserRole.SecurityAnalyst);
+        using var approverClient = CreateAuthenticatedClient(localFactory, tenant, approver, UserRole.Admin);
+
+        var authorizationResponse = await requesterClient.PostAsJsonAsync(
+            "/api/v1/public-target-authorizations",
+            new PublicTargetAuthorizationRequest("https://example.com", "Integration test owned target"));
+        Assert.Equal(HttpStatusCode.Created, authorizationResponse.StatusCode);
+        var authorization = await authorizationResponse.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(authorization);
+
+        var approvalResponse = await approverClient.PostAsJsonAsync(
+            $"/api/v1/public-target-authorizations/{authorization.Id}/approve",
+            new PublicTargetAuthorizationApprovalRequest(
+                "integration-test-evidence",
+                "separate-admin-approval",
+                DateTimeOffset.UtcNow.AddHours(1)));
+        Assert.Equal(HttpStatusCode.OK, approvalResponse.StatusCode);
+
+        var assessmentRequest = new CreateWebAssessmentRequest(
+            "In-process worker integration assessment",
+            "https://example.com/",
+            WebHostingMode.Public,
+            null,
+            WebAssessmentOperationProfiles.Passive,
+            [],
+            10,
+            60,
+            "integration-test-evidence",
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            PublicTargetAuthorizationIds: [authorization.Id]);
+
+        var createResponse = await requesterClient.PostAsJsonAsync("/api/v1/web-assessments", assessmentRequest);
+        Assert.Equal(HttpStatusCode.Accepted, createResponse.StatusCode);
+        var created = await createResponse.Content.ReadFromJsonAsync<WebAssessmentResponse>();
+        Assert.NotNull(created);
+
+        var executionSignal = await Task.WhenAny(probe.Executed.Task, Task.Delay(TimeSpan.FromSeconds(10)));
+        Assert.Same(probe.Executed.Task, executionSignal);
+        var execution = await probe.Executed.Task;
+        Assert.Equal("in-process", execution.WorkerIdentity);
+        Assert.Contains(WebAssessmentCapabilities.WebAssessment, execution.WorkerCapabilities);
+        Assert.True(execution.LeaseWasValid);
+        Assert.True(execution.LiveAuthorizationWasValid);
+
+        WebAssessmentResponse? final = null;
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            var response = await requesterClient.GetAsync($"/api/v1/web-assessments/{created.Id}");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            final = await response.Content.ReadFromJsonAsync<WebAssessmentResponse>();
+            if (final?.Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Failed) break;
+            await Task.Delay(100);
+        }
+
+        Assert.NotNull(final);
+        Assert.Equal(WebAssessmentStatus.Completed, final.Status);
+        Assert.Equal(ScanJobStatus.Completed, final.JobStatus);
+
+        var workers = await requesterClient.GetFromJsonAsync<List<WorkerResponse>>("/api/v1/workers");
+        Assert.NotNull(workers);
+        var localWorker = Assert.Single(workers, worker => worker.Identity == "in-process");
+        Assert.Equal(WorkerStatus.Healthy, localWorker.Status);
+        Assert.Contains(WebAssessmentCapabilities.WebAssessment, localWorker.Capabilities);
+        Assert.DoesNotContain(WebAssessmentCapabilities.PrivateWebAssessment, localWorker.Capabilities);
+    }
+
+    private static HttpClient CreateAuthenticatedClient(
+        WebApplicationFactory<Program> application,
+        Guid tenant,
+        Guid user,
+        UserRole role)
+    {
+        var client = application.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Tenant-Id", tenant.ToString());
+        client.DefaultRequestHeaders.Add("X-User-Id", user.ToString());
+        client.DefaultRequestHeaders.Add("X-Role", role.ToString());
+        return client;
+    }
+
+    public sealed class InProcessWorkerProbe
+    {
+        public TaskCompletionSource<InProcessWorkerExecution> Executed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed record InProcessWorkerExecution(
+        string WorkerIdentity,
+        IReadOnlyCollection<string> WorkerCapabilities,
+        bool LeaseWasValid,
+        bool LiveAuthorizationWasValid);
+
+    public sealed class InProcessWorkerProbeEngine(InProcessWorkerProbe probe, IServiceScopeFactory scopeFactory) : IWebAssessmentEngine
+    {
+        public async Task<WebAssessmentExecutionResult> ExecuteAsync(
+            WebAssessment assessment,
+            AgentJob job,
+            TargetScope scope,
+            string workerIdentity,
+            IReadOnlyCollection<string> workerCapabilities,
+            IReadOnlyCollection<string>? approvedPrivateNetworkRanges,
+            Func<IAppDbContext, CancellationToken, Task<bool>> leaseCheck,
+            CancellationToken cancellationToken,
+            Func<IAppDbContext, CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
+        {
+            await using var serviceScope = scopeFactory.CreateAsyncScope();
+            var db = serviceScope.ServiceProvider.GetRequiredService<IAppDbContext>();
+            var leaseIsValid = await leaseCheck(db, cancellationToken);
+            var liveWorker = refreshAuthorization is null ? null : await refreshAuthorization(db, cancellationToken);
+
+            probe.Executed.TrySetResult(new InProcessWorkerExecution(
+                workerIdentity,
+                workerCapabilities,
+                leaseIsValid,
+                liveWorker is not null));
+            return new WebAssessmentExecutionResult("integration-test/report.html", 0);
+        }
+    }
+
+    public sealed class FixedPublicAddressResolver : IHostAddressResolver
+    {
+        private static readonly IReadOnlyCollection<IPAddress> Addresses = [IPAddress.Parse("93.184.216.34")];
+
+        public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken)
+            => Task.FromResult(Addresses);
+    }
+
 
     private HttpClient CreateAuthenticatedClient(Guid tenant, Guid user, UserRole role)
     {

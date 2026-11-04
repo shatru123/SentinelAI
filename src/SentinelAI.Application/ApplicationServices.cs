@@ -283,7 +283,7 @@ public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes,
     }
 
     private static WebAssessmentResponse ToResponse(WebAssessment assessment, ScanResponse scan)
-        => new(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, scan.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey);
+        => new(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, scan.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey, assessment.FailureReason);
 
 }
 
@@ -302,7 +302,7 @@ public static class OutboxMessagePayload
     public static T Deserialize<T>(string value) => System.Text.Json.JsonSerializer.Deserialize<T>(value) ?? throw new InvalidOperationException("Outbox payload is invalid.");
 }
 
-public sealed class PublicTargetAuthorizationService(IAppDbContext db) : IPublicTargetAuthorizationService
+public sealed class PublicTargetAuthorizationService(IAppDbContext db, IConfiguration configuration) : IPublicTargetAuthorizationService
 {
     public async Task<PublicTargetAuthorizationResponse> RequestAsync(PrincipalContext principal, PublicTargetAuthorizationRequest request, CancellationToken cancellationToken)
     {
@@ -326,8 +326,12 @@ public sealed class PublicTargetAuthorizationService(IAppDbContext db) : IPublic
         if (principal.Role != UserRole.Admin) throw new UnauthorizedAccessException("Only administrators may approve public target authorization.");
         var authorization = await db.PublicTargetAuthorizations.SingleOrDefaultAsync(x => x.Id == id && x.TenantId == principal.TenantId, cancellationToken);
         if (authorization is null) return null;
-        authorization.Approve(principal.UserId, request.Evidence, request.Method, request.ExpiresAt);
-        db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "public-target.authorization.approved", nameof(PublicTargetAuthorization), id, "Public target authorization approved by an administrator."));
+        var allowAdminSelfApproval = principal.Role == UserRole.Admin && configuration.GetValue<bool>("Authorization:AllowAdminSelfApproval");
+        authorization.Approve(principal.UserId, request.Evidence, request.Method, request.ExpiresAt, allowRequesterApproval: allowAdminSelfApproval);
+        var auditDetail = authorization.RequestedBy == principal.UserId
+            ? "Public target authorization self-approved by an administrator under the configured single-admin policy."
+            : "Public target authorization approved by a different administrator.";
+        db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "public-target.authorization.approved", nameof(PublicTargetAuthorization), id, auditDetail));
         await db.SaveChangesAsync(cancellationToken);
         return ToResponse(authorization);
     }

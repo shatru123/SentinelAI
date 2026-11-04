@@ -810,13 +810,13 @@ public sealed class WebAssessmentAuthorizationTests
 
     private sealed class ThrowingReportGenerator : IHtmlReportGenerator
     {
-        public Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken)
+        public Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken, bool includeAdvisoryAiSummaries = false)
             => throw new InvalidOperationException("Disk or rendering failure.");
     }
 
     private sealed class SynchronousThrowingReportGenerator(Action onGenerate) : IHtmlReportGenerator
     {
-        public Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken)
+        public Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken, bool includeAdvisoryAiSummaries = false)
         {
             onGenerate();
             throw new InvalidOperationException("Disk or rendering failure during setup.");
@@ -841,7 +841,7 @@ public sealed class WebAssessmentAuthorizationTests
     {
         public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool> Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public async Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken)
+        public async Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken, bool includeAdvisoryAiSummaries = false)
         {
             Started.TrySetResult(true);
             try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
@@ -860,7 +860,7 @@ public sealed class WebAssessmentAuthorizationTests
         public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<bool> completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Complete() => completed.TrySetResult(true);
-        public async Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken)
+        public async Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken, bool includeAdvisoryAiSummaries = false)
         {
             Started.TrySetResult(true);
             await completed.Task.WaitAsync(cancellationToken);
@@ -967,7 +967,7 @@ public sealed class WebAssessmentAuthorizationTests
 
     private sealed class ConcurrentQueryingReportGenerator(AppDbContext scopedDb) : IHtmlReportGenerator
     {
-        public async Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken)
+        public async Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken, bool includeAdvisoryAiSummaries = false)
         {
             for (var i = 0; i < 20; i++)
             {

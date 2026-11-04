@@ -145,11 +145,13 @@ public partial class Phase44ScheduledReassessment : Migration
             ALTER TABLE "AssessmentSchedules"
             DROP CONSTRAINT IF EXISTS "FK_AssessmentSchedules_TargetScopes_TenantId_ScopeId";
             """);
+        // Drop indexes before their owning table. PostgreSQL removes an index with its table,
+        // so attempting to drop it afterwards makes a rollback fail.
+        migrationBuilder.DropIndex("IX_AssessmentDriftEvents_TenantId_ScheduleId", "AssessmentDriftEvents");
         migrationBuilder.DropTable("AssessmentDriftEvents");
         migrationBuilder.DropTable("AssessmentScheduleRuns");
         migrationBuilder.DropTable("AssessmentSchedules");
         migrationBuilder.DropIndex("IX_Notifications_TenantId_ResourceId", "Notifications");
-        migrationBuilder.DropIndex("IX_AssessmentDriftEvents_TenantId_ScheduleId", "AssessmentDriftEvents");
         migrationBuilder.DropIndex("IX_Notifications_TenantId_Channel_ResourceId", "Notifications");
         migrationBuilder.DropColumn("ResourceId", "Notifications");
         migrationBuilder.DropColumn("IsRead", "Notifications");

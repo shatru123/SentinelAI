@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using OpenTelemetry.Exporter;
+using SentinelAI.AI.Abstractions;
 using SentinelAI.Application;
 using SentinelAI.Api;
 using SentinelAI.Agent.Vulnerability;
@@ -21,6 +22,7 @@ builder.Services.AddProblemDetails();
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddOpenApi();
 builder.Services.AddSentinelInfrastructure(builder.Configuration, builder.Environment);
+builder.Services.AddSentinelAIProviders(builder.Configuration);
 builder.Services.AddScoped<IScopeService, ScopeService>();
 builder.Services.AddScoped<IScanService, ScanService>();
 builder.Services.AddScoped<IPublicTargetAuthorizationService, PublicTargetAuthorizationService>();
@@ -460,27 +462,66 @@ api.MapGet("/assets/{id:guid}/services", async (HttpContext context, Guid id, IA
 }).RequireAuthorization("Reader");
 
 api.MapGet("/agents", () => Results.Ok(Array.Empty<AgentResponse>())).RequireAuthorization("Reader");
-api.MapGet("/ai/providers", (IConfiguration configuration) =>
+api.MapGet("/ai/providers", async (
+    IAIProviderFactory providers,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
 {
+    var openAi = providers.Get("openai");
+    var anthropic = providers.Get("anthropic");
+    var ollama = providers.Get("ollama");
+
+    var health = await Task.WhenAll(
+        CheckProviderAsync(openAi, cancellationToken),
+        CheckProviderAsync(anthropic, cancellationToken),
+        CheckProviderAsync(ollama, cancellationToken));
+    var openAiHealthy = health[0];
+    var anthropicHealthy = health[1];
+    var ollamaHealthy = health[2];
     var selectedProvider = (configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none").Trim().ToLowerInvariant();
+
     return Results.Ok(new
     {
         selectedProvider,
-        openAiCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["OPENAI_API_KEY"] ?? configuration["AI:OpenAI:ApiKey"]),
-        anthropicCredentialsConfigured = !string.IsNullOrWhiteSpace(configuration["ANTHROPIC_API_KEY"] ?? configuration["AI:Anthropic:ApiKey"]),
-        ollamaEndpointConfigured = !string.IsNullOrWhiteSpace(configuration["OLLAMA_BASE_URL"] ?? configuration["AI:Ollama:Endpoint"]),
-        connectivityVerified = false,
+        openAiCredentialsConfigured = openAi.IsConfigured,
+        anthropicCredentialsConfigured = anthropic.IsConfigured,
+        ollamaEndpointConfigured = ollama.IsConfigured,
+        openAiHealthy,
+        anthropicHealthy,
+        ollamaHealthy,
+        connectivityVerified = openAiHealthy || anthropicHealthy || ollamaHealthy,
         inferenceImplemented = false,
+        providerAdaptersImplemented = true,
+        executionMode = "advisory-only",
+        checkedAtUtc = DateTimeOffset.UtcNow,
+        providers = new[]
+        {
+            new { provider = openAi.Name, configured = openAi.IsConfigured, healthy = openAiHealthy },
+            new { provider = anthropic.Name, configured = anthropic.IsConfigured, healthy = anthropicHealthy },
+            new { provider = ollama.Name, configured = ollama.IsConfigured, healthy = ollamaHealthy }
+        }
+    });
+}).RequireAuthorization("Reader");
+api.MapGet("/ai/health", async (
+    IAIProviderFactory providers,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var statuses = await Task.WhenAll(providers.GetNames().Select(async name =>
+    {
+        var provider = providers.Get(name);
+        return provider.IsConfigured && await provider.IsHealthyAsync(cancellationToken);
+    }));
+    return Results.Ok(new
+    {
+        status = "advisory-only",
+        defaultProvider = configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none",
+        connectivityVerified = statuses.Any(x => x),
+        inferenceImplemented = false,
+        providerAdaptersImplemented = true,
         executionMode = "advisory-only"
     });
 }).RequireAuthorization("Reader");
-api.MapGet("/ai/health", (IConfiguration configuration) => Results.Ok(new
-{
-    status = "advisory-only",
-    defaultProvider = configuration["AI:DefaultProvider"] ?? configuration["AI_PROVIDER"] ?? "none",
-    connectivityVerified = false,
-    inferenceImplemented = false
-})).RequireAuthorization("Reader");
 api.MapGet("/monitoring/health", async (
     AppDbContext db,
     IScanJobQueue queue,
@@ -1216,6 +1257,9 @@ api.MapGet("/vulnerability-intelligence/report", async (
         "text/csv; charset=utf-8",
         $"sentinelai-vulnerability-report-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.csv");
 }).RequireAuthorization("Reader");
+
+static Task<bool> CheckProviderAsync(IAIProvider provider, CancellationToken cancellationToken)
+    => provider.IsConfigured ? provider.IsHealthyAsync(cancellationToken) : Task.FromResult(false);
 
 app.Run();
 

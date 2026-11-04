@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -32,6 +33,55 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         using var client = factory.CreateClient();
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/scopes")).StatusCode);
+    }
+
+    [Fact]
+    public async Task AI_provider_status_is_authenticated_and_does_not_call_unconfigured_providers()
+    {
+        using var anonymous = factory.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/v1/ai/providers")).StatusCode);
+
+        using var reader = CreateAuthenticatedClient(tenantId, userId, UserRole.Viewer);
+        var response = await reader.GetAsync("/api/v1/ai/providers");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var providers = document.RootElement.GetProperty("providers").EnumerateArray().ToArray();
+        Assert.Equal(3, providers.Length);
+        Assert.All(providers, provider =>
+        {
+            Assert.False(provider.GetProperty("configured").GetBoolean());
+            Assert.False(provider.GetProperty("healthy").GetBoolean());
+        });
+    }
+
+    [Fact]
+    public async Task AI_provider_status_supports_legacy_environment_configuration()
+    {
+        using var legacyFactory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["OPENAI_API_KEY"] = "legacy-test-key",
+                    ["OPENAI_MODEL"] = "gpt-test",
+                    ["AI:DefaultProvider"] = "openai"
+                }));
+
+            builder.ConfigureTestServices(services =>
+                services.AddHttpClient("sentinelai-ai-openai")
+                    .ConfigurePrimaryHttpMessageHandler(() => new ProviderHealthHandler()));
+        });
+
+        using var client = CreateAuthenticatedClient(legacyFactory, tenantId, userId, UserRole.Viewer);
+        var response = await client.GetAsync("/api/v1/ai/providers");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("openai", document.RootElement.GetProperty("selectedProvider").GetString());
+        Assert.True(document.RootElement.GetProperty("openAiCredentialsConfigured").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("openAiHealthy").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("connectivityVerified").GetBoolean());
     }
 
     [Fact]
@@ -515,6 +565,15 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal(WorkerStatus.Healthy, localWorker.Status);
         Assert.Contains(WebAssessmentCapabilities.WebAssessment, localWorker.Capabilities);
         Assert.DoesNotContain(WebAssessmentCapabilities.PrivateWebAssessment, localWorker.Capabilities);
+    }
+
+    private sealed class ProviderHealthHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"data\":[]}", System.Text.Encoding.UTF8, "application/json")
+            });
     }
 
     private static HttpClient CreateAuthenticatedClient(

@@ -16,6 +16,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\SentinelAI.AI.Abstractions\SentinelAI.AI.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\SentinelAI.AI.OpenAI\SentinelAI.AI.OpenAI.csproj" />
+    <ProjectReference Include="..\..\src\SentinelAI.AI.Anthropic\SentinelAI.AI.Anthropic.csproj" />
+    <ProjectReference Include="..\..\src\SentinelAI.AI.Ollama\SentinelAI.AI.Ollama.csproj" />
     <ProjectReference Include="..\..\src\SentinelAI.Application\SentinelAI.Application.csproj" />
     <ProjectReference Include="..\..\src\SentinelAI.Agent.Network\SentinelAI.Agent.Network.csproj" />
     <ProjectReference Include="..\..\src\SentinelAI.Domain\SentinelAI.Domain.csproj" />

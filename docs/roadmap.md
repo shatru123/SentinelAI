@@ -61,10 +61,12 @@ This milestone preserves the passive-only execution boundary and does not add de
 - Remediation guidance and report export
 
 ## Phase 4 — AI analysis and monitoring
-- OpenAI, Anthropic Claude and Ollama adapters
-- Structured output and provenance
-- AI prioritization and natural-language explanations
-- Scheduled re-assessment, drift detection and alerts
+
+**Phase 4.1 — Provider gateway (in progress on phase4/ai-provider-gateway).** Activates the existing OpenAI Responses, Anthropic Messages and Ollama Chat adapters with bounded non-streaming transport, structured JSON-schema output, token usage/provenance, and authenticated provider readiness diagnostics. No API key is required for the application to start; unconfigured providers remain disabled. AI output remains advisory and cannot grant authorization or dispatch execution. See phase4-ai-provider-gateway.md.
+
+Remaining Phase 4 work:
+- Evidence-grounded AI prioritization and natural-language explanations with deterministic policy boundaries.
+- Scheduled re-assessment, drift detection and alerts.
 
 ## Phase 5 — Cloud and operational hardening
 - Cloud control-plane deployment

@@ -26,7 +26,7 @@
     <MetricCard Title="Default Provider"
                 Value="@(string.IsNullOrWhiteSpace(configuredProvider) ? "none" : configuredProvider)"
                 Icon="⚡"
-                Subtitle="Selected provider · connectivity not verified" />
+                Subtitle="Selected provider · live connectivity check" />
     <MetricCard Title="Security Boundary"
                 Value="Active Pinning"
                 Icon="🔒"
@@ -44,7 +44,7 @@
         <div class="soc-panel-header">
             <div>
                 <h2 class="soc-panel-title">AI Provider Readiness</h2>
-                <p class="soc-panel-subtitle">Provider configuration visibility for OpenAI, Anthropic Claude, and Ollama. Live inference is not implemented in this milestone.</p>
+                <p class="soc-panel-subtitle">OpenAI, Anthropic Claude, and Ollama configuration and live connectivity readiness. Analysis remains advisory-only.</p>
             </div>
             <span class="soc-badge soc-badge-success">ADVISORY ONLY</span>
         </div>
@@ -72,46 +72,58 @@
                     </thead>
                     <tbody>
                         <tr>
-                            <td><strong>OpenAI</strong> (provider configured only)</td>
+                            <td><strong>OpenAI</strong></td>
                             <td>
-                                @if (providerStatus?.OpenAiCredentialsConfigured == true)
+                                @if (providerStatus?.OpenAiCredentialsConfigured != true)
                                 {
-                                    <span class="soc-badge soc-badge-warning">Credentials configured · Not verified</span>
+                                    <span class="soc-badge soc-badge-neutral">Not configured</span>
+                                }
+                                else if (providerStatus?.OpenAiHealthy == true)
+                                {
+                                    <span class="soc-badge soc-badge-success">Connected · verified</span>
                                 }
                                 else
                                 {
-                                    <span class="soc-badge soc-badge-neutral">Credentials not configured</span>
+                                    <span class="soc-badge soc-badge-warning">Configured · unreachable</span>
                                 }
                             </td>
-                            <td class="text-muted">Cloud provider · not connected</td>
+                            <td class="text-muted">Cloud provider · HTTPS</td>
                         </tr>
                         <tr>
-                            <td><strong>Anthropic</strong> (provider configured only)</td>
+                            <td><strong>Anthropic Claude</strong></td>
                             <td>
-                                @if (providerStatus?.AnthropicCredentialsConfigured == true)
+                                @if (providerStatus?.AnthropicCredentialsConfigured != true)
                                 {
-                                    <span class="soc-badge soc-badge-warning">Credentials configured · Not verified</span>
+                                    <span class="soc-badge soc-badge-neutral">Not configured</span>
+                                }
+                                else if (providerStatus?.AnthropicHealthy == true)
+                                {
+                                    <span class="soc-badge soc-badge-success">Connected · verified</span>
                                 }
                                 else
                                 {
-                                    <span class="soc-badge soc-badge-neutral">Credentials not configured</span>
+                                    <span class="soc-badge soc-badge-warning">Configured · unreachable</span>
                                 }
                             </td>
-                            <td class="text-muted">Cloud provider · not connected</td>
+                            <td class="text-muted">Cloud provider · HTTPS</td>
                         </tr>
                         <tr>
-                            <td><strong>Ollama</strong> (Local LLMs)</td>
+                            <td><strong>Ollama</strong> (local LLM)</td>
                             <td>
-                                @if (providerStatus?.OllamaEndpointConfigured == true)
+                                @if (providerStatus?.OllamaEndpointConfigured != true)
                                 {
-                                    <span class="soc-badge soc-badge-warning">Endpoint configured · Not verified</span>
+                                    <span class="soc-badge soc-badge-neutral">Model not configured</span>
+                                }
+                                else if (providerStatus?.OllamaHealthy == true)
+                                {
+                                    <span class="soc-badge soc-badge-success">Connected · verified</span>
                                 }
                                 else
                                 {
-                                    <span class="soc-badge soc-badge-neutral">Endpoint not configured</span>
+                                    <span class="soc-badge soc-badge-warning">Configured · unreachable</span>
                                 }
                             </td>
-                            <td class="text-muted">Local endpoint · not verified</td>
+                            <td class="text-muted">Local or HTTPS endpoint</td>
                         </tr>
                     </tbody>
                 </table>
@@ -120,14 +132,14 @@
             <div style="margin-top: var(--space-4); padding: var(--space-3); background: var(--bg-panel-subtle); border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
                 <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1);">Provider execution status</div>
                 <p style="font-size: 0.8125rem; color: var(--text-primary); margin: 0;">
-                    Connectivity: <strong>Not verified</strong> · Live inference: <strong>Not implemented</strong> · AI role: <strong>Advisory only</strong>.
+                    Connectivity: <strong>@(providerStatus?.ConnectivityVerified == true ? "Verified" : "No provider verified")</strong> · Provider adapters: <strong>@(providerStatus?.ProviderAdaptersImplemented == true ? "Implemented" : "Unavailable")</strong> · SOC analysis integration: <strong>@(providerStatus?.InferenceImplemented == true ? "Enabled" : "Next Phase 4 increment")</strong> · AI role: <strong>Advisory only</strong>.
                 </p>
             </div>
 
             <div style="margin-top: var(--space-4); padding: var(--space-3); background: var(--bg-panel-subtle); border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
                 <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1);">Configuration Notice</div>
                 <p style="font-size: 0.8125rem; color: var(--text-primary); margin: 0;">
-                    To protect security credentials, API keys and access tokens are never accepted via dashboard inputs or rendered in browser responses. Configure provider keys via environment variables. SentinelAI currently reports configuration only; it does not verify provider connectivity or perform live inference.
+                    API keys and access tokens are never accepted through dashboard inputs or returned by this endpoint. Configure credentials through environment variables or a secret manager. Refresh checks provider connectivity; model calls are available through the server-side gateway and remain advisory. Scan dispatch, target authorization and policy decisions never depend on model output.
                 </p>
             </div>
         }
@@ -250,5 +262,10 @@
         bool OllamaEndpointConfigured,
         bool ConnectivityVerified,
         bool InferenceImplemented,
-        string ExecutionMode);
+        string ExecutionMode,
+        bool OpenAiHealthy,
+        bool AnthropicHealthy,
+        bool OllamaHealthy,
+        DateTimeOffset CheckedAtUtc,
+        bool ProviderAdaptersImplemented);
 }

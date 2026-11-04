@@ -98,6 +98,40 @@ app.Use(async (context, next) =>
         return;
     }
 
+    if (context.Request.Path.Equals("/auth/dev-approver", StringComparison.OrdinalIgnoreCase))
+    {
+        var environment = context.RequestServices.GetRequiredService<IHostEnvironment>();
+        var tenant = configuration["Dashboard:TenantId"];
+        var requester = configuration["Dashboard:UserId"];
+        var approver = configuration["Dashboard:ApproverUserId"];
+        if (!environment.IsDevelopment() || !string.IsNullOrWhiteSpace(configuration["Authentication:Authority"]))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+        if (!Guid.TryParse(tenant, out _) || !Guid.TryParse(requester, out var requesterId) ||
+            !Guid.TryParse(approver, out var approverId) || requesterId == approverId)
+        {
+            await Results.Problem("A distinct development approver identity is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
+            return;
+        }
+
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, approver!),
+            new Claim(ClaimTypes.Name, configuration["Dashboard:ApproverUserName"] ?? "development-approver"),
+            new Claim("tenant_id", tenant!),
+            new Claim(ClaimTypes.Role, "Admin")
+        };
+        await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme,
+            new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)));
+        var returnUrl = context.Request.Query["returnUrl"].ToString();
+        if (string.IsNullOrWhiteSpace(returnUrl) || !returnUrl.StartsWith('/', StringComparison.Ordinal) || returnUrl.StartsWith("//", StringComparison.Ordinal))
+            returnUrl = "/";
+        context.Response.Redirect(returnUrl);
+        return;
+    }
+
     if (context.Request.Path.Equals("/auth/logout", StringComparison.OrdinalIgnoreCase))
     {
         await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);

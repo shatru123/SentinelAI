@@ -86,12 +86,12 @@ public sealed class OpenAIProvider(HttpClient httpClient, AIProviderOptions opti
     {
         if (!IsConfigured) return false;
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Get,
-            AIProviderHttpSupport.CreateEndpoint(options, DefaultEndpoint, "models"));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
         try
         {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                AIProviderHttpSupport.CreateEndpoint(options, DefaultEndpoint, "models"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
             return await AIProviderHttpSupport.SendAsync(
                 httpClient, request, options, cancellationToken,
                 (_, _) => Task.FromResult(true),

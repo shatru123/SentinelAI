@@ -126,7 +126,7 @@ app.Use(async (context, next) =>
         await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme,
             new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)));
         var returnUrl = context.Request.Query["returnUrl"].ToString();
-        if (string.IsNullOrWhiteSpace(returnUrl) || !returnUrl.StartsWith('/', StringComparison.Ordinal) || returnUrl.StartsWith("//", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(returnUrl) || !returnUrl.StartsWith("/", StringComparison.Ordinal) || returnUrl.StartsWith("//", StringComparison.Ordinal))
             returnUrl = "/";
         context.Response.Redirect(returnUrl);
         return;

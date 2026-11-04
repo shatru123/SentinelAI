@@ -15,7 +15,7 @@ public sealed class FindingAIAnalysis
         Model = Required(model, 128, nameof(model));
         PromptTemplateVersion = Required(promptTemplateVersion, 64, nameof(promptTemplateVersion));
         EvidenceSha256 = Required(evidenceSha256, 64, nameof(evidenceSha256));
-        if (EvidenceSha256.Any(character => !Uri.IsHexDigit(character)))
+        if (EvidenceSha256.Length != 64 || EvidenceSha256.Any(character => !Uri.IsHexDigit(character)))
             throw new ArgumentException("Evidence hash must be hexadecimal SHA-256.", nameof(evidenceSha256));
         Summary = Required(summary, 2_000, nameof(summary));
         ResultJson = Required(resultJson, 24_000, nameof(resultJson));

@@ -31,5 +31,5 @@ AI recommendations are text for human review only. The analysis service does not
 ## Follow-on Phase 4 work
 
 - Phase 4.3 adds the Findings dossier action and persisted advisory analysis history; see `phase4-finding-analysis-ui.md`.
-- Optional AI summaries in exported HTML reports remain separate work and must be clearly labeled advisory.
-- Scheduled reassessment, drift detection and alert workflows are specified in `phase4-scheduled-reassessment.md` and remain a later increment.
+- PR #8 completes optional HTML report summaries. A Reader can explicitly request the latest persisted evidence-grounded summary per finding. The default report remains unchanged; the opt-in export makes no provider request, clearly labels the summary advisory, and includes provider/model, prompt-template and evidence-hash provenance.
+- PR #8 also implements bounded scheduled reassessment, per-run authorization revalidation, deterministic drift alerts and tenant-scoped in-app notifications; see `phase4-scheduled-reassessment.md`.

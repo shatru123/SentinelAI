@@ -28,6 +28,9 @@ builder.Services.AddScoped<IScanService, ScanService>();
 builder.Services.AddScoped<IPublicTargetAuthorizationService, PublicTargetAuthorizationService>();
 builder.Services.AddScoped<IWebAssessmentService, WebAssessmentService>();
 builder.Services.AddScoped<IFindingAIAnalysisService, FindingAIAnalysisService>();
+builder.Services.AddScoped<IAssessmentScheduleService, AssessmentScheduleService>();
+builder.Services.AddScoped<AssessmentScheduleProcessor>();
+builder.Services.AddHostedService<AssessmentScheduleBackgroundService>();
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddSource("SentinelAI.RabbitMq", "SentinelAI.Worker").AddOtlpExporter())
     .WithMetrics(metrics => metrics.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddMeter("SentinelAI.Jobs").AddOtlpExporter());
@@ -88,6 +91,34 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     await Results.Problem(statusCode: context.Response.StatusCode, title: "Request could not be completed", detail: detail).ExecuteAsync(context);
 }));
 app.UseAuthentication();
+app.Use(async (context, next) =>
+{
+    var principal = context.User;
+    if (principal.Identity?.IsAuthenticated == true &&
+        Guid.TryParse(principal.FindFirstValue("tenant_id"), out var tenantId) &&
+        Guid.TryParse(principal.FindFirstValue(ClaimTypes.NameIdentifier), out var userId) &&
+        Enum.TryParse<UserRole>(principal.FindFirstValue(ClaimTypes.Role), true, out var role) &&
+        role is UserRole.Admin or UserRole.SecurityAnalyst or UserRole.Viewer)
+    {
+        var db = context.RequestServices.GetRequiredService<IAppDbContext>();
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, context.RequestAborted);
+        var subject = principal.FindFirstValue("sub") ?? principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? userId.ToString();
+        var displayName = principal.FindFirstValue(ClaimTypes.Name) ?? subject;
+        if (user is null)
+        {
+            db.Users.Add(new User(userId, tenantId, subject, displayName, role));
+            await db.SaveChangesAsync(context.RequestAborted);
+        }
+        else if (user.TenantId == tenantId)
+        {
+            user.SyncAuthenticatedIdentity(subject, displayName, role);
+            await db.SaveChangesAsync(context.RequestAborted);
+        }
+        // A stable identity already attached to another tenant must never be re-bound by a request header/claim.
+    }
+
+    await next();
+});
 app.UseAuthorization();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "sentinelai-api", utc = DateTimeOffset.UtcNow })).AllowAnonymous();
@@ -238,6 +269,55 @@ api.MapGet("/web-assessments", async (HttpContext context, IAppDbContext db, int
     return Results.Ok(new PagedResponse<WebAssessmentResponse>(items, page, pageSize, total));
 }).RequireAuthorization("Reader");
 
+api.MapGet("/assessment-schedules", async (HttpContext context, IAssessmentScheduleService service, CancellationToken ct) =>
+    Results.Ok(await service.ListAsync(ToPrincipal(context), ct))).RequireAuthorization("Reader");
+
+api.MapPost("/assessment-schedules", async (HttpContext context, CreateAssessmentScheduleRequest request,
+    IAssessmentScheduleService service, CancellationToken ct) =>
+{
+    var result = await service.CreateAsync(ToPrincipal(context), request, ct);
+    return Results.Created($"/api/v1/assessment-schedules/{result.Id}", result);
+}).RequireAuthorization("Operator");
+
+api.MapGet("/assessment-schedules/{id:guid}/runs", async (HttpContext context, Guid id,
+    IAssessmentScheduleService service, CancellationToken ct) =>
+{
+    var result = await service.ListRunsAsync(ToPrincipal(context), id, ct);
+    return result is null ? Results.NotFound() : Results.Ok(result);
+}).RequireAuthorization("Reader");
+
+api.MapPost("/assessment-schedules/{id:guid}/pause", async (HttpContext context, Guid id,
+    IAssessmentScheduleService service, CancellationToken ct) =>
+{
+    var result = await service.ChangeStateAsync(ToPrincipal(context), id, "pause", ct);
+    return result is null ? Results.NotFound() : Results.Ok(result);
+}).RequireAuthorization("Operator");
+
+api.MapPost("/assessment-schedules/{id:guid}/resume", async (HttpContext context, Guid id,
+    IAssessmentScheduleService service, CancellationToken ct) =>
+{
+    var result = await service.ChangeStateAsync(ToPrincipal(context), id, "resume", ct);
+    return result is null ? Results.NotFound() : Results.Ok(result);
+}).RequireAuthorization("Operator");
+
+api.MapPost("/assessment-schedules/{id:guid}/disable", async (HttpContext context, Guid id,
+    IAssessmentScheduleService service, CancellationToken ct) =>
+{
+    var result = await service.ChangeStateAsync(ToPrincipal(context), id, "disable", ct);
+    return result is null ? Results.NotFound() : Results.Ok(result);
+}).RequireAuthorization("Operator");
+
+api.MapGet("/assessment-drift-events", async (HttpContext context, IAssessmentScheduleService service, CancellationToken ct) =>
+    Results.Ok(await service.ListDriftEventsAsync(ToPrincipal(context), ct))).RequireAuthorization("Reader");
+
+api.MapGet("/notifications", async (HttpContext context, IAssessmentScheduleService service, CancellationToken ct) =>
+    Results.Ok(await service.ListNotificationsAsync(ToPrincipal(context), ct))).RequireAuthorization("Reader");
+
+api.MapPost("/assessment-drift-events/{id:guid}/acknowledge", async (HttpContext context, Guid id,
+    IAssessmentScheduleService service, CancellationToken ct) =>
+    await service.AcknowledgeAsync(ToPrincipal(context), id, ct) ? Results.NoContent() : Results.NotFound())
+    .RequireAuthorization("Operator");
+
 api.MapGet("/web-assessments/{id:guid}/endpoints", async (HttpContext context, Guid id, IAppDbContext db, CancellationToken cancellationToken) =>
 {
     var tenantId = ToPrincipal(context).TenantId;
@@ -298,13 +378,53 @@ api.MapGet("/web-assessments/{id:guid}/findings/{findingId:guid}/evidence", asyn
     return Results.Ok(evidence);
 }).RequireAuthorization("Reader");
 
-api.MapGet("/web-assessments/{id:guid}/report", async (HttpContext context, Guid id, IAppDbContext db, IAssessmentArtifactStore artifacts, CancellationToken cancellationToken) =>
+api.MapGet("/web-assessments/{id:guid}/report", async (
+    HttpContext context,
+    Guid id,
+    IAppDbContext db,
+    IAssessmentArtifactStore artifacts,
+    IHtmlReportGenerator reports,
+    bool includeAiSummaries = false,
+    CancellationToken cancellationToken = default) =>
 {
     var tenantId = ToPrincipal(context).TenantId;
     var assessment = await db.WebAssessments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
-    if (assessment is null || assessment.Status != WebAssessmentStatus.Completed || string.IsNullOrWhiteSpace(assessment.ReportStorageKey)) return Results.NotFound();
-    var content = await artifacts.GetPublishedReportAsync(tenantId, assessment.Id, assessment.ReportStorageKey, cancellationToken);
-    return content is null ? Results.NotFound() : Results.File(content, "text/html; charset=utf-8", $"sentinelai-{assessment.Id:N}.html");
+    if (assessment is null || assessment.Status != WebAssessmentStatus.Completed) return Results.NotFound();
+
+    if (!includeAiSummaries)
+    {
+        if (string.IsNullOrWhiteSpace(assessment.ReportStorageKey)) return Results.NotFound();
+        var existingContent = await artifacts.GetPublishedReportAsync(tenantId, assessment.Id, assessment.ReportStorageKey, cancellationToken);
+        return existingContent is null
+            ? Results.NotFound()
+            : Results.File(existingContent, "text/html; charset=utf-8", $"sentinelai-{assessment.Id:N}.html");
+    }
+
+    var scope = await db.TargetScopes.AsNoTracking()
+        .SingleOrDefaultAsync(x => x.Id == assessment.ScopeId && x.TenantId == tenantId, cancellationToken);
+    if (scope is null) return Results.NotFound();
+
+    string? stagingKey = null;
+    string? publishedKey = null;
+    try
+    {
+        stagingKey = await reports.GenerateAsync(tenantId, assessment, scope, cancellationToken, includeAdvisoryAiSummaries: true);
+        publishedKey = await artifacts.PublishReportAsync(tenantId, assessment.Id, stagingKey, cancellationToken);
+        var reportContent = await artifacts.GetPublishedReportAsync(tenantId, assessment.Id, publishedKey, cancellationToken);
+        return reportContent is null
+            ? Results.NotFound()
+            : Results.File(reportContent, "text/html; charset=utf-8", $"sentinelai-{assessment.Id:N}-ai-advisory.html");
+    }
+    finally
+    {
+        var temporaryKey = publishedKey ?? stagingKey;
+        if (!string.IsNullOrWhiteSpace(temporaryKey))
+        {
+            try { await artifacts.DiscardReportAsync(tenantId, assessment.Id, temporaryKey, CancellationToken.None); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
 }).RequireAuthorization("Reader");
 
 api.MapGet("/scans", async (HttpContext context, IAppDbContext db, int page = 1, int pageSize = 25, string? status = null, string? search = null, CancellationToken cancellationToken = default) =>

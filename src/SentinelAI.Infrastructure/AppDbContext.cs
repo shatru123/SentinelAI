@@ -24,6 +24,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AIAnalysis> AIAnalyses => Set<AIAnalysis>();
     public DbSet<FindingAIAnalysis> FindingAIAnalyses => Set<FindingAIAnalysis>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<AssessmentSchedule> AssessmentSchedules => Set<AssessmentSchedule>();
+    public DbSet<AssessmentScheduleRun> AssessmentScheduleRuns => Set<AssessmentScheduleRun>();
+    public DbSet<AssessmentDriftEvent> AssessmentDriftEvents => Set<AssessmentDriftEvent>();
     public DbSet<WorkerRegistration> Workers => Set<WorkerRegistration>();
     public DbSet<PublicTargetAuthorization> PublicTargetAuthorizations => Set<PublicTargetAuthorization>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
@@ -104,6 +107,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AIAnalysis>().HasKey(x => x.Id);
         modelBuilder.Entity<FindingAIAnalysis>().HasKey(x => x.Id);
         modelBuilder.Entity<Notification>().HasKey(x => x.Id);
+        modelBuilder.Entity<AssessmentSchedule>().HasKey(x => x.Id);
+        modelBuilder.Entity<AssessmentScheduleRun>().HasKey(x => x.Id);
+        modelBuilder.Entity<AssessmentDriftEvent>().HasKey(x => x.Id);
         modelBuilder.Entity<WorkerRegistration>().HasKey(x => x.Id);
         modelBuilder.Entity<PublicTargetAuthorization>().HasKey(x => x.Id);
         modelBuilder.Entity<OutboxMessage>().HasKey(x => x.Id);
@@ -134,6 +140,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<AIAnalysis>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<Notification>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<AssessmentSchedule>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<AssessmentScheduleRun>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<AssessmentDriftEvent>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<WorkerRegistration>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<PublicTargetAuthorization>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<OutboxMessage>().Property(x => x.TenantId));
@@ -220,6 +229,36 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<VulnerabilityTriageAssessment>().HasIndex(x => new { x.TenantId, x.MatchId, x.AssessedAt });
         modelBuilder.Entity<VulnerabilityTriageAssessment>().HasOne<AssetVulnerabilityMatch>().WithMany()
             .HasForeignKey(x => new { x.TenantId, x.MatchId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<AssessmentSchedule>().HasAlternateKey(x => new { x.TenantId, x.Id });
+        modelBuilder.Entity<AssessmentSchedule>().Property(x => x.RowVersion).IsConcurrencyToken();
+        modelBuilder.Entity<AssessmentSchedule>().HasIndex(x => new { x.TenantId, x.Status, x.NextRunAt });
+
+        modelBuilder.Entity<AssessmentScheduleRun>().HasAlternateKey(x => new { x.TenantId, x.Id });
+        modelBuilder.Entity<AssessmentScheduleRun>().HasIndex(x => new { x.TenantId, x.ScheduleId, x.ScheduledFor }).IsUnique();
+        modelBuilder.Entity<AssessmentScheduleRun>().HasIndex(x => new { x.TenantId, x.IdempotencyKey }).IsUnique();
+        modelBuilder.Entity<AssessmentScheduleRun>().HasIndex(x => new { x.TenantId, x.Status, x.ScheduledFor });
+        modelBuilder.Entity<AssessmentScheduleRun>().HasOne<AssessmentSchedule>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.ScheduleId }).HasPrincipalKey(x => new { x.TenantId, x.Id })
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<AssessmentDriftEvent>().HasAlternateKey(x => new { x.TenantId, x.Id });
+        modelBuilder.Entity<AssessmentDriftEvent>().HasIndex(x => new { x.TenantId, x.CreatedAt });
+        modelBuilder.Entity<AssessmentDriftEvent>().HasIndex(x => new { x.TenantId, x.ScheduleId });
+        modelBuilder.Entity<AssessmentDriftEvent>().HasIndex(x => new { x.TenantId, x.ScheduleRunId, x.EventType, x.StableIdentifier }).IsUnique();
+        modelBuilder.Entity<AssessmentDriftEvent>().HasOne<AssessmentSchedule>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.ScheduleId }).HasPrincipalKey(x => new { x.TenantId, x.Id })
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<AssessmentDriftEvent>().HasOne<AssessmentScheduleRun>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.ScheduleRunId }).HasPrincipalKey(x => new { x.TenantId, x.Id })
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Notification>().Property(x => x.IsRead).HasDefaultValue(false);
+        modelBuilder.Entity<Notification>().HasIndex(x => new { x.TenantId, x.ResourceId });
+        modelBuilder.Entity<Notification>().HasIndex(x => new { x.TenantId, x.Channel, x.ResourceId }).IsUnique();
+        modelBuilder.Entity<Notification>().HasOne<AssessmentDriftEvent>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.ResourceId }).HasPrincipalKey(x => new { x.TenantId, x.Id })
+            .OnDelete(DeleteBehavior.Cascade);
     }
 
     private static void ConfigureTenant(PropertyBuilder<Guid> property) => property.IsRequired();

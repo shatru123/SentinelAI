@@ -22,6 +22,76 @@ namespace SentinelAI.Infrastructure.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("SentinelAI.Domain.AssessmentSchedule", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<Guid>("TenantId").HasColumnType("uuid");
+                    b.Property<Guid>("ScopeId").HasColumnType("uuid");
+                    b.Property<Guid>("CreatedBy").HasColumnType("uuid");
+                    b.Property<string>("OperationProfile").IsRequired().HasColumnType("text");
+                    b.Property<string>("AuthorizationFingerprint").IsRequired().HasColumnType("text");
+                    b.Property<int>("IntervalHours").HasColumnType("integer");
+                    b.Property<DateTimeOffset>("EndsAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("NextRunAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("LastRunAt").HasColumnType("timestamp with time zone");
+                    b.Property<string>("LastResult").HasColumnType("text");
+                    b.Property<int>("Status").HasColumnType("integer");
+                    b.Property<string>("BlockedReason").HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset>("UpdatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<byte[]>("RowVersion").IsRequired().IsConcurrencyToken().HasColumnType("bytea");
+                    b.HasKey("Id");
+                    b.HasAlternateKey("TenantId", "Id");
+                    b.HasIndex("TenantId", "Status", "NextRunAt");
+                    b.ToTable("AssessmentSchedules");
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.AssessmentScheduleRun", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<Guid>("TenantId").HasColumnType("uuid");
+                    b.Property<Guid>("ScheduleId").HasColumnType("uuid");
+                    b.Property<DateTimeOffset>("ScheduledFor").HasColumnType("timestamp with time zone");
+                    b.Property<string>("IdempotencyKey").IsRequired().HasColumnType("text");
+                    b.Property<int>("Status").HasColumnType("integer");
+                    b.Property<Guid?>("JobId").HasColumnType("uuid");
+                    b.Property<Guid?>("AssessmentId").HasColumnType("uuid");
+                    b.Property<string>("BlockedReason").HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("CompletedAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("ComparedAt").HasColumnType("timestamp with time zone");
+                    b.HasKey("Id");
+                    b.HasAlternateKey("TenantId", "Id");
+                    b.HasIndex("TenantId", "IdempotencyKey").IsUnique();
+                    b.HasIndex("TenantId", "ScheduleId", "ScheduledFor").IsUnique();
+                    b.HasIndex("TenantId", "Status", "ScheduledFor");
+                    b.ToTable("AssessmentScheduleRuns");
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.AssessmentDriftEvent", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<Guid>("TenantId").HasColumnType("uuid");
+                    b.Property<Guid>("ScheduleId").HasColumnType("uuid");
+                    b.Property<Guid>("ScheduleRunId").HasColumnType("uuid");
+                    b.Property<Guid>("PreviousAssessmentId").HasColumnType("uuid");
+                    b.Property<Guid>("CurrentAssessmentId").HasColumnType("uuid");
+                    b.Property<string>("EventType").IsRequired().HasColumnType("text");
+                    b.Property<string>("StableIdentifier").IsRequired().HasColumnType("text");
+                    b.Property<int?>("PreviousSeverity").HasColumnType("integer");
+                    b.Property<int?>("CurrentSeverity").HasColumnType("integer");
+                    b.Property<string>("Summary").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("AcknowledgedAt").HasColumnType("timestamp with time zone");
+                    b.Property<Guid?>("AcknowledgedBy").HasColumnType("uuid");
+                    b.HasKey("Id");
+                    b.HasAlternateKey("TenantId", "Id");
+                    b.HasIndex("TenantId", "CreatedAt");
+                    b.HasIndex("TenantId", "ScheduleId");
+                    b.HasIndex("TenantId", "ScheduleRunId", "EventType", "StableIdentifier").IsUnique();
+                    b.ToTable("AssessmentDriftEvents");
+                });
+
             modelBuilder.Entity("SentinelAI.Domain.AIAnalysis", b =>
                 {
                     b.Property<Guid>("Id")
@@ -52,6 +122,30 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("AIAnalyses");
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.AssessmentScheduleRun", b =>
+                {
+                    b.HasOne("SentinelAI.Domain.AssessmentSchedule", null).WithMany()
+                        .HasForeignKey("TenantId", "ScheduleId").HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade).IsRequired();
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.AssessmentDriftEvent", b =>
+                {
+                    b.HasOne("SentinelAI.Domain.AssessmentSchedule", null).WithMany()
+                        .HasForeignKey("TenantId", "ScheduleId").HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade).IsRequired();
+                    b.HasOne("SentinelAI.Domain.AssessmentScheduleRun", null).WithMany()
+                        .HasForeignKey("TenantId", "ScheduleRunId").HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade).IsRequired();
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.Notification", b =>
+                {
+                    b.HasOne("SentinelAI.Domain.AssessmentDriftEvent", null).WithMany()
+                        .HasForeignKey("TenantId", "ResourceId").HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade);
                 });
 
             modelBuilder.Entity("SentinelAI.Domain.FindingAIAnalysis", b =>
@@ -480,26 +574,18 @@ namespace SentinelAI.Infrastructure.Migrations
 
             modelBuilder.Entity("SentinelAI.Domain.Notification", b =>
                 {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Channel")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Message")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<string>("Channel").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<bool>("IsRead").ValueGeneratedOnAdd().HasColumnType("boolean").HasDefaultValue(false);
+                    b.Property<string>("Message").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset?>("ReadAt").HasColumnType("timestamp with time zone");
+                    b.Property<Guid?>("ReadBy").HasColumnType("uuid");
+                    b.Property<Guid?>("ResourceId").HasColumnType("uuid");
+                    b.Property<Guid>("TenantId").HasColumnType("uuid");
                     b.HasKey("Id");
-
+                    b.HasIndex("TenantId", "ResourceId");
+                    b.HasIndex("TenantId", "Channel", "ResourceId").IsUnique();
                     b.ToTable("Notifications");
                 });
 

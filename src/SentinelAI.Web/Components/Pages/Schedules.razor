@@ -1,0 +1,412 @@
+@page "/schedules"
+@attribute [Authorize]
+@using SentinelAI.Contracts
+@using SentinelAI.Domain
+@inject SentinelApiClient ApiClient
+
+<PageTitle>Schedules & Drift · SentinelAI SOC</PageTitle>
+
+<PageHeader Title="Scheduled Assessments & Drift"
+            Eyebrow="Continuous Assurance / Phase 4.4"
+            Description="Repeat bounded web assessments against an existing authorized scope. Review deterministic changes and acknowledge tenant-scoped drift events.">
+    <Actions>
+        <button class="soc-btn soc-btn-secondary" @onclick="RefreshAsync" disabled="@loading">↻ Refresh</button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(notice))
+{
+    <div class="soc-panel" role="status" style="margin-bottom: var(--space-4);">
+        <p style="margin:0;">@notice</p>
+    </div>
+}
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="soc-panel" role="alert" style="margin-bottom: var(--space-4); border-color: var(--status-danger);">
+        <p style="margin:0;">@error</p>
+    </div>
+}
+
+<div class="metrics-grid" style="margin-bottom: var(--space-6);">
+    <MetricCard Title="Schedules" Value="@schedules.Count.ToString("N0")" Icon="◷" Subtitle="Tenant-scoped schedules" />
+    <MetricCard Title="Active" Value="@schedules.Count(x => x.Status == AssessmentScheduleStatus.Active).ToString("N0")" Icon="▶" StatusClass="healthy" Subtitle="Eligible for re-assessment" />
+    <MetricCard Title="Blocked" Value="@schedules.Count(x => x.Status == AssessmentScheduleStatus.Blocked).ToString("N0")" Icon="🔒" StatusClass="warning" Subtitle="Authorization review required" />
+    <MetricCard Title="Unacknowledged drift" Value="@driftEvents.Count(x => x.AcknowledgedAt is null).ToString("N0")" Icon="!" StatusClass="@(driftEvents.Any(x => x.AcknowledgedAt is null) ? "warning" : "neutral")" Subtitle="Deterministic comparison events" />
+</div>
+
+<AuthorizeView Roles="Admin,SecurityAnalyst">
+    <Authorized>
+        <section class="soc-panel" style="margin-bottom: var(--space-6);">
+            <div class="soc-panel-header">
+                <div>
+                    <p class="soc-eyebrow">Operator action</p>
+                    <h2 class="soc-panel-title">Create a reassessment schedule</h2>
+                </div>
+            </div>
+            <p class="text-muted" style="margin-bottom: var(--space-4);">
+                This reuses an existing scope without copying or widening it. The schedule ends at the scope's authorization expiry.
+                Every run revalidates the original scope, public approval or private worker authorization.
+            </p>
+            @if (scopes.Count == 0)
+            {
+                <div class="soc-empty-state">
+                    <h3>No authorized scopes available</h3>
+                    <p class="text-muted">Create an authorized web assessment scope before scheduling recurring assessments.</p>
+                    <a class="soc-btn soc-btn-secondary" href="/web-assessments">Open Web Assessments</a>
+                </div>
+            }
+            else
+            {
+                <div class="soc-form-grid">
+                    <div class="soc-form-group">
+                        <label class="soc-label" for="schedule-scope">Existing authorized scope</label>
+                        <select id="schedule-scope" class="soc-select" @bind="selectedScopeId">
+                            @foreach (var scope in schedulableScopes)
+                            {
+                                <option value="@scope.Id">@scope.Name · expires @FormatTime(scope.ExpiresAt)</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="soc-form-group">
+                        <label class="soc-label" for="schedule-profile">Approved web profile</label>
+                        <select id="schedule-profile" class="soc-select" @bind="selectedProfile">
+                            @foreach (var profile in selectedScopeProfiles)
+                            {
+                                <option value="@profile">@profile</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="soc-form-group">
+                        <label class="soc-label" for="schedule-interval">Interval (hours)</label>
+                        <input id="schedule-interval" type="number" class="soc-input" min="24" max="2160" step="24" @bind="intervalHours" />
+                        <p class="text-muted" style="font-size:0.75rem;">Minimum 24 hours; maximum 90 days.</p>
+                    </div>
+                    <div class="soc-form-group">
+                        <label class="soc-label">Schedule end</label>
+                        <div class="soc-input" style="display:flex; align-items:center; opacity:.85;">
+                            @FormatTime(selectedScope?.ExpiresAt)
+                        </div>
+                        <p class="text-muted" style="font-size:0.75rem;">Bound to the selected scope's existing expiry.</p>
+                    </div>
+                </div>
+                @if (selectedScope is not null && !selectedScope.IsActive)
+                {
+                    <p role="alert" class="text-muted">This scope is expired and cannot be scheduled.</p>
+                }
+                <div style="display:flex; justify-content:flex-end; margin-top:var(--space-3);">
+                    <button class="soc-btn soc-btn-primary" @onclick="CreateScheduleAsync"
+                            disabled="@(loading || selectedScope is null || !selectedScope.IsActive || selectedScopeProfiles.Count == 0)">
+                        Create schedule
+                    </button>
+                </div>
+            }
+        </section>
+    </Authorized>
+</AuthorizeView>
+
+<section class="soc-panel" style="margin-bottom: var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <p class="soc-eyebrow">Execution control</p>
+            <h2 class="soc-panel-title">Schedules</h2>
+        </div>
+        <span class="text-muted">@schedules.Count schedule(s)</span>
+    </div>
+    @if (schedules.Count == 0)
+    {
+        <div class="soc-empty-state">
+            <h3>No schedules yet</h3>
+            <p class="text-muted">New schedules appear here after an Admin or Security Analyst creates one.</p>
+        </div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="soc-table">
+                <thead>
+                    <tr>
+                        <th>Scope / profile</th><th>Status</th><th>Interval</th><th>Next run</th><th>Last result</th><th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var schedule in schedules)
+                    {
+                        <tr>
+                            <td>
+                                <strong>@ScopeName(schedule.ScopeId)</strong>
+                                <div class="text-muted" style="font-size:.75rem;">@schedule.OperationProfile</div>
+                                @if (!string.IsNullOrWhiteSpace(schedule.BlockedReason))
+                                {
+                                    <div style="color:var(--status-warning); font-size:.75rem;">@schedule.BlockedReason</div>
+                                }
+                            </td>
+                            <td><span class="soc-status-badge">@schedule.Status</span></td>
+                            <td>@schedule.IntervalHours h</td>
+                            <td>@FormatTime(schedule.NextRunAt)</td>
+                            <td>@(schedule.LastResult ?? "Not run yet")</td>
+                            <td>
+                                <div style="display:flex; gap:.35rem; flex-wrap:wrap;">
+                                    <button class="soc-btn soc-btn-secondary" @onclick="() => ShowRunsAsync(schedule)" disabled="@loading">History</button>
+                                    <AuthorizeView Roles="Admin,SecurityAnalyst">
+                                        <Authorized>
+                                            @if (schedule.Status == AssessmentScheduleStatus.Active && schedule.NextRunAt is not null)
+                                            {
+                                                <button class="soc-btn soc-btn-secondary" @onclick="() => PauseScheduleAsync(schedule.Id)" disabled="@loading">Pause</button>
+                                            }
+                                            else if (schedule.Status == AssessmentScheduleStatus.Paused)
+                                            {
+                                                <button class="soc-btn soc-btn-secondary" @onclick="() => ResumeScheduleAsync(schedule.Id)" disabled="@loading">Resume</button>
+                                            }
+                                            @if (schedule.Status is not (AssessmentScheduleStatus.Disabled or AssessmentScheduleStatus.Completed))
+                                            {
+                                                <button class="soc-btn soc-btn-secondary" @onclick="() => DisableScheduleAsync(schedule.Id)" disabled="@loading">Disable</button>
+                                            }
+                                        </Authorized>
+                                    </AuthorizeView>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@if (selectedSchedule is not null)
+{
+    <section class="soc-panel" style="margin-bottom:var(--space-6);">
+        <div class="soc-panel-header">
+            <div>
+                <p class="soc-eyebrow">Execution history</p>
+                <h2 class="soc-panel-title">Runs · @ScopeName(selectedSchedule.ScopeId)</h2>
+            </div>
+            <button class="soc-btn soc-btn-secondary" @onclick="() => selectedSchedule = null">Close</button>
+        </div>
+        @if (runs.Count == 0)
+        {
+            <p class="text-muted">No occurrence has been dispatched yet.</p>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="soc-table">
+                    <thead><tr><th>Scheduled time</th><th>Status</th><th>Assessment / job</th><th>Blocked reason</th></tr></thead>
+                    <tbody>
+                        @foreach (var run in runs)
+                        {
+                            <tr>
+                                <td>@FormatTime(run.ScheduledFor)</td>
+                                <td>@run.Status</td>
+                                <td>
+                                    @if (run.AssessmentId is not null)
+                                    {
+                                        <a href="/web-assessments">Assessment @run.AssessmentId</a>
+                                    }
+                                    @if (run.JobId is not null)
+                                    {
+                                        <div class="text-muted" style="font-size:.75rem;">Job @run.JobId</div>
+                                    }
+                                </td>
+                                <td>@(run.BlockedReason ?? "—")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+<section class="soc-panel" style="margin-bottom: var(--space-6);">
+    <div class="soc-panel-header">
+        <div>
+            <p class="soc-eyebrow">Deterministic comparison</p>
+            <h2 class="soc-panel-title">Drift events</h2>
+        </div>
+        <span class="text-muted">@driftEvents.Count event(s)</span>
+    </div>
+    <p class="text-muted" style="font-size:.8rem;">
+        "No longer observed" means the corresponding check completed successfully and did not report the prior finding.
+        It is not a remediation or resolution confirmation. Only the operator-controlled finding lifecycle can mark remediation resolved.
+    </p>
+    @if (driftEvents.Count == 0)
+    {
+        <div class="soc-empty-state"><h3>No drift detected</h3><p class="text-muted">Events are created after a scheduled assessment completes and is compared with its prior completed run.</p></div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="soc-table">
+                <thead><tr><th>Detected</th><th>Event</th><th>Change</th><th>Summary</th><th>Acknowledgement</th></tr></thead>
+                <tbody>
+                    @foreach (var item in driftEvents)
+                    {
+                        <tr>
+                            <td>@FormatTime(item.CreatedAt)</td>
+                            <td><strong>@item.EventType</strong><div class="text-muted" style="font-size:.75rem;">@item.StableIdentifier[..Math.Min(12, item.StableIdentifier.Length)]</div></td>
+                            <td>@(item.PreviousSeverity?.ToString() ?? "—") → @(item.CurrentSeverity?.ToString() ?? "—")</td>
+                            <td>@item.Summary</td>
+                            <td>
+                                @if (item.AcknowledgedAt is not null)
+                                {
+                                    <span>Acknowledged · @FormatTime(item.AcknowledgedAt)</span>
+                                }
+                                else
+                                {
+                                    <span class="text-muted">Pending</span>
+                                    <AuthorizeView Roles="Admin,SecurityAnalyst">
+                                        <Authorized>
+                                            <button class="soc-btn soc-btn-secondary" @onclick="() => AcknowledgeAsync(item.Id)" disabled="@loading">Acknowledge</button>
+                                        </Authorized>
+                                    </AuthorizeView>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="soc-panel">
+    <div class="soc-panel-header">
+        <div><p class="soc-eyebrow">In-app delivery</p><h2 class="soc-panel-title">Notifications</h2></div>
+        <span class="text-muted">@notifications.Count notice(s)</span>
+    </div>
+    @if (notifications.Count == 0)
+    {
+        <p class="text-muted">No scheduled-assessment drift notifications.</p>
+    }
+    else
+    {
+        @foreach (var notification in notifications)
+        {
+            <div style="display:flex; justify-content:space-between; gap:var(--space-3); padding:var(--space-3) 0; border-bottom:1px solid var(--border-subtle);">
+                <div>
+                    <div>@notification.Message</div>
+                    <div class="text-muted" style="font-size:.75rem;">@FormatTime(notification.CreatedAt)</div>
+                </div>
+                <span class="soc-status-badge">@(notification.IsRead ? "Read" : "Unread")</span>
+            </div>
+        }
+    }
+</section>
+
+@code {
+    private List<AssessmentScheduleResponse> schedules = [];
+    private List<AssessmentDriftEventResponse> driftEvents = [];
+    private List<AssessmentNotificationResponse> notifications = [];
+    private List<ScopeResponse> scopes = [];
+    private List<AssessmentScheduleRunResponse> runs = [];
+    private AssessmentScheduleResponse? selectedSchedule;
+    private Guid selectedScopeId;
+    private string selectedProfile = "web-assessment-passive";
+    private int intervalHours = 24;
+    private bool loading;
+    private string? error;
+    private string? notice;
+
+    private IReadOnlyList<ScopeResponse> schedulableScopes => scopes
+        .Where(x => x.IsActive && x.Targets.Count == 1 && x.Targets.First().Kind == TargetKind.Web)
+        .Where(x => x.ApprovedOperationProfiles.Any(IsSchedulableProfile))
+        .ToList();
+
+    private ScopeResponse? selectedScope => schedulableScopes.FirstOrDefault(x => x.Id == selectedScopeId)
+        ?? schedulableScopes.FirstOrDefault();
+
+    private List<string> selectedScopeProfiles => selectedScope?.ApprovedOperationProfiles
+        .Where(IsSchedulableProfile).OrderBy(x => x).ToList() ?? [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        loading = true; error = null;
+        try
+        {
+            var scopePage = await ApiClient.GetJsonAsync<PagedResponse<ScopeResponse>>("/api/v1/scopes?page=1&pageSize=100");
+            scopes = scopePage.Items.ToList();
+            if (selectedScopeId == Guid.Empty || !schedulableScopes.Any(x => x.Id == selectedScopeId))
+                selectedScopeId = schedulableScopes.FirstOrDefault()?.Id ?? Guid.Empty;
+            if (!selectedScopeProfiles.Contains(selectedProfile))
+                selectedProfile = selectedScopeProfiles.FirstOrDefault() ?? "web-assessment-passive";
+
+            schedules = await ApiClient.GetJsonAsync<List<AssessmentScheduleResponse>>("/api/v1/assessment-schedules") ?? [];
+            driftEvents = await ApiClient.GetJsonAsync<List<AssessmentDriftEventResponse>>("/api/v1/assessment-drift-events") ?? [];
+            notifications = await ApiClient.GetJsonAsync<List<AssessmentNotificationResponse>>("/api/v1/notifications") ?? [];
+        }
+        catch (Exception ex) { error = GetError(ex); }
+        finally { loading = false; }
+    }
+
+    private async Task CreateScheduleAsync()
+    {
+        var scope = selectedScope;
+        if (scope is null) { error = "Select an active authorized web scope."; return; }
+        if (!selectedScopeProfiles.Contains(selectedProfile)) { error = "Select an operation profile already approved by this scope."; return; }
+        loading = true; error = null; notice = null;
+        try
+        {
+            var request = new CreateAssessmentScheduleRequest(scope.Id, selectedProfile, intervalHours, scope.ExpiresAt.AddTicks(-1));
+            var created = await ApiClient.PostJsonAsync<CreateAssessmentScheduleRequest, AssessmentScheduleResponse>("/api/v1/assessment-schedules", request);
+            notice = $"Schedule created. First run is due {FormatTime(created.NextRunAt)}.";
+            await RefreshAsync();
+        }
+        catch (Exception ex) { error = GetError(ex); }
+        finally { loading = false; }
+    }
+
+    private Task PauseScheduleAsync(Guid id) => ChangeScheduleAsync(id, "pause");
+    private Task ResumeScheduleAsync(Guid id) => ChangeScheduleAsync(id, "resume");
+    private Task DisableScheduleAsync(Guid id) => ChangeScheduleAsync(id, "disable");
+
+    private async Task ChangeScheduleAsync(Guid id, string action)
+    {
+        loading = true; error = null; notice = null;
+        try
+        {
+            await ApiClient.PostAsync($"/api/v1/assessment-schedules/{id}/{action}");
+            notice = $"Schedule {action} requested.";
+            await RefreshAsync();
+        }
+        catch (Exception ex) { error = GetError(ex); }
+        finally { loading = false; }
+    }
+
+    private async Task ShowRunsAsync(AssessmentScheduleResponse schedule)
+    {
+        loading = true; error = null;
+        try
+        {
+            runs = await ApiClient.GetJsonAsync<List<AssessmentScheduleRunResponse>>($"/api/v1/assessment-schedules/{schedule.Id}/runs") ?? [];
+            selectedSchedule = schedule;
+        }
+        catch (Exception ex) { error = GetError(ex); }
+        finally { loading = false; }
+    }
+
+    private async Task AcknowledgeAsync(Guid id)
+    {
+        loading = true; error = null;
+        try
+        {
+            await ApiClient.PostAsync($"/api/v1/assessment-drift-events/{id}/acknowledge");
+            notice = "Drift event acknowledged.";
+            await RefreshAsync();
+        }
+        catch (Exception ex) { error = GetError(ex); }
+        finally { loading = false; }
+    }
+
+    private string ScopeName(Guid scopeId) => scopes.FirstOrDefault(x => x.Id == scopeId)?.Name ?? scopeId.ToString("N");
+    private static bool IsSchedulableProfile(string profile) =>
+        string.Equals(profile, "web-assessment-passive", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(profile, "web-assessment-safe-active", StringComparison.OrdinalIgnoreCase);
+    private static string FormatTime(DateTimeOffset? value) => value?.ToLocalTime().ToString("g") ?? "—";
+    private static string GetError(Exception exception) => exception is SentinelApiException api ? api.UserMessage : exception.Message;
+}

@@ -35,6 +35,41 @@ public sealed class WebAssessmentReportTests
         Assert.Contains("&lt;unsafe&gt;", html);
     }
 
+    [Fact]
+    public async Task Persisted_ai_advisory_summary_is_opt_in_and_html_encoded()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var db = new AppDbContext(options);
+        var tenant = new Tenant("AI report tenant");
+        var scope = new TargetScope(tenant.Id, "scope", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://example.test")], [], ["web-assessment-passive"], 10, 120, "approved", false);
+        var job = new AgentJob(tenant.Id, scope.Id, Guid.NewGuid(), "web-assessment-passive");
+        var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, "https://example.test", "web-assessment-passive", WebHostingMode.Public);
+        var finding = new Finding(tenant.Id, null, "Missing security header", FindingSeverity.Medium);
+        finding.ConfigureAssessmentDetails(assessment.Id, "headers", "Medium", assessment.TargetUrl, "GET", null, "HSTS is missing", "Transport protection may be reduced", "Review HTTPS", "Configure HSTS", "evidence-1", WebCheckStatus.Confirmed);
+        var evidence = new Evidence(tenant.Id, finding.Id, "test", "redacted summary", new string('b', 64));
+        var analysis = new FindingAIAnalysis(
+            tenant.Id, finding.Id, Guid.NewGuid(), "test-provider", "test-model",
+            "finding-analysis-v1", new string('a', 64), "<script>persisted advisory</script>",
+            "{\"summary\":\"persisted\"}", 12, 8, "response-1", "stop");
+        db.AddRange(tenant, scope, job, assessment, finding, evidence, analysis);
+        await db.SaveChangesAsync();
+        var store = new FakeStore();
+        var generator = new HtmlReportGenerator(db, store);
+
+        var defaultKey = await generator.GenerateAsync(tenant.Id, assessment, scope, CancellationToken.None);
+        var defaultHtml = await store.GetTextAsync(defaultKey);
+        Assert.DoesNotContain("persisted advisory", defaultHtml);
+
+        var advisoryKey = await generator.GenerateAsync(tenant.Id, assessment, scope, CancellationToken.None, includeAdvisoryAiSummaries: true);
+        var advisoryHtml = await store.GetTextAsync(advisoryKey);
+        Assert.Contains("AI advisory summary", advisoryHtml);
+        Assert.Contains("Provider: test-provider", advisoryHtml);
+        Assert.Contains("Evidence SHA-256:", advisoryHtml);
+        Assert.Contains("&lt;script&gt;persisted advisory&lt;/script&gt;", advisoryHtml);
+        Assert.DoesNotContain("<script>persisted advisory</script>", advisoryHtml);
+    }
+
     private sealed class FakeStore : IAssessmentArtifactStore
     {
         private readonly Dictionary<string, byte[]> files = [];

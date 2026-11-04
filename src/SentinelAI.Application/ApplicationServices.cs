@@ -24,6 +24,9 @@ public interface IAppDbContext : IAsyncDisposable, IDisposable
     DbSet<AIAnalysis> AIAnalyses { get; }
     DbSet<FindingAIAnalysis> FindingAIAnalyses { get; }
     DbSet<Notification> Notifications { get; }
+    DbSet<AssessmentSchedule> AssessmentSchedules { get; }
+    DbSet<AssessmentScheduleRun> AssessmentScheduleRuns { get; }
+    DbSet<AssessmentDriftEvent> AssessmentDriftEvents { get; }
     DbSet<WorkerRegistration> Workers { get; }
     DbSet<PublicTargetAuthorization> PublicTargetAuthorizations { get; }
     DbSet<OutboxMessage> OutboxMessages { get; }

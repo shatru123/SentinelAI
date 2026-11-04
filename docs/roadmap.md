@@ -67,7 +67,8 @@ This milestone preserves the passive-only execution boundary and does not add de
 **Phase 4.2 — Evidence-grounded finding analysis (implementation on phase4/evidence-grounded-finding-analysis).** Adds explicit Operator-triggered analysis, bounded summaries and redacted evidence input, structured output validation, evidence-ID allow-listing, tenant-scoped persistence and provider/prompt/input-hash/token provenance. AI output remains advisory and cannot mutate findings or authorize execution. See phase4-finding-analysis.md.
 
 Remaining Phase 4 work:
-- Findings UI action and analysis-history panel; optional clearly labeled advisory summaries in exported reports.
+- **Phase 4.3 — Finding AI analysis UI:** implemented on `phase4/finding-ai-analysis-ui`, stacked on Phase 4.2 PR #6. See `phase4-finding-analysis-ui.md`.
+- Optional clearly labeled advisory summaries in exported reports.
 - Scheduled re-assessment, drift detection and alert workflows under explicit operator-configured schedules.
 
 ## Phase 5 — Cloud and operational hardening

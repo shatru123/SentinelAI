@@ -132,7 +132,7 @@
             <div style="margin-top: var(--space-4); padding: var(--space-3); background: var(--bg-panel-subtle); border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
                 <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1);">Provider execution status</div>
                 <p style="font-size: 0.8125rem; color: var(--text-primary); margin: 0;">
-                    Connectivity: <strong>@(providerStatus?.ConnectivityVerified == true ? "Verified" : "No provider verified")</strong> · Live provider calls: <strong>@(providerStatus?.InferenceImplemented == true ? "Implemented" : "Unavailable")</strong> · AI role: <strong>Advisory only</strong>.
+                    Connectivity: <strong>@(providerStatus?.ConnectivityVerified == true ? "Verified" : "No provider verified")</strong> · Provider adapters: <strong>@(providerStatus?.ProviderAdaptersImplemented == true ? "Implemented" : "Unavailable")</strong> · SOC analysis integration: <strong>@(providerStatus?.InferenceImplemented == true ? "Enabled" : "Next Phase 4 increment")</strong> · AI role: <strong>Advisory only</strong>.
                 </p>
             </div>
 

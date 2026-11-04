@@ -54,6 +54,28 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.ToTable("AIAnalyses");
                 });
 
+            modelBuilder.Entity("SentinelAI.Domain.FindingAIAnalysis", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<Guid>("TenantId").HasColumnType("uuid");
+                    b.Property<Guid>("FindingId").HasColumnType("uuid");
+                    b.Property<Guid>("ActorId").HasColumnType("uuid");
+                    b.Property<string>("Provider").IsRequired().HasMaxLength(64).HasColumnType("character varying(64)");
+                    b.Property<string>("Model").IsRequired().HasMaxLength(128).HasColumnType("character varying(128)");
+                    b.Property<string>("PromptTemplateVersion").IsRequired().HasMaxLength(64).HasColumnType("character varying(64)");
+                    b.Property<string>("EvidenceSha256").IsRequired().HasMaxLength(64).HasColumnType("character varying(64)");
+                    b.Property<string>("Summary").IsRequired().HasMaxLength(2000).HasColumnType("character varying(2000)");
+                    b.Property<string>("ResultJson").IsRequired().HasColumnType("text");
+                    b.Property<int?>("InputTokens").HasColumnType("integer");
+                    b.Property<int?>("OutputTokens").HasColumnType("integer");
+                    b.Property<string>("ResponseId").HasMaxLength(256).HasColumnType("character varying(256)");
+                    b.Property<string>("FinishReason").HasMaxLength(64).HasColumnType("character varying(64)");
+                    b.Property<DateTimeOffset>("CreatedAt").HasColumnType("timestamp with time zone");
+                    b.HasKey("Id");
+                    b.HasIndex("TenantId", "FindingId", "CreatedAt");
+                    b.ToTable("FindingAIAnalyses");
+                });
+
             modelBuilder.Entity("SentinelAI.Domain.AgentExecution", b =>
                 {
                     b.Property<Guid>("Id")
@@ -446,6 +468,7 @@ namespace SentinelAI.Infrastructure.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+                    b.HasAlternateKey("TenantId", "Id");
 
                     b.HasIndex("TenantId", "Severity");
 
@@ -1170,6 +1193,13 @@ namespace SentinelAI.Infrastructure.Migrations
                     b.HasOne("SentinelAI.Domain.AssetVulnerabilityMatch", null)
                         .WithMany().HasForeignKey("TenantId", "MatchId")
                         .HasPrincipalKey("TenantId", "Id").OnDelete(DeleteBehavior.Cascade).IsRequired();
+                });
+
+            modelBuilder.Entity("SentinelAI.Domain.FindingAIAnalysis", b =>
+                {
+                    b.HasOne("SentinelAI.Domain.Finding", null).WithMany()
+                        .HasForeignKey("TenantId", "FindingId").HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade).IsRequired();
                 });
 
 #pragma warning restore 612, 618

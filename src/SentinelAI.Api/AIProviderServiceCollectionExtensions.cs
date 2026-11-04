@@ -45,9 +45,9 @@ public static class AIProviderServiceCollectionExtensions
         var legacySection = configuration.GetSection($"AI:{sectionName}");
         Uri? endpoint = defaultEndpoint;
 
-        var configuredEndpoint = section["Endpoint"] ?? legacySection["Endpoint"];
+        var configuredEndpoint = FirstConfigured(section["Endpoint"], legacySection["Endpoint"]);
         if (providerName == "ollama")
-            configuredEndpoint ??= configuration["OLLAMA_BASE_URL"];
+            configuredEndpoint = FirstConfigured(configuredEndpoint, configuration["OLLAMA_BASE_URL"]);
 
         if (!string.IsNullOrWhiteSpace(configuredEndpoint))
         {
@@ -69,11 +69,11 @@ public static class AIProviderServiceCollectionExtensions
             _ => null
         };
 
-        var apiKey = section["ApiKey"] ?? legacySection["ApiKey"];
+        var apiKey = FirstConfigured(section["ApiKey"], legacySection["ApiKey"]);
         if (apiKey is null && environmentApiKeyName is not null)
             apiKey = configuration[environmentApiKeyName];
 
-        var model = section["Model"] ?? legacySection["Model"];
+        var model = FirstConfigured(section["Model"], legacySection["Model"]);
         if (model is null && environmentModelName is not null)
             model = configuration[environmentModelName];
 
@@ -87,4 +87,7 @@ public static class AIProviderServiceCollectionExtensions
             section.GetValue("DefaultMaxOutputTokens", legacySection.GetValue("DefaultMaxOutputTokens", 2_048)),
             section["ApiVersion"] ?? legacySection["ApiVersion"] ?? "2023-06-01");
     }
+
+    private static string? FirstConfigured(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 }

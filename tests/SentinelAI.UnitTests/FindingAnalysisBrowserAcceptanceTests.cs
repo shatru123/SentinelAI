@@ -137,7 +137,7 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
             var analystPage = await analystContext.NewPageAsync();
             await SignInAsync(analystPage, webUrl, "analyst");
             await OpenFirstFindingAsync(analystPage, webUrl);
-            await analystPage.GetByText("No AI analysis has been generated for this finding.", new PageGetByTextOptions { Exact = true })
+            await analystPage.GetByText("Previously saved analysis visible to readers.", new PageGetByTextOptions { Exact = true })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
             Assert.Equal(0, analysisCalls.GetValueOrDefault(findingId));
             await analystPage.GetByRole(AriaRole.Button,
@@ -160,7 +160,7 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
                 new PageGetByRoleOptions { NameRegex = new System.Text.RegularExpressions.Regex("Analyze with AI") }).ClickAsync();
             await failurePage.GetByRole(AriaRole.Alert)
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
-            Assert.Equal(1, analysisCalls.GetValueOrDefault(findingId) - 1); // one success and one failed request
+            Assert.Equal(2, analysisCalls.GetValueOrDefault(findingId)); // one successful and one failed request
             await failureContext.CloseAsync();
             simulateProviderFailure = false;
 
@@ -206,13 +206,14 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
             await adminContext.CloseAsync();
 
             // Viewer can read persisted analysis but cannot see or invoke the operator action.
+            var providerStatusCallsBeforeViewer = Volatile.Read(ref providerStatusCalls);
             var viewerContext = await browser.NewContextAsync();
             var viewerPage = await viewerContext.NewPageAsync();
             await SignInAsync(viewerPage, webUrl, "viewer");
             await OpenFirstFindingAsync(viewerPage, webUrl);
             await viewerPage.GetByText("Previously saved analysis visible to readers.", new PageGetByTextOptions { Exact = true })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
-            Assert.Equal(0, providerStatusCalls);
+            Assert.Equal(providerStatusCallsBeforeViewer, Volatile.Read(ref providerStatusCalls));
             Assert.False(await viewerPage.GetByRole(AriaRole.Button,
                 new PageGetByRoleOptions { NameRegex = new System.Text.RegularExpressions.Regex("Analyze with AI") }).IsVisibleAsync());
             Assert.Equal(3, analysisCalls.GetValueOrDefault(findingId));

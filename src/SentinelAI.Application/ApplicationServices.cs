@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
-using SentinelAI.AI.Abstractions;
 using SentinelAI.Contracts;
 using SentinelAI.Domain;
 using SentinelAI.Security.Policy;

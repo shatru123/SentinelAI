@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
+using SentinelAI.Application;
 using SentinelAI.Contracts;
 using SentinelAI.Domain;
 

@@ -81,8 +81,9 @@ public sealed class FindingAIAnalysisService(IAppDbContext db, IAIProviderFactor
         if (included.Count == 0) throw new InvalidOperationException("The finding has no usable evidence summary or redacted content.");
         var input = new FindingPromptInput(finding.Id, finding.Title, finding.Severity.ToString(),
             finding.Category, finding.Confidence, finding.Description, finding.Impact, finding.Remediation, included);
+        var evidenceJson = JsonSerializer.Serialize(included, JsonOptions);
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(evidenceJson))).ToLowerInvariant();
         var inputJson = JsonSerializer.Serialize(input, JsonOptions);
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(inputJson))).ToLowerInvariant();
 
         var ai = await provider.AnalyzeAsync(
             new AIRequest(SystemPrompt, inputJson, MaxOutputTokens: 1_400, JsonSchemaJson: JsonSchema), cancellationToken);

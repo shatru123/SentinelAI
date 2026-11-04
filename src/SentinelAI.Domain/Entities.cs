@@ -377,9 +377,9 @@ public sealed class PublicTargetAuthorization
     public PublicTargetAuthorizationStatus GetStatus(DateTimeOffset now)
         => Status == PublicTargetAuthorizationStatus.Approved && ExpiresAt is not null && ExpiresAt <= now ? PublicTargetAuthorizationStatus.Expired : Status;
 
-    public void Approve(Guid approver, string evidence, string method, DateTimeOffset expiresAt)
+    public void Approve(Guid approver, string evidence, string method, DateTimeOffset expiresAt, bool allowRequesterApproval = false)
     {
-        if (approver == RequestedBy) throw new InvalidOperationException("The requester cannot approve their own authorization.");
+        if (approver == RequestedBy && !allowRequesterApproval) throw new InvalidOperationException("The requester cannot approve their own authorization unless administrator self-approval is enabled.");
         if (Status != PublicTargetAuthorizationStatus.Requested) throw new InvalidOperationException("Only requested authorizations can be approved.");
         if (string.IsNullOrWhiteSpace(evidence) || string.IsNullOrWhiteSpace(method)) throw new InvalidOperationException("Evidence and verification method are required.");
         if (expiresAt <= DateTimeOffset.UtcNow) throw new InvalidOperationException("Authorization expiry must be in the future.");

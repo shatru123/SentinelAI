@@ -246,7 +246,7 @@
                         </div>
                         <p style="font-size: 0.875rem; color: var(--text-primary); margin: var(--space-2) 0;">@analysis.Result.Summary</p>
                         <div style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: var(--space-2);">
-                            **Technical impact:** @analysis.Result.TechnicalImpact
+                            <strong>Technical impact:</strong> @analysis.Result.TechnicalImpact
                         </div>
                         <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: var(--space-2);">
                             Confidence: <strong>@analysis.Result.Confidence</strong>
@@ -270,7 +270,7 @@
                         @if (analysis.Result.Uncertainties.Count > 0)
                         {
                             <div style="font-size: 0.75rem; color: var(--text-muted);">
-                                **Uncertainties:** @string.Join(" · ", analysis.Result.Uncertainties)
+                                <strong>Uncertainties:</strong> @string.Join(" · ", analysis.Result.Uncertainties)
                             </div>
                         }
                         <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: var(--space-2);">

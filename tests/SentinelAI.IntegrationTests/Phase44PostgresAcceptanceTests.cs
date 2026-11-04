@@ -72,6 +72,52 @@ public sealed class Phase44PostgresAcceptanceTests
     }
 
     [Fact]
+    public async Task Scope_authorization_fingerprint_is_stable_after_postgresql_round_trip()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION");
+        Assert.False(string.IsNullOrWhiteSpace(connectionString),
+            "CI must provide SENTINELAI_POSTGRES_CONNECTION so timestamp precision is verified against PostgreSQL.");
+
+        var schema = $"phase44_fingerprint_{Guid.NewGuid():N}";
+        await CreateSchemaAsync(connectionString!, schema);
+        try
+        {
+            var schemaConnectionString = WithSearchPath(connectionString!, schema);
+            var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(schemaConnectionString).Options;
+            await using (var migrate = new AppDbContext(options))
+                await migrate.Database.MigrateAsync();
+
+            var now = DateTimeOffset.UtcNow;
+            var tenant = new Tenant("Phase 4 fingerprint tenant");
+            var adminId = Guid.NewGuid();
+            var admin = new User(adminId, tenant.Id, "phase4-fingerprint-admin", "Phase 4 admin", UserRole.Admin);
+            var scope = new TargetScope(tenant.Id, "phase4-fingerprint-scope", adminId, now.AddDays(20).AddTicks(7));
+            scope.Configure([new TargetDefinition(TargetKind.Web, "https://example.test/")], [],
+                [WebAssessmentOperationProfiles.Passive], 30, 300, "approved fingerprint-test authorization", false);
+            var authorization = new PublicTargetAuthorization(tenant.Id, "https://example.test/", adminId,
+                "Phase 4 PostgreSQL fingerprint acceptance");
+            authorization.Approve(Guid.NewGuid(), "ticket-fingerprint-1", "manual verification",
+                now.AddDays(10).AddTicks(3), allowRequesterApproval: true);
+            scope.ConfigureVerifications([authorization.ToVerification()]);
+            var expected = scope.GetAuthorizationFingerprint();
+
+            await using (var seed = new AppDbContext(options))
+            {
+                seed.AddRange(tenant, admin, scope, authorization);
+                await seed.SaveChangesAsync();
+            }
+
+            await using var verify = new AppDbContext(options);
+            var reloadedScope = await verify.TargetScopes.SingleAsync(x => x.Id == scope.Id);
+            Assert.Equal(expected, reloadedScope.GetAuthorizationFingerprint());
+        }
+        finally
+        {
+            await DropSchemaAsync(connectionString!, schema);
+        }
+    }
+
+    [Fact]
     public async Task Concurrent_scheduler_processors_create_exactly_one_due_occurrence_and_outbox_job()
     {
         var connectionString = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION");
@@ -115,6 +161,12 @@ public sealed class Phase44PostgresAcceptanceTests
                 await seed.SaveChangesAsync();
                 seed.AssessmentSchedules.Add(schedule);
                 await seed.SaveChangesAsync();
+            }
+
+            await using (var fingerprintCheck = new AppDbContext(options))
+            {
+                var persistedScope = await fingerprintCheck.TargetScopes.SingleAsync(x => x.Id == scope.Id);
+                Assert.Equal(schedule.AuthorizationFingerprint, persistedScope.GetAuthorizationFingerprint());
             }
 
             var processors = Enumerable.Range(0, 8).Select(_ => CreateProcessor(options)).ToArray();

@@ -3,6 +3,7 @@
 @using SentinelAI.Contracts
 @using SentinelAI.Domain
 @inject SentinelApiClient ApiClient
+@inject AuthenticationStateProvider AuthStateProvider
 <PageTitle>Vulnerabilities · SentinelAI SOC</PageTitle>
 
 <PageHeader Title="Vulnerability & Posture Registry"
@@ -167,6 +168,119 @@
             </div>
         </div>
 
+        <section class="soc-panel" style="margin-bottom: var(--space-4);">
+            <div class="soc-panel-header">
+                <div>
+                    <h4 class="soc-panel-title">AI Security Analysis</h4>
+                    <p class="text-muted" style="font-size: 0.75rem; margin-top: var(--space-1);">
+                        Evidence-grounded explanation for analyst review. AI output is advisory and never changes finding severity or assessment state.
+                    </p>
+                </div>
+                <span class="soc-badge soc-badge-warning">Advisory only</span>
+            </div>
+
+            @if (canRequestAIAnalysis)
+            {
+                <div style="display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); margin-bottom: var(--space-3);">
+                    <div style="min-width: 180px; flex: 1;">
+                        <label class="soc-label" for="finding-ai-provider">AI Provider</label>
+                        <select id="finding-ai-provider" class="soc-select" value="@selectedAIProvider" @onchange="OnAIProviderChanged" disabled="@loadingAIProviders">
+                            @foreach (var provider in availableAIProviders)
+                            {
+                                <option value="@provider.Provider">@provider.Provider @(provider.Healthy ? "· healthy" : "· configured")</option>
+                            }
+                        </select>
+                    </div>
+                    <button class="soc-btn soc-btn-primary" @onclick="AnalyzeFindingAsync"
+                            disabled="@(analyzingFinding || loadingAIProviders || string.IsNullOrWhiteSpace(selectedAIProvider) || availableAIProviders.Count == 0)">
+                        @(analyzingFinding ? "Analyzing…" : "✦ Analyze with AI")
+                    </button>
+                </div>
+                @if (loadingAIProviders)
+                {
+                    <p class="text-muted" style="font-size: 0.8125rem;">Checking configured AI providers…</p>
+                }
+                else if (availableAIProviders.Count == 0)
+                {
+                    <p class="text-muted" style="font-size: 0.8125rem;">
+                        No AI provider is configured yet. Configure Ollama, OpenAI or Anthropic in Settings before requesting an analysis.
+                        <a href="/settings">Open Settings</a>
+                    </p>
+                }
+                @if (aiAnalysisNotice is not null)
+                {
+                    <p class="text-muted" role="status" style="font-size: 0.8125rem;">@aiAnalysisNotice</p>
+                }
+                @if (aiAnalysisError is not null)
+                {
+                    <div class="soc-alert soc-alert-danger" role="alert">@aiAnalysisError</div>
+                }
+            }
+            else
+            {
+                <p class="text-muted" style="font-size: 0.8125rem;">
+                    Your role can review saved AI analysis, but only Administrators and Security Analysts can request a new analysis.
+                </p>
+            }
+
+            @if (loadingAIHistory)
+            {
+                <p class="text-muted" style="font-size: 0.8125rem;">Loading previous AI analyses…</p>
+            }
+            else if (aiHistoryError is not null)
+            {
+                <p class="text-muted" role="alert" style="font-size: 0.8125rem;">@aiHistoryError</p>
+            }
+            else if (aiAnalysisHistory.Count == 0)
+            {
+                <p class="text-muted" style="font-size: 0.8125rem;">No AI analysis has been generated for this finding.</p>
+            }
+            else
+            {
+                @foreach (var analysis in aiAnalysisHistory)
+                {
+                    <article style="border-top: 1px solid var(--border-subtle); padding-top: var(--space-3); margin-top: var(--space-3);">
+                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2);">
+                            <strong style="font-size: 0.8125rem; color: var(--text-primary);">@analysis.Provider / @analysis.Model</strong>
+                            <span class="text-muted" style="font-size: 0.75rem;">@DisplayTime(analysis.CreatedAt)</span>
+                        </div>
+                        <p style="font-size: 0.875rem; color: var(--text-primary); margin: var(--space-2) 0;">@analysis.Result.Summary</p>
+                        <div style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: var(--space-2);">
+                            <strong>Technical impact:</strong> @analysis.Result.TechnicalImpact
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: var(--space-2);">
+                            Confidence: <strong>@analysis.Result.Confidence</strong>
+                            · Prompt: @analysis.PromptTemplateVersion
+                            · Evidence SHA-256: @analysis.EvidenceSha256.Substring(0, 16)…
+                        </div>
+                        @if (analysis.Result.RecommendedActions.Count > 0)
+                        {
+                            <h5 style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); margin: var(--space-3) 0 var(--space-2);">Recommended human-reviewed actions</h5>
+                            @foreach (var recommendation in analysis.Result.RecommendedActions)
+                            {
+                                <div style="background: var(--bg-panel-subtle); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-2);">
+                                    <strong style="font-size: 0.8125rem;">@recommendation.Action</strong>
+                                    <p style="font-size: 0.75rem; color: var(--text-muted); margin: var(--space-1) 0;">@recommendation.Rationale</p>
+                                    <span style="font-size: 0.7rem; color: var(--text-muted);">
+                                        Evidence: @string.Join(", ", recommendation.EvidenceIds.Select(id => id.ToString("N")[..8]))
+                                    </span>
+                                </div>
+                            }
+                        }
+                        @if (analysis.Result.Uncertainties.Count > 0)
+                        {
+                            <div style="font-size: 0.75rem; color: var(--text-muted);">
+                                <strong>Uncertainties:</strong> @string.Join(" · ", analysis.Result.Uncertainties)
+                            </div>
+                        }
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: var(--space-2);">
+                            Input tokens: @(analysis.InputTokens?.ToString() ?? "n/a") · Output tokens: @(analysis.OutputTokens?.ToString() ?? "n/a") · This result does not modify the source finding.
+                        </div>
+                    </article>
+                }
+            }
+        </section>
+
         @if (!string.IsNullOrWhiteSpace(findingDetail.AffectedUrl))
         {
             <div style="background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-4);">
@@ -283,6 +397,17 @@
 
     private string searchTerm = string.Empty;
     private string selectedSeverity = "All";
+    private bool canRequestAIAnalysis;
+    private bool loadingAIProviders;
+    private bool aiProvidersLoaded;
+    private bool loadingAIHistory;
+    private bool analyzingFinding;
+    private string selectedAIProvider = string.Empty;
+    private List<AIProviderAvailability> availableAIProviders = [];
+    private List<FindingAIAnalysisResponse> aiAnalysisHistory = [];
+    private string? aiAnalysisError;
+    private string? aiHistoryError;
+    private string? aiAnalysisNotice;
 
     // Drawer state
     private bool isDrawerOpen;
@@ -293,6 +418,8 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var authenticationState = await AuthStateProvider.GetAuthenticationStateAsync();
+        canRequestAIAnalysis = authenticationState.User.IsInRole("Admin") || authenticationState.User.IsInRole("SecurityAnalyst");
         await LoadSummaryAsync();
         await LoadPageAsync();
     }
@@ -386,13 +513,101 @@
         {
             loadingDetail = false;
         }
+
+        await LoadAIAnalysisHistoryAsync(findingId);
+        if (canRequestAIAnalysis && !aiProvidersLoaded)
+            await LoadAIProviderOptionsAsync();
+    }
+
+    private async Task LoadAIProviderOptionsAsync()
+    {
+        loadingAIProviders = true;
+        aiAnalysisError = null;
+        try
+        {
+            var status = await ApiClient.GetJsonAsync<AIProviderStatusResponse>("/api/v1/ai/providers");
+            availableAIProviders = status.Providers?.Where(x => x.Configured)
+                .OrderBy(x => x.Provider, StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+            var preferred = availableAIProviders.FirstOrDefault(x =>
+                string.Equals(x.Provider, status.SelectedProvider, StringComparison.OrdinalIgnoreCase));
+            selectedAIProvider = (preferred ?? availableAIProviders.FirstOrDefault())?.Provider ?? string.Empty;
+        }
+        catch (SentinelApiException exception)
+        {
+            aiAnalysisError = exception.UserMessage;
+            availableAIProviders = [];
+        }
+        finally
+        {
+            loadingAIProviders = false;
+            aiProvidersLoaded = true;
+        }
+    }
+
+    private async Task LoadAIAnalysisHistoryAsync(Guid findingId)
+    {
+        loadingAIHistory = true;
+        aiHistoryError = null;
+        aiAnalysisHistory = [];
+        try
+        {
+            aiAnalysisHistory = await ApiClient.GetJsonAsync<List<FindingAIAnalysisResponse>>(
+                $"/api/v1/findings/{findingId}/ai-analyses");
+        }
+        catch (SentinelApiException exception)
+        {
+            aiHistoryError = exception.UserMessage;
+        }
+        finally
+        {
+            loadingAIHistory = false;
+        }
+    }
+
+    private void OnAIProviderChanged(ChangeEventArgs args)
+    {
+        var candidate = args.Value?.ToString();
+        if (!string.IsNullOrWhiteSpace(candidate) && availableAIProviders.Any(x =>
+                string.Equals(x.Provider, candidate, StringComparison.OrdinalIgnoreCase)))
+            selectedAIProvider = candidate;
+    }
+
+    private async Task AnalyzeFindingAsync()
+    {
+        if (!canRequestAIAnalysis || findingDetail is null || string.IsNullOrWhiteSpace(selectedAIProvider)) return;
+        analyzingFinding = true;
+        aiAnalysisError = null;
+        aiAnalysisNotice = null;
+        try
+        {
+            var result = await ApiClient.PostJsonAsync<AnalyzeFindingRequest, FindingAIAnalysisResponse>(
+                $"/api/v1/findings/{selectedFindingId}/ai-analysis", new AnalyzeFindingRequest(selectedAIProvider));
+            aiAnalysisHistory.Insert(0, result);
+            if (aiAnalysisHistory.Count > 50) aiAnalysisHistory.RemoveAt(aiAnalysisHistory.Count - 1);
+            aiAnalysisNotice = "Analysis saved. Review all recommendations and uncertainties; the source finding was not changed.";
+        }
+        catch (SentinelApiException exception)
+        {
+            aiAnalysisError = exception.UserMessage;
+        }
+        finally
+        {
+            analyzingFinding = false;
+        }
     }
 
     private void CloseDrawer()
     {
         isDrawerOpen = false;
         findingDetail = null;
+        aiAnalysisHistory = [];
+        aiAnalysisError = null;
+        aiHistoryError = null;
+        aiAnalysisNotice = null;
     }
+
+    private sealed record AIProviderAvailability(string Provider, bool Configured, bool Healthy);
+    private sealed record AIProviderStatusResponse(string SelectedProvider, IReadOnlyCollection<AIProviderAvailability> Providers);
 
     private static string DisplayTitle(FindingResponse finding) => string.IsNullOrWhiteSpace(finding.Title) ? "Untitled Finding" : finding.Title;
     private static string DisplayTime(DateTimeOffset value) => value == default ? "Not available" : value.ToLocalTime().ToString("g");

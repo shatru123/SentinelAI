@@ -72,6 +72,37 @@ public sealed class AssessmentScheduleDomainTests
     }
 
     [Fact]
+    public void Disable_clears_the_future_occurrence_and_prevents_pause_or_resume()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var schedule = new AssessmentSchedule(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "web-assessment-passive", new string('E', 64), 24, now.AddDays(5), now);
+
+        schedule.Disable(now.AddHours(1));
+
+        Assert.Equal(AssessmentScheduleStatus.Disabled, schedule.Status);
+        Assert.Null(schedule.NextRunAt);
+        Assert.Throws<InvalidOperationException>(() => schedule.Pause(now.AddHours(2)));
+        Assert.Throws<InvalidOperationException>(() => schedule.Resume(now.AddHours(2)));
+    }
+
+    [Fact]
+    public void Completed_schedule_cannot_be_disabled()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var due = now.AddHours(24);
+        var schedule = new AssessmentSchedule(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "web-assessment-passive", new string('F', 64), 24, due.AddHours(24), now);
+
+        Assert.True(schedule.TryAdvance(due, due));
+        Assert.Null(schedule.NextRunAt);
+        schedule.Complete(due.AddMinutes(1));
+
+        Assert.Equal(AssessmentScheduleStatus.Completed, schedule.Status);
+        Assert.Throws<InvalidOperationException>(() => schedule.Disable(due.AddMinutes(2)));
+    }
+
+    [Fact]
     public void Schedule_occurrence_idempotency_is_stable_across_time_zone_offsets()
     {
         var tenantId = Guid.NewGuid();

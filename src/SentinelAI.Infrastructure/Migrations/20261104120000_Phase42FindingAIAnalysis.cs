@@ -1,13 +1,9 @@
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
-using SentinelAI.Infrastructure;
 
 #nullable disable
 
 namespace SentinelAI.Infrastructure.Migrations;
 
-[DbContext(typeof(AppDbContext))]
-[Migration("20261104120000_Phase42FindingAIAnalysis")]
 public partial class Phase42FindingAIAnalysis : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)

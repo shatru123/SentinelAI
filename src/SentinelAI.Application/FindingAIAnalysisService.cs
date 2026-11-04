@@ -58,6 +58,7 @@ public sealed class FindingAIAnalysisService(IAppDbContext db, IAIProviderFactor
         PrincipalContext principal, Guid findingId, AnalyzeFindingRequest request, CancellationToken cancellationToken = default)
     {
         if (!principal.CanOperate) throw new UnauthorizedAccessException("The current role cannot request AI finding analysis.");
+        if (string.IsNullOrWhiteSpace(request?.ProviderName)) throw new ArgumentException("A provider name is required.", nameof(request));
         if (findingId == Guid.Empty) throw new ArgumentException("A finding identifier is required.", nameof(findingId));
         if (request is null || string.IsNullOrWhiteSpace(request.ProviderName) || request.ProviderName.Length > 64)
             throw new ArgumentException("A valid AI provider name is required.", nameof(request));
@@ -86,6 +87,8 @@ public sealed class FindingAIAnalysisService(IAppDbContext db, IAIProviderFactor
         var ai = await provider.AnalyzeAsync(
             new AIRequest(SystemPrompt, inputJson, MaxOutputTokens: 1_400, JsonSchemaJson: JsonSchema), cancellationToken);
         if (!ai.StructuredOutput) throw new AIProviderUnavailableException($"{provider.Name} did not return schema-validated structured output.");
+        if (!string.Equals(provider.Name, ai.Provider, StringComparison.OrdinalIgnoreCase))
+            throw new AIProviderUnavailableException("The AI provider response did not match the selected provider.");
 
         var result = ParseAndValidate(ai.Content, included.Select(x => x.Id).ToHashSet());
         var record = new FindingAIAnalysis(principal.TenantId, finding.Id, principal.UserId, ai.Provider, ai.Model,
@@ -101,6 +104,7 @@ public sealed class FindingAIAnalysisService(IAppDbContext db, IAIProviderFactor
     public async Task<IReadOnlyCollection<FindingAIAnalysisResponse>?> ListAsync(
         PrincipalContext principal, Guid findingId, CancellationToken cancellationToken = default)
     {
+        if (!principal.CanRead) throw new UnauthorizedAccessException("The current role cannot read AI finding analysis.");
         var exists = await db.Findings.AsNoTracking().AnyAsync(
             x => x.Id == findingId && x.TenantId == principal.TenantId, cancellationToken);
         if (!exists) return null;

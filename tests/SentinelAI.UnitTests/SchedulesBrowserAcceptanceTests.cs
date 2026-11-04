@@ -35,6 +35,12 @@ public sealed class SchedulesBrowserAcceptanceTests
             [new TargetDefinition(TargetKind.Web, "https://example.test/")],
             [WebAssessmentOperationProfiles.Passive], now.AddDays(7), true, WebHostingMode.Public);
         var schedules = new ConcurrentDictionary<Guid, AssessmentScheduleResponse>();
+        var blockedScheduleId = Guid.NewGuid();
+        schedules[blockedScheduleId] = new AssessmentScheduleResponse(blockedScheduleId, scopeId, analystId,
+            WebAssessmentOperationProfiles.Passive, 24, now.AddDays(2), null, now.AddHours(-2),
+            "Blocked", AssessmentScheduleStatus.Blocked,
+            "The original public target authorization was revoked; review authorization and create a new schedule.",
+            now.AddDays(-1));
         var runs = new ConcurrentDictionary<Guid, AssessmentScheduleRunResponse>();
         var driftEvents = new ConcurrentDictionary<Guid, AssessmentDriftEventResponse>();
         var notifications = new ConcurrentDictionary<Guid, AssessmentNotificationResponse>();
@@ -64,7 +70,11 @@ public sealed class SchedulesBrowserAcceptanceTests
             var created = new AssessmentScheduleResponse(Guid.NewGuid(), request.ScopeId, analystId,
                 request.OperationProfile, request.IntervalHours, request.EndsAt, now.AddHours(request.IntervalHours),
                 null, null, AssessmentScheduleStatus.Active, null, now);
+            schedules.Clear();
             schedules[created.Id] = created;
+            var createdRunId = Guid.NewGuid();
+            runs[createdRunId] = new AssessmentScheduleRunResponse(createdRunId, created.Id,
+                now.AddHours(-1), AssessmentScheduleRunStatus.Queued, Guid.NewGuid(), Guid.NewGuid(), null, now);
             return Results.Created($"/api/v1/assessment-schedules/{created.Id}", created);
         });
         api.MapGet("/api/v1/assessment-schedules/{id:guid}/runs", (Guid id) =>
@@ -147,14 +157,18 @@ public sealed class SchedulesBrowserAcceptanceTests
             await page.GetByRole(AriaRole.Heading,
                 new PageGetByRoleOptions { Name = "Create a reassessment schedule" })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 20_000 });
+            await page.GetByText("The original public target authorization was revoked; review authorization and create a new schedule.",
+                    new PageGetByTextOptions { Exact = true })
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
 
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Create schedule" }).ClickAsync();
             await page.GetByText("Schedule created.", new PageGetByTextOptions { Exact = false })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 15_000 });
 
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "History" }).ClickAsync();
-            await page.GetByRole(AriaRole.Heading,
-                new PageGetByRoleOptions { NameRegex = new System.Text.RegularExpressions.Regex("Execution history") })
+            await page.GetByText("Execution history", new PageGetByTextOptions { Exact = true })
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
+            await page.GetByText("Queued", new PageGetByTextOptions { Exact = true })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
 
             await page.GetByText(initialDrift.Summary, new PageGetByTextOptions { Exact = true })

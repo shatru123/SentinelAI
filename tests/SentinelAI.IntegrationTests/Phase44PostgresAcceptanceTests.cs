@@ -46,7 +46,8 @@ public sealed class Phase44PostgresAcceptanceTests
                 Assert.True(await ObjectExistsAsync(schemaConnectionString, "table", "AssessmentDriftEvents"));
                 Assert.True(await ObjectExistsAsync(schemaConnectionString, "column", "ResourceId"));
                 Assert.True(await ObjectExistsAsync(schemaConnectionString, "index", "IX_AssessmentScheduleRuns_TenantId_ScheduleId_ScheduledFor"));
-                Assert.True(await ObjectExistsAsync(schemaConnectionString, "index", "IX_AssessmentDriftEvents_TenantId_ScheduleRunId_EventType_StableIdentifier"));
+                Assert.True(await ObjectExistsAsync(schemaConnectionString, "index",
+                    "IX_AssessmentDriftEvents_TenantId_ScheduleRunId_EventType_StableIdentifier"[..63]));
                 Assert.True(await ObjectExistsAsync(schemaConnectionString, "constraint", "FK_AssessmentSchedules_TargetScopes_TenantId_ScopeId"));
                 Assert.True(await ObjectExistsAsync(schemaConnectionString, "constraint", "FK_Notifications_AssessmentDriftEvents_TenantId_ResourceId"));
 
@@ -108,7 +109,11 @@ public sealed class Phase44PostgresAcceptanceTests
 
             await using (var seed = new AppDbContext(options))
             {
-                seed.AddRange(tenant, creator, scope, worker, schedule);
+                // The schedule's custom composite scope FK is introduced by raw migration SQL and
+                // has no EF navigation relationship; persist its principals before the dependent.
+                seed.AddRange(tenant, creator, scope, worker);
+                await seed.SaveChangesAsync();
+                seed.AssessmentSchedules.Add(schedule);
                 await seed.SaveChangesAsync();
             }
 

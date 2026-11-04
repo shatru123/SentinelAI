@@ -17,7 +17,8 @@ SentinelAI is designed to discover and inventory explicitly authorized assets, e
 | Authorized web application assessment (Phase 3.1) | Complete with bounded coverage and security hardening |
 | Vulnerability intelligence / CVE correlation (Phase 3) | Core implementation complete; PR #3 CI verified (Release build, 220 unit, 28 integration, 10 security, 2 architecture tests, Docker Compose) |
 | OpenAI, Claude and Ollama providers (Phase 4.1) | Provider gateway implemented on phase4/ai-provider-gateway; CI verified |
-| Evidence-grounded AI finding analysis (Phase 4.2) | API and persistence implementation in progress on phase4/evidence-grounded-finding-analysis |
+| Evidence-grounded AI finding analysis (Phase 4.2) | API, tenant-scoped persistence and evidence validation implemented; CI passed in PR #6 |
+| Finding AI analysis experience (Phase 4.3) | Findings dossier action and advisory history panel implemented; CI passed in PR #7 |
 | SOC dashboard and monitoring | Phase 3.1 MVP and runtime acceptance fixes merged |
 | Cloud/local deployment | Docker Compose development stack available; production deployment hardening remains |
 

@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using OpenTelemetry.Exporter;
+using SentinelAI.AI.Abstractions;
 using SentinelAI.Application;
 using SentinelAI.Api;
 using SentinelAI.Agent.Vulnerability;
@@ -21,6 +22,7 @@ builder.Services.AddProblemDetails();
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddOpenApi();
 builder.Services.AddSentinelInfrastructure(builder.Configuration, builder.Environment);
+builder.Services.AddSentinelAIProviders(builder.Configuration);
 builder.Services.AddScoped<IScopeService, ScopeService>();
 builder.Services.AddScoped<IScanService, ScanService>();
 builder.Services.AddScoped<IPublicTargetAuthorizationService, PublicTargetAuthorizationService>();
@@ -89,6 +91,24 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "sentinela
 app.MapGet("/api/v1/auth/me", (HttpContext context) => Results.Ok(ToPrincipal(context).ToResponse())).RequireAuthorization();
 
 var api = app.MapGroup("/api/v1").RequireAuthorization();
+api.MapGet("/ai/providers", async (IAIProviderFactory providers, CancellationToken cancellationToken) =>
+{
+    var results = new List<object>();
+    foreach (var name in providers.GetNames())
+    {
+        var provider = providers.Get(name);
+        var healthy = provider.IsConfigured && await provider.IsHealthyAsync(cancellationToken);
+        results.Add(new
+        {
+            provider = provider.Name,
+            configured = provider.IsConfigured,
+            healthy
+        });
+    }
+
+    return Results.Ok(new { checkedAtUtc = DateTimeOffset.UtcNow, providers = results });
+}).RequireAuthorization("Reader");
+
 api.MapGet("/dashboard/summary", async (HttpContext context, IAppDbContext db, CancellationToken cancellationToken) =>
 {
     var tenantId = ToPrincipal(context).TenantId;

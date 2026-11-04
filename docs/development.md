@@ -51,6 +51,20 @@ dotnet run --project src/SentinelAI.Web --launch-profile http
 
 Open `http://localhost:5056/auth/login` once, then continue to `http://localhost:5056/`. The API listens on `http://localhost:5109`. Development API settings use EF Core InMemory, an InMemory queue, and `Worker:RunInProcess=true`; scan jobs are consumed inside the API process. No separate Worker project is required in this mode. The in-memory database is reset whenever the API process restarts.
 
+#### First local public web assessment
+
+The local Development identity is deliberately split into an operator and a different administrator so that the two-person public-target approval rule remains active:
+
+1. Sign in at `/auth/login` as the configured operator.
+2. Open `/web-assessments`, request authorization for the exact public site you control, and provide the authorization evidence/reason.
+3. Use the page's **switch to the separate development approver** link. It signs in as the second, local Admin identity.
+4. Approve the pending request, then use **switch back to the operator** (or visit `/auth/login`).
+5. Return to Web Assessments, refresh, create the assessment for that same host/path, and submit it.
+
+The approval must cover the assessment's scheme, host, port and path. An approval for one site is not a blanket approval for unrelated domains. The local in-process worker is auto-registered for passive inventory and public web assessment; it deliberately has no `private-web-assessment` capability. Use the Compose worker and administrator-approved private CIDRs for private targets.
+
+The Development database is in-memory: restarting the API clears authorizations, scopes, assets and assessment history. Repeat the authorization steps after a restart.
+
 ### Run the full Docker Compose profile
 
 ```bash
@@ -61,6 +75,8 @@ docker compose --env-file .env -f deploy/docker/docker-compose.yml up --build
 Open `http://127.0.0.1:5081/auth/login`, then `http://127.0.0.1:5081/`. The local Compose dashboard defaults to the Development Admin role so the first external worker can be provisioned from Setup or Workers. On the Setup page, provision the configured `compose-worker` identity; the separate worker container will then register and begin sending heartbeats. Do not use this Development role configuration in a shared or production environment. Set `DASHBOARD_ROLE=SecurityAnalyst` in `.env` to test a restricted analyst view after the worker has been provisioned.
 
 The browser-facing API is `http://127.0.0.1:5080`; the Web container calls it internally at `http://api:8080`. The Development Web launch profile uses `http://localhost:5109`; do not change it to the Compose host port.
+
+In Compose mode, request public target authorization while signed in as the dashboard operator, then sign in as the configured separate approver using `/auth/dev-approver?returnUrl=%2Fweb-assessments`, approve the request, and sign back in at `/auth/login`. Provision the `compose-worker` in Setup before submitting work. The local in-process worker is disabled in Compose; queued work is executed only by the separate worker container.
 
 To exercise the broker path, inspect `docker compose --env-file .env -f deploy/docker/docker-compose.yml logs -f api worker`. The worker should log a successful registration after its identity is provisioned. Grafana is at `http://127.0.0.1:3000` with Prometheus and Tempo provisioned from `deploy/observability`; local credentials default to `admin` / `admin` and can be changed with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`.
 

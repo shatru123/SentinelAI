@@ -125,7 +125,8 @@ public sealed class Phase44PostgresAcceptanceTests
             await using var verify = new AppDbContext(options);
             var runs = await verify.AssessmentScheduleRuns.Where(x => x.TenantId == tenant.Id && x.ScheduleId == schedule.Id).ToListAsync();
             Assert.Single(runs);
-            Assert.Equal(AssessmentScheduleRunStatus.Queued, runs[0].Status);
+            Assert.True(runs[0].Status == AssessmentScheduleRunStatus.Queued,
+                $"Expected queued run, but got {runs[0].Status}. Run reason: {runs[0].BlockedReason ?? "none"}. Schedule reason: {(await verify.AssessmentSchedules.SingleAsync(x => x.Id == schedule.Id)).BlockedReason ?? "none"}.");
             Assert.NotNull(runs[0].JobId);
             Assert.NotNull(runs[0].AssessmentId);
             Assert.Equal(1, await verify.AgentJobs.CountAsync(x => x.TenantId == tenant.Id && x.ScopeId == scope.Id));

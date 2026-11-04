@@ -396,6 +396,38 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task Administrator_can_self_approve_public_target_when_single_admin_policy_is_enabled()
+    {
+        var tenant = Guid.NewGuid();
+        var administrator = Guid.NewGuid();
+        using var localFactory = factory.WithWebHostBuilder(builder =>
+            builder.UseEnvironment("Development")
+                .UseSetting("Database:Provider", "InMemory")
+                .UseSetting("Authorization:AllowAdminSelfApproval", "true"));
+
+        using var adminClient = CreateAuthenticatedClient(localFactory, tenant, administrator, UserRole.Admin);
+        var requestResponse = await adminClient.PostAsJsonAsync(
+            "/api/v1/public-target-authorizations",
+            new PublicTargetAuthorizationRequest("https://owned.example.test", "Administrator-confirmed authorized test target"));
+        Assert.Equal(HttpStatusCode.Created, requestResponse.StatusCode);
+        var requested = await requestResponse.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(requested);
+        Assert.Equal(PublicTargetAuthorizationStatus.Requested, requested.Status);
+
+        var approvalResponse = await adminClient.PostAsJsonAsync(
+            $"/api/v1/public-target-authorizations/{requested.Id}/approve",
+            new PublicTargetAuthorizationApprovalRequest(
+                "admin-authorization-attestation",
+                "administrator-self-approval",
+                DateTimeOffset.UtcNow.AddHours(1)));
+        Assert.Equal(HttpStatusCode.OK, approvalResponse.StatusCode);
+        var approved = await approvalResponse.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(approved);
+        Assert.Equal(PublicTargetAuthorizationStatus.Approved, approved.Status);
+        Assert.Equal(administrator, approved.ApprovedBy);
+    }
+
+    [Fact]
     public async Task In_process_worker_completes_an_authorized_public_web_assessment()
     {
         var tenant = Guid.NewGuid();

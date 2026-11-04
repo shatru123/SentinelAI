@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
+using SentinelAI.AI.Abstractions;
 using SentinelAI.Contracts;
 using SentinelAI.Domain;
 using SentinelAI.Security.Policy;
@@ -22,6 +23,7 @@ public interface IAppDbContext : IAsyncDisposable, IDisposable
     DbSet<ApprovalRequest> ApprovalRequests { get; }
     DbSet<AuditEvent> AuditEvents { get; }
     DbSet<AIAnalysis> AIAnalyses { get; }
+    DbSet<FindingAIAnalysis> FindingAIAnalyses { get; }
     DbSet<Notification> Notifications { get; }
     DbSet<WorkerRegistration> Workers { get; }
     DbSet<PublicTargetAuthorization> PublicTargetAuthorizations { get; }

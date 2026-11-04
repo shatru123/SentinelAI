@@ -510,18 +510,6 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         bool LeaseWasValid,
         bool LiveAuthorizationWasValid);
 
-    public sealed class InProcessWorkerProbe
-    {
-        public TaskCompletionSource<InProcessWorkerExecution> Executed { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
-
-    public sealed record InProcessWorkerExecution(
-        string WorkerIdentity,
-        IReadOnlyCollection<string> WorkerCapabilities,
-        bool LeaseWasValid,
-        bool LiveAuthorizationWasValid);
-
     public sealed class InProcessWorkerProbeEngine(InProcessWorkerProbe probe, IServiceScopeFactory scopeFactory) : IWebAssessmentEngine
     {
         public async Task<WebAssessmentExecutionResult> ExecuteAsync(
@@ -535,8 +523,8 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
             CancellationToken cancellationToken,
             Func<IAppDbContext, CancellationToken, Task<WorkerExecutionContext?>>? refreshAuthorization = null)
         {
-            await using var scope = scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+            await using var serviceScope = scopeFactory.CreateAsyncScope();
+            var db = serviceScope.ServiceProvider.GetRequiredService<IAppDbContext>();
             var leaseIsValid = await leaseCheck(db, cancellationToken);
             var liveWorker = refreshAuthorization is null ? null : await refreshAuthorization(db, cancellationToken);
 
@@ -557,27 +545,6 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
             => Task.FromResult(Addresses);
     }
 
-    public sealed class FixedPublicAddressResolver : IHostAddressResolver
-    {
-        private static readonly IReadOnlyCollection<IPAddress> Addresses = [IPAddress.Parse("93.184.216.34")];
-
-        public Task<IReadOnlyCollection<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken)
-            => Task.FromResult(Addresses);
-    }
-
-
-    private static HttpClient CreateAuthenticatedClient(
-        WebApplicationFactory<Program> application,
-        Guid tenant,
-        Guid user,
-        UserRole role)
-    {
-        var client = application.CreateClient();
-        client.DefaultRequestHeaders.Add("X-Tenant-Id", tenant.ToString());
-        client.DefaultRequestHeaders.Add("X-User-Id", user.ToString());
-        client.DefaultRequestHeaders.Add("X-Role", role.ToString());
-        return client;
-    }
 
     private HttpClient CreateAuthenticatedClient(Guid tenant, Guid user, UserRole role)
     {

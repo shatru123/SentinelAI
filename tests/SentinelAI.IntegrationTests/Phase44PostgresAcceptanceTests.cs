@@ -31,7 +31,7 @@ public sealed class Phase44PostgresAcceptanceTests
             var migrations = new List<string>();
             await using (var db = new AppDbContext(options))
             {
-                migrations = (await db.Database.GetMigrationsAsync()).ToList();
+                migrations = db.Database.GetMigrations().ToList();
                 var phaseIndex = migrations.IndexOf(Phase44MigrationId);
                 Assert.True(phaseIndex > 0, $"Expected {Phase44MigrationId} to have a previous released migration.");
                 var previousMigration = migrations[phaseIndex - 1];
@@ -166,7 +166,7 @@ public sealed class Phase44PostgresAcceptanceTests
         command.CommandText = kind switch
         {
             "table" => "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = @name)",
-            "column" => "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND column_name = @name)",
+            "column" => "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'Notifications' AND column_name = @name)",
             "index" => "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = @name)",
             "constraint" => "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = @name)",
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)

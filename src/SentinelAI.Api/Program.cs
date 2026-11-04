@@ -490,7 +490,8 @@ api.MapGet("/ai/providers", async (
         anthropicHealthy,
         ollamaHealthy,
         connectivityVerified = openAiHealthy || anthropicHealthy || ollamaHealthy,
-        inferenceImplemented = true,
+        inferenceImplemented = false,
+        providerAdaptersImplemented = true,
         executionMode = "advisory-only",
         checkedAtUtc = DateTimeOffset.UtcNow,
         providers = new[]

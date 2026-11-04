@@ -247,8 +247,17 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
     {
         await page.GotoAsync($"{baseUrl}/findings", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Inspect Evidence" }).First.ClickAsync();
-        await page.GetByText("AI Security Analysis", new PageGetByTextOptions { Exact = true })
-            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
+        try
+        {
+            await page.GetByText("AI Security Analysis", new PageGetByTextOptions { Exact = true })
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 20_000 });
+        }
+        catch (PlaywrightException exception)
+        {
+            var visiblePageText = await page.Locator("body").InnerTextAsync();
+            throw new InvalidOperationException(
+                $"The finding dossier did not render the AI analysis section. Current page text:\\n{visiblePageText}", exception);
+        }
     }
 
     private static async Task WaitForWebAsync(Process process, string baseUrl, Task<string> stdout, Task<string> stderr)

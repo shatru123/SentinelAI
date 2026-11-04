@@ -314,8 +314,7 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
             TargetKind kind, string target, string operationProfile, WorkerExecutionContext? worker,
             CancellationToken cancellationToken = default)
         {
-            if (!Uri.TryCreate(target, UriKind.Absolute, out var uri))
-                return ValueTask.FromResult(ScopeValidationResult.Invalid(["Test target must be an absolute URI."]));
+            var uri = new Uri(target, UriKind.Absolute);
             return ValueTask.FromResult(ScopeValidationResult.Valid(new ValidatedExecutionTarget(
                 uri.Host, [IPAddress.Loopback], DateTimeOffset.UtcNow, scope.Id, tenantId,
                 scope.ExpiresAt, operationProfile)));

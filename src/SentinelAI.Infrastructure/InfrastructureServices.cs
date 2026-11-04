@@ -66,7 +66,8 @@ public static class InfrastructureServices
         else
         {
             services.AddSingleton<IScanJobQueue, InMemoryScanJobQueue>();
-            if (configuration.GetValue("Worker:RunInProcess", false)) services.AddHostedService<ScanJobProcessor>();
+            if (environment.IsDevelopment() && configuration.GetValue("Worker:RunInProcess", false))
+                services.AddHostedService<ScanJobProcessor>();
         }
         return services;
     }
@@ -638,9 +639,16 @@ public sealed class ScanJobProcessor(
                 var outcome = await executionScope.ServiceProvider.GetRequiredService<ScanExecutionService>()
                     .ExecuteAsync(delivery.JobId, executionToken, delivery.TenantId, WorkerIdentity);
 
-                if (outcome is ScanExecutionOutcome.Missing or ScanExecutionOutcome.Unauthorized)
+                if (outcome == ScanExecutionOutcome.Unauthorized)
                 {
-                    logger.LogError("In-process worker could not authorize job {JobId} ({Outcome}).", delivery.JobId, outcome);
+                    logger.LogError("In-process worker could not authorize job {JobId}.", delivery.JobId);
+                    await MarkQueuedJobFailedAsync(delivery.JobId, delivery.TenantId,
+                        "The local development worker could not authorize this job. Private web assessments require the separately enrolled private worker; use the Docker Compose worker for private targets.",
+                        stoppingToken);
+                }
+                else if (outcome == ScanExecutionOutcome.Missing)
+                {
+                    logger.LogError("In-process worker received a delivery for missing job {JobId}.", delivery.JobId);
                 }
 
                 await delivery.AcknowledgeAsync(stoppingToken);
@@ -656,9 +664,12 @@ public sealed class ScanJobProcessor(
                 try
                 {
                     await using var failureScope = scopeFactory.CreateAsyncScope();
-                    await failureScope.ServiceProvider.GetRequiredService<ScanExecutionService>()
-                        .RequeueOrFailAsync(delivery.JobId, WorkerIdentity, attempt: 1, maxAttempts: 1,
-                            exception.Message, CancellationToken.None);
+                    var persistedFailure = await failureScope.ServiceProvider.GetRequiredService<ScanExecutionService>()
+                        .RequeueOrFailAsync(delivery.JobId, WorkerIdentity, 1, 1, exception.Message, CancellationToken.None);
+                    if (!persistedFailure)
+                    {
+                        await MarkQueuedJobFailedAsync(delivery.JobId, delivery.TenantId, exception.Message, CancellationToken.None);
+                    }
                     await delivery.AcknowledgeAsync(CancellationToken.None);
                 }
                 catch (Exception persistenceException)
@@ -689,6 +700,25 @@ public sealed class ScanJobProcessor(
                 maintenanceStop?.Dispose();
             }
         }
+    }
+
+    private async Task MarkQueuedJobFailedAsync(Guid jobId, Guid tenantId, string reason, CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
+        var job = await db.AgentJobs.SingleOrDefaultAsync(
+            item => item.Id == jobId && item.TenantId == tenantId, cancellationToken);
+        if (job is null || job.Status != ScanJobStatus.Queued) return;
+
+        job.Fail(reason);
+        var execution = await db.AgentExecutions.SingleOrDefaultAsync(item => item.AgentJobId == jobId, cancellationToken);
+        execution?.Fail(reason);
+        var assessment = await db.WebAssessments.SingleOrDefaultAsync(
+            item => item.AgentJobId == jobId && item.TenantId == tenantId, cancellationToken);
+        assessment?.Fail(reason);
+        db.AuditEvents.Add(new AuditEvent(tenantId, job.RequestedBy, "job.execution.failed",
+            nameof(AgentJob), job.Id, reason));
+        await db.SaveChangesAsync(cancellationToken);
     }
 
     private async Task EnsureWorkerReadyAsync(Guid tenantId, int activeJobs, CancellationToken cancellationToken)

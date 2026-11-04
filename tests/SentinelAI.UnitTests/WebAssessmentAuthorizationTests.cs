@@ -911,6 +911,7 @@ public sealed class WebAssessmentAuthorizationTests
         public DbSet<ApprovalRequest> ApprovalRequests => inner.ApprovalRequests;
         public DbSet<AuditEvent> AuditEvents => inner.AuditEvents;
         public DbSet<AIAnalysis> AIAnalyses => inner.AIAnalyses;
+        public DbSet<FindingAIAnalysis> FindingAIAnalyses => inner.FindingAIAnalyses;
         public DbSet<Notification> Notifications => inner.Notifications;
         public DbSet<WorkerRegistration> Workers => inner.Workers;
         public DbSet<PublicTargetAuthorization> PublicTargetAuthorizations => inner.PublicTargetAuthorizations;

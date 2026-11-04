@@ -27,6 +27,7 @@ builder.Services.AddScoped<IScopeService, ScopeService>();
 builder.Services.AddScoped<IScanService, ScanService>();
 builder.Services.AddScoped<IPublicTargetAuthorizationService, PublicTargetAuthorizationService>();
 builder.Services.AddScoped<IWebAssessmentService, WebAssessmentService>();
+builder.Services.AddScoped<IFindingAIAnalysisService, FindingAIAnalysisService>();
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddSource("SentinelAI.RabbitMq", "SentinelAI.Worker").AddOtlpExporter())
     .WithMetrics(metrics => metrics.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddMeter("SentinelAI.Jobs").AddOtlpExporter());
@@ -71,6 +72,8 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     {
         ScopeValidationException => StatusCodes.Status400BadRequest,
         BadHttpRequestException => StatusCodes.Status400BadRequest,
+        ArgumentException => StatusCodes.Status400BadRequest,
+        AIProviderUnavailableException => StatusCodes.Status503ServiceUnavailable,
         KeyNotFoundException => StatusCodes.Status404NotFound,
         UnauthorizedAccessException => StatusCodes.Status403Forbidden,
         InvalidOperationException => StatusCodes.Status409Conflict,
@@ -449,6 +452,18 @@ api.MapGet("/findings/{id:guid}", async (HttpContext context, Guid id, IAppDbCon
         targetUrl, finding.Category, finding.Confidence, finding.AffectedUrl, finding.HttpMethod,
         finding.Parameter, finding.Description, finding.Impact, finding.Reproduction, finding.Remediation,
         finding.CheckStatus, finding.CreatedAt, evidence, screenshots));
+}).RequireAuthorization("Reader");
+
+api.MapPost("/findings/{id:guid}/ai-analysis", async (HttpContext context, Guid id, AnalyzeFindingRequest request, IFindingAIAnalysisService service, CancellationToken cancellationToken) =>
+{
+    var result = await service.AnalyzeAsync(ToPrincipal(context), id, request, cancellationToken);
+    return Results.Ok(result);
+}).RequireAuthorization("Operator");
+
+api.MapGet("/findings/{id:guid}/ai-analyses", async (HttpContext context, Guid id, IFindingAIAnalysisService service, CancellationToken cancellationToken) =>
+{
+    var results = await service.ListAsync(ToPrincipal(context), id, cancellationToken);
+    return results is null ? Results.NotFound() : Results.Ok(results);
 }).RequireAuthorization("Reader");
 
 api.MapGet("/assets/{id:guid}/services", async (HttpContext context, Guid id, IAppDbContext db, CancellationToken cancellationToken) =>

@@ -22,6 +22,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<AIAnalysis> AIAnalyses => Set<AIAnalysis>();
+    public DbSet<FindingAIAnalysis> FindingAIAnalyses => Set<FindingAIAnalysis>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<WorkerRegistration> Workers => Set<WorkerRegistration>();
     public DbSet<PublicTargetAuthorization> PublicTargetAuthorizations => Set<PublicTargetAuthorization>();
@@ -101,6 +102,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ApprovalRequest>().HasKey(x => x.Id);
         modelBuilder.Entity<AuditEvent>().HasKey(x => x.Id);
         modelBuilder.Entity<AIAnalysis>().HasKey(x => x.Id);
+        modelBuilder.Entity<FindingAIAnalysis>().HasKey(x => x.Id);
         modelBuilder.Entity<Notification>().HasKey(x => x.Id);
         modelBuilder.Entity<WorkerRegistration>().HasKey(x => x.Id);
         modelBuilder.Entity<PublicTargetAuthorization>().HasKey(x => x.Id);
@@ -130,6 +132,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<ApprovalRequest>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<AuditEvent>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<AIAnalysis>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<Notification>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<WorkerRegistration>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<PublicTargetAuthorization>().Property(x => x.TenantId));
@@ -166,7 +169,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Asset>().HasAlternateKey(x => new { x.TenantId, x.Id });
         modelBuilder.Entity<AssetService>().HasIndex(x => new { x.TenantId, x.AssetId, x.Protocol, x.Port }).IsUnique();
         modelBuilder.Entity<AssetService>().HasOne<Asset>().WithMany().HasForeignKey(x => new { x.TenantId, x.AssetId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<Finding>().HasAlternateKey(x => new { x.TenantId, x.Id });
         modelBuilder.Entity<Finding>().HasIndex(x => new { x.TenantId, x.Severity });
+        modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.Provider).HasMaxLength(64);
+        modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.Model).HasMaxLength(128);
+        modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.PromptTemplateVersion).HasMaxLength(64);
+        modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.EvidenceSha256).HasMaxLength(64);
+        modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.Summary).HasMaxLength(2_000);
+        modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.ResponseId).HasMaxLength(256);
+        modelBuilder.Entity<FindingAIAnalysis>().Property(x => x.FinishReason).HasMaxLength(64);
+        modelBuilder.Entity<FindingAIAnalysis>().HasIndex(x => new { x.TenantId, x.FindingId, x.CreatedAt });
+        modelBuilder.Entity<FindingAIAnalysis>().HasOne<Finding>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.FindingId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<AuditEvent>().HasIndex(x => new { x.TenantId, x.OccurredAt });
         modelBuilder.Entity<WorkerRegistration>().HasIndex(x => new { x.TenantId, x.Identity }).IsUnique();
         modelBuilder.Entity<PublicTargetAuthorization>().HasIndex(x => new { x.TenantId, x.Target, x.Status });

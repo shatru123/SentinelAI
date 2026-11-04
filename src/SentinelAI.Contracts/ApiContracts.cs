@@ -293,3 +293,15 @@ public sealed record VulnerabilitySyncCheckpointResponse(
     DateTimeOffset? LastSucceededAt,
     int RecordsProcessed,
     string? LastErrorCategory);
+
+
+public sealed record AnalyzeFindingRequest(string ProviderName);
+public sealed record FindingAIRecommendationResponse(string Action, string Rationale, IReadOnlyCollection<Guid> EvidenceIds);
+public sealed record FindingAIAnalysisResultResponse(
+    string Summary, string TechnicalImpact, string Confidence,
+    IReadOnlyCollection<FindingAIRecommendationResponse> RecommendedActions,
+    IReadOnlyCollection<string> Uncertainties);
+public sealed record FindingAIAnalysisResponse(
+    Guid Id, Guid FindingId, string Provider, string Model, string PromptTemplateVersion,
+    string EvidenceSha256, FindingAIAnalysisResultResponse Result, int? InputTokens, int? OutputTokens,
+    string? ResponseId, string? FinishReason, DateTimeOffset CreatedAt);

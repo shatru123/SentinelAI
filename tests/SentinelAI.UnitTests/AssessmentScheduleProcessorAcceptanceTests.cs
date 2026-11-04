@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using SentinelAI.Application;
+using SentinelAI.Contracts;
 using SentinelAI.Domain;
 using SentinelAI.Infrastructure;
 using SentinelAI.Security.Policy;
@@ -11,6 +12,72 @@ namespace SentinelAI.UnitTests;
 
 public sealed class AssessmentScheduleProcessorAcceptanceTests
 {
+    [Theory]
+    [InlineData(24)]
+    [InlineData(2160)]
+    public async Task Schedule_creation_accepts_both_interval_boundaries(int intervalHours)
+    {
+        var options = NewOptions();
+        var now = DateTimeOffset.UtcNow;
+        var tenant = new Tenant("Phase 4 interval boundary tenant");
+        var creatorId = Guid.NewGuid();
+        var creator = new User(creatorId, tenant.Id, "interval-creator", "Interval creator", UserRole.SecurityAnalyst);
+        var scope = new TargetScope(tenant.Id, "interval-boundary-scope", creatorId, now.AddDays(100));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://10.3.4.5/")], [],
+            [WebAssessmentOperationProfiles.Passive], 30, 300, "approved interval-boundary authorization", false);
+        scope.ConfigureWebHosting(WebHostingMode.Private, "interval-worker", ["10.0.0.0/8"]);
+        var worker = new WorkerRegistration(tenant.Id, "interval-worker", "test",
+            ["web-assessment", "private-web-assessment"]);
+        worker.ProvisionByAdministrator("test", ["web-assessment", "private-web-assessment"], ["10.0.0.0/8"]);
+        worker.Heartbeat(0, 1);
+
+        await using var db = new AppDbContext(options);
+        db.AddRange(tenant, creator, scope, worker);
+        await db.SaveChangesAsync();
+
+        var service = new AssessmentScheduleService(db, new AcceptingScopeValidator());
+        var principal = new PrincipalContext(tenant.Id, creatorId, creator.Subject, UserRole.SecurityAnalyst);
+        var endsAt = now.AddHours(intervalHours + 24);
+        var result = await service.CreateAsync(principal,
+            new CreateAssessmentScheduleRequest(scope.Id, WebAssessmentOperationProfiles.Passive, intervalHours, endsAt),
+            CancellationToken.None);
+
+        Assert.Equal(intervalHours, result.IntervalHours);
+        Assert.Equal(AssessmentScheduleStatus.Active, result.Status);
+        Assert.NotNull(result.NextRunAt);
+        Assert.Equal(scope.Id, result.ScopeId);
+    }
+
+    [Theory]
+    [InlineData(23)]
+    [InlineData(2161)]
+    public async Task Schedule_creation_rejects_intervals_outside_the_24_hour_to_90_day_bounds(int intervalHours)
+    {
+        await using var db = new AppDbContext(NewOptions());
+        var service = new AssessmentScheduleService(db, new AcceptingScopeValidator());
+        var principal = new PrincipalContext(Guid.NewGuid(), Guid.NewGuid(), "invalid-interval-operator",
+            UserRole.SecurityAnalyst);
+
+        await Assert.ThrowsAsync<ScopeValidationException>(() => service.CreateAsync(principal,
+            new CreateAssessmentScheduleRequest(Guid.NewGuid(), WebAssessmentOperationProfiles.Passive,
+                intervalHours, DateTimeOffset.UtcNow.AddDays(100)),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Schedule_creation_rejects_an_end_time_that_does_not_allow_one_complete_interval()
+    {
+        await using var db = new AppDbContext(NewOptions());
+        var service = new AssessmentScheduleService(db, new AcceptingScopeValidator());
+        var principal = new PrincipalContext(Guid.NewGuid(), Guid.NewGuid(), "short-schedule-operator",
+            UserRole.SecurityAnalyst);
+
+        await Assert.ThrowsAsync<ScopeValidationException>(() => service.CreateAsync(principal,
+            new CreateAssessmentScheduleRequest(Guid.NewGuid(), WebAssessmentOperationProfiles.Passive,
+                24, DateTimeOffset.UtcNow.AddHours(23)),
+            CancellationToken.None));
+    }
+
     [Theory]
     [InlineData("scope-mutated")]
     [InlineData("scope-expired")]

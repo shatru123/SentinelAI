@@ -5,6 +5,7 @@
 @inject SentinelApiClient ApiClient
 @inject IJSRuntime JS
 @inject IConfiguration Configuration
+@inject AuthenticationStateProvider AuthStateProvider
 <PageTitle>Web Assessments · SentinelAI SOC</PageTitle>
 
 <PageHeader Title="Authorized Web Assessments"
@@ -336,9 +337,16 @@
                                     <Authorized>
                                         @if (auth.Status == PublicTargetAuthorizationStatus.Requested)
                                         {
-                                            <button class="soc-btn soc-btn-primary" style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;" @onclick="() => ApproveAuthAsync(auth)">
-                                                Approve Target
-                                            </button>
+                                            @if (currentUserId is Guid userId && auth.RequestedBy != userId)
+                                            {
+                                                <button class="soc-btn soc-btn-primary" style="padding: var(--space-1) var(--space-2); font-size: 0.75rem;" @onclick="() => ApproveAuthAsync(auth)">
+                                                    Approve Target
+                                                </button>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-muted" style="font-size: 0.75rem;">Awaiting a different administrator</span>
+                                            }
                                         }
                                         @if (auth.Status == PublicTargetAuthorizationStatus.Approved)
                                         {
@@ -630,6 +638,7 @@
     private int totalCount;
     private int activeAssessmentsCount;
     private bool loading = true;
+    private Guid? currentUserId;
     private string? error;
     private string? pageNotice;
 
@@ -678,6 +687,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (Guid.TryParse(authState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var userId))
+            currentUserId = userId;
+
         await RefreshAllAsync();
     }
 

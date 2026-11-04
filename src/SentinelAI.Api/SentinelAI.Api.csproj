@@ -8,6 +8,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SentinelAI.Agent.Vulnerability\SentinelAI.Agent.Vulnerability.csproj" />
+    <ProjectReference Include="..\SentinelAI.AI.Abstractions\SentinelAI.AI.Abstractions.csproj" />
+    <ProjectReference Include="..\SentinelAI.AI.OpenAI\SentinelAI.AI.OpenAI.csproj" />
+    <ProjectReference Include="..\SentinelAI.AI.Anthropic\SentinelAI.AI.Anthropic.csproj" />
+    <ProjectReference Include="..\SentinelAI.AI.Ollama\SentinelAI.AI.Ollama.csproj" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />

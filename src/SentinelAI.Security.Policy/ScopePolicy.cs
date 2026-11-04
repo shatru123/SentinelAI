@@ -47,6 +47,8 @@ public sealed class TargetScopeValidator(IHostAddressResolver resolver) : ITarge
         if (scope.ApprovedOperationProfiles.Count == 0) errors.Add("At least one operation profile is required.");
         if (scope.RequestsPerMinute is < 1 or > 10_000) errors.Add("Requests per minute must be between 1 and 10000.");
         if (scope.MaxExecutionSeconds is < 1 or > 86_400) errors.Add("Maximum execution time is invalid.");
+        if (scope.WebHostingMode is not null && scope.MaxExecutionSeconds > 600)
+            errors.Add("Web assessment execution time cannot exceed 600 seconds.");
         if (scope.MaxTotalRequests is < 1 or > 100_000) errors.Add("Maximum total requests is invalid.");
         if (scope.MaxConcurrentRequests is < 1 or > 64) errors.Add("Maximum concurrent requests is invalid.");
         if (scope.MaxPages is < 1 or > 10_000) errors.Add("Maximum page count is invalid.");

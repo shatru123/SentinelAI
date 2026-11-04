@@ -283,7 +283,7 @@ public sealed class WebAssessmentService(IAppDbContext db, IScopeService scopes,
     }
 
     private static WebAssessmentResponse ToResponse(WebAssessment assessment, ScanResponse scan)
-        => new(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, scan.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey);
+        => new(assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl, assessment.Profile, assessment.HostingMode, assessment.Status, scan.Status, assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt, assessment.DiscoveredEndpointCount, assessment.ReportStorageKey, assessment.FailureReason);
 
 }
 

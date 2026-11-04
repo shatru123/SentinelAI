@@ -572,7 +572,16 @@ public sealed class WebAssessment
     public void Cancel() { if (Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Failed) return; Status = WebAssessmentStatus.Cancelled; FailureReason = "Cancellation requested."; CompletedAt = DateTimeOffset.UtcNow; }
     public void RevokeAuthorization() { if (Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Failed) return; Status = WebAssessmentStatus.Cancelled; FailureReason = "Worker authorization was revoked during execution."; CompletedAt = DateTimeOffset.UtcNow; ReportStorageKey = null; }
     public void ResetForRetry() { if (Status == WebAssessmentStatus.Completed) return; Status = WebAssessmentStatus.Queued; StartedAt = null; CompletedAt = null; FailureReason = "Recovered for retry."; ReportStorageKey = null; }
-    public void Expire() { if (Status is WebAssessmentStatus.Queued or WebAssessmentStatus.Running) { Status = WebAssessmentStatus.Expired; CompletedAt = DateTimeOffset.UtcNow; } }
+    public void Expire(string reason = "Execution duration limit was reached.")
+    {
+        if (Status is WebAssessmentStatus.Queued or WebAssessmentStatus.Running)
+        {
+            Status = WebAssessmentStatus.Expired;
+            FailureReason = string.IsNullOrWhiteSpace(reason) ? "Execution duration limit was reached." : reason.Trim();
+            ReportStorageKey = null;
+            CompletedAt = DateTimeOffset.UtcNow;
+        }
+    }
 }
 
 public sealed class WebAssessmentEndpoint

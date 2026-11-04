@@ -492,9 +492,23 @@ public sealed class ScanExecutionService(AppDbContext db, ITargetScopeValidator 
             }
             if (job.Status is ScanJobStatus.Queued or ScanJobStatus.Running)
             {
-                job.Expire(); execution.Cancel();
-                db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.expired", nameof(AgentJob), job.Id, "Execution duration limit was reached."));
-                await db.SaveChangesAsync(CancellationToken.None); return ScanExecutionOutcome.Expired;
+                var expiryReason = $"Execution duration limit ({scopeDefinition.MaxExecutionSeconds} seconds) was reached.";
+                job.Expire();
+                execution.Cancel();
+
+                var webAssessment = await db.WebAssessments.SingleOrDefaultAsync(
+                    x => x.AgentJobId == job.Id && x.TenantId == job.TenantId, CancellationToken.None);
+                if (webAssessment is not null)
+                {
+                    webAssessment.Expire(expiryReason);
+                    db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "web-assessment.expired",
+                        nameof(WebAssessment), webAssessment.Id, expiryReason));
+                }
+
+                db.AuditEvents.Add(new AuditEvent(job.TenantId, job.RequestedBy, "scan.expired",
+                    nameof(AgentJob), job.Id, expiryReason));
+                await db.SaveChangesAsync(CancellationToken.None);
+                return ScanExecutionOutcome.Expired;
             }
             return ScanExecutionOutcome.AlreadyRunning;
         }

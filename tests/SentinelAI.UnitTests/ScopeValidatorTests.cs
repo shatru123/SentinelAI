@@ -141,6 +141,20 @@ public sealed class ScopeValidatorTests
     }
 
     [Fact]
+    public void Web_assessment_execution_time_cannot_exceed_ten_minutes()
+    {
+        var scope = new TargetScope(tenantId, "bounded-web-timeout", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
+        scope.Configure([new TargetDefinition(TargetKind.Web, "https://private.example.test")], [],
+            ["web-assessment-passive"], 30, 601, "approved-test-scope", false);
+        scope.ConfigureWebHosting(WebHostingMode.Private, "worker-a", ["10.20.0.0/16"]);
+
+        var result = validator.ValidateDefinition(scope, tenantId, DateTimeOffset.UtcNow);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, error => error.Contains("600 seconds", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Private_execution_requires_the_intersection_of_scope_and_worker_ranges()
     {
         var scope = new TargetScope(tenantId, "private-web", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));

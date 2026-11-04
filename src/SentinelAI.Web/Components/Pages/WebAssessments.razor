@@ -212,8 +212,9 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
                     <input type="number" class="soc-input" min="1" max="500" @bind="formRequestLimit" />
                 </div>
                 <div class="soc-form-group">
-                    <label class="soc-label">Timeout Bounded Limit (Seconds)</label>
-                    <input type="number" class="soc-input" min="30" max="600" value="300" disabled />
+                    <label class="soc-label">Execution Timeout (Seconds)</label>
+                    <input type="number" class="soc-input" min="30" max="600" step="30" @bind="formTimeoutSeconds" />
+                    <p class="text-muted" style="font-size: 0.75rem; margin: 0;">Choose 30–600 seconds. Default: 600 seconds (10 minutes).</p>
                 </div>
             </div>
 
@@ -506,6 +507,12 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
             <div class="text-muted" style="font-size: 0.8125rem;">
                 Hosting: @selectedAssessment.HostingMode · Profile: @selectedAssessment.Profile · Created: @DisplayTime(selectedAssessment.CreatedAt)
             </div>
+            @if (!string.IsNullOrWhiteSpace(selectedAssessment.FailureReason))
+            {
+                <p class="text-muted" style="font-size: 0.8125rem; margin-top: var(--space-2);">
+                    <strong>Execution reason:</strong> @selectedAssessment.FailureReason
+                </p>
+            }
             @if (selectedAssessment.Status == WebAssessmentStatus.Completed)
             {
                 <div style="margin-top: var(--space-3);">
@@ -682,6 +689,7 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
     private string formEvidence = "security-operations-charter";
     private int formExpiryHours = 24;
     private int formRequestLimit = 30;
+    private int formTimeoutSeconds = 600;
     private string selectedAuthId = string.Empty;
 
     // Public authorization request
@@ -849,6 +857,11 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
     private async Task SubmitAssessmentAsync()
     {
         if (!confirmedAssessmentPolicy) return;
+        if (formTimeoutSeconds is < 30 or > 600)
+        {
+            wizardError = "Execution timeout must be between 30 and 600 seconds.";
+            return;
+        }
         submitting = true;
         wizardError = null;
 
@@ -877,7 +890,7 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
                 formProfile,
                 [],
                 formRequestLimit,
-                300,
+                formTimeoutSeconds,
                 formEvidence.Trim(),
                 DateTimeOffset.UtcNow.AddHours(Math.Clamp(formExpiryHours, 1, 720)),
                 false,

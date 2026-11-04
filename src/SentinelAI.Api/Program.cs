@@ -123,7 +123,7 @@ api.MapGet("/dashboard/summary", async (HttpContext context, IAppDbContext db, C
                 assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl,
                 assessment.Profile, assessment.HostingMode, assessment.Status, job.Status,
                 assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt,
-                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey))
+                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey, assessment.FailureReason))
         .ToListAsync(cancellationToken);
 
     var recentScans = await db.AgentJobs.AsNoTracking()
@@ -227,7 +227,7 @@ api.MapGet("/web-assessments", async (HttpContext context, IAppDbContext db, int
                 assessment.Id, assessment.AgentJobId, assessment.ScopeId, assessment.TargetUrl,
                 assessment.Profile, assessment.HostingMode, assessment.Status, job.Status,
                 assessment.CreatedAt, assessment.StartedAt, assessment.CompletedAt,
-                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey))
+                assessment.DiscoveredEndpointCount, assessment.ReportStorageKey, assessment.FailureReason))
         .ToListAsync(cancellationToken);
 
     return Results.Ok(new PagedResponse<WebAssessmentResponse>(items, page, pageSize, total));

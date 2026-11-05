@@ -5,3 +5,15 @@
 tests
 README.md
 docs
+
+# Local environment and runtime secrets must never enter Docker build contexts.
+.env
+.env.*
+!.env.example
+**/secrets
+**/secrets/**
+**/*.pfx
+**/*.p12
+**/*.key
+**/*private-key*
+**/*privatekey*

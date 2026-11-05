@@ -101,6 +101,71 @@ jobs:
           kubeconform -v
       - name: Render and schema-validate Kubernetes overlays
         run: bash .github/scripts/validate-kubernetes.sh
+      - name: Install Trivy vulnerability scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="0.76.2"
+          EXPECTED_SHA256="bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
+          ARCHIVE="$RUNNER_TEMP/trivy-linux-amd64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/trivy_${VERSION}_Linux-64bit.tar.gz" \
+            --output "$ARCHIVE"
+          echo "${EXPECTED_SHA256}  ${ARCHIVE}" | sha256sum --check -
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP" trivy
+          sudo install -m 0755 "$RUNNER_TEMP/trivy" /usr/local/bin/trivy
+          trivy --version
+      - name: Install Syft SBOM generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="1.56.0"
+          EXPECTED_SHA256="1c2493cfcf52d3367d6cb25780d9190c111c2219c34c820574c43e8bae15c528"
+          ARCHIVE="$RUNNER_TEMP/syft-linux-amd64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/anchore/syft/releases/download/v${VERSION}/syft_${VERSION}_linux_amd64.tar.gz" \
+            --output "$ARCHIVE"
+          echo "${EXPECTED_SHA256}  ${ARCHIVE}" | sha256sum --check -
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP" syft
+          sudo install -m 0755 "$RUNNER_TEMP/syft" /usr/local/bin/syft
+          syft version
+      - name: Build API, Web and Worker container images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --file deploy/docker/Dockerfile.api --tag sentinelai-api:ci .
+          docker build --pull --file deploy/docker/Dockerfile.web --tag sentinelai-web:ci .
+          docker build --pull --file deploy/docker/Dockerfile.worker --tag sentinelai-worker:ci .
+      - name: Generate image SBOMs and run vulnerability scans
+        shell: bash
+        run: |
+          set -u
+          mkdir -p artifacts/security
+          scan_status=0
+          for component in api web worker; do
+            image="sentinelai-${component}:ci"
+            syft "$image" --output "cyclonedx-json=artifacts/security/${component}.cdx.json"
+            if ! trivy image --scanners vuln,secret --ignore-unfixed --severity CRITICAL,HIGH \
+              --format sarif --output "artifacts/security/${component}.sarif" --exit-code 1 "$image"; then
+              scan_status=1
+            fi
+          done
+          # Scan checked-in source, dependency manifests, and deployment definitions.
+          if ! trivy fs --scanners vuln,secret --ignore-unfixed --severity CRITICAL,HIGH \
+            --format sarif --output artifacts/security/source.sarif --exit-code 1 .; then
+            scan_status=1
+          fi
+          # Configuration findings are recorded for review. Cluster-specific ingress,
+          # secret-store and network policy rules require the selected provider/CNI gate.
+          trivy config --severity CRITICAL,HIGH --format sarif \
+            --output artifacts/security/configuration.sarif --exit-code 0 deploy
+          exit "$scan_status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: artifacts/security/**
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:

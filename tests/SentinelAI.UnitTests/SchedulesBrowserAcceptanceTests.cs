@@ -166,6 +166,7 @@ public sealed class SchedulesBrowserAcceptanceTests
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Create schedule" }).ClickAsync();
             await page.GetByText("Schedule created.", new PageGetByTextOptions { Exact = false })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 15_000 });
+            await BrowserScreenshotArtifacts.CaptureAsync(page, "01-schedules-created.png");
 
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "History" }).ClickAsync();
             await page.GetByText("Execution history", new PageGetByTextOptions { Exact = true })
@@ -175,6 +176,7 @@ public sealed class SchedulesBrowserAcceptanceTests
 
             await page.GetByText(initialDrift.Summary, new PageGetByTextOptions { Exact = true })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
+            await BrowserScreenshotArtifacts.CaptureAsync(page, "02-schedules-history-drift.png");
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Acknowledge" }).ClickAsync();
             await page.GetByText("Acknowledged ·", new PageGetByTextOptions { Exact = false })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
@@ -188,6 +190,7 @@ public sealed class SchedulesBrowserAcceptanceTests
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Disable" }).ClickAsync();
             await page.GetByText("Disabled", new PageGetByTextOptions { Exact = true })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
+            await BrowserScreenshotArtifacts.CaptureAsync(page, "03-schedules-disabled.png");
 
             Assert.Contains(schedules.Values, x => x.Status == AssessmentScheduleStatus.Disabled);
             Assert.True(notifications[notificationId].IsRead);

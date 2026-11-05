@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinelai-runtime
+  namespace: sentinelai
+data:
+  ASPNETCORE_ENVIRONMENT: Development
+  DOTNET_ENVIRONMENT: Development
+  Database__Provider: Postgres
+  Database__ApplyMigrations: "true"
+  Messaging__Mode: RabbitMq
+  Messaging__RunOutboxDispatcher: "true"
+  Authentication__Authority: ""
+  Authentication__Audience: sentinelai-api
+  Authentication__WorkerTenantId: 00000000-0000-0000-0000-000000000001
+  Authentication__WorkerTenants__local-worker: 00000000-0000-0000-0000-000000000001
+  Authentication__UseDevelopmentHeaders: "true"
+  Api__UseDevelopmentHeaders: "true"
+  Security__RequireHttps: "false"
+  AllowedHosts: "*"
+  Health__RequireHealthyWorker: "false"
+  Artifacts__Provider: FileSystem
+  Artifacts__Root: /tmp/sentinelai-artifacts
+  Worker__ControlPlaneUrl: http://sentinelai-api:8080
+  Worker__Identity: local-worker
+  Worker__TenantId: 00000000-0000-0000-0000-000000000001
+  Worker__Concurrency: "2"
+  RabbitMQ__Host: sentinelai-rabbitmq
+  RabbitMQ__Port: "5672"
+  Web__EnableHttpsRedirection: "false"
+  Dashboard__TenantId: 00000000-0000-0000-0000-000000000001
+  Dashboard__UserId: 00000000-0000-0000-0000-000000000002
+  Dashboard__AnalystUserId: 00000000-0000-0000-0000-000000000004
+  Dashboard__ViewerUserId: 00000000-0000-0000-0000-000000000005
+  Dashboard__ApproverUserId: 00000000-0000-0000-0000-000000000003
+  Dashboard__UserName: local-admin
+  Dashboard__AnalystUserName: local-analyst
+  Dashboard__ViewerUserName: local-viewer
+  Dashboard__ApproverUserName: local-approver
+  Dashboard__Role: Admin
+  AI__DefaultProvider: ollama
+  AI__Ollama__Endpoint: http://ollama:11434
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://sentinelai-otel-collector:4317

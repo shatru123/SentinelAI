@@ -213,6 +213,126 @@ public sealed class Phase44PostgresAcceptanceTests
         }
     }
 
+    [Fact]
+    public async Task Concurrent_processors_reconcile_a_completed_scheduled_assessment_without_duplicate_drift_or_notifications()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION");
+        Assert.False(string.IsNullOrWhiteSpace(connectionString),
+            "CI must provide SENTINELAI_POSTGRES_CONNECTION so reconciliation concurrency is exercised against PostgreSQL.");
+
+        var schema = $"phase44_reconcile_race_{Guid.NewGuid():N}";
+        await CreateSchemaAsync(connectionString!, schema);
+        try
+        {
+            var schemaConnectionString = WithSearchPath(connectionString!, schema);
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(schemaConnectionString)
+                .EnableDetailedErrors()
+                .Options;
+            await using (var migrate = new AppDbContext(options))
+                await migrate.Database.MigrateAsync();
+
+            var now = DateTimeOffset.UtcNow;
+            var tenant = new Tenant("Phase 4 reconciliation concurrency tenant");
+            var creatorId = Guid.NewGuid();
+            var creator = new User(creatorId, tenant.Id, "phase4-reconcile-creator",
+                "Phase 4 reconciliation creator", UserRole.SecurityAnalyst);
+            var scope = new TargetScope(tenant.Id, "phase4-reconcile-scope", creatorId, now.AddDays(6));
+            scope.Configure([new TargetDefinition(TargetKind.Web, "https://10.4.5.6/")], [],
+                [WebAssessmentOperationProfiles.Passive], 30, 300, "approved reconciliation test authorization", false);
+            scope.ConfigureWebHosting(WebHostingMode.Private, "phase4-reconcile-worker", ["10.0.0.0/8"]);
+            var worker = new WorkerRegistration(tenant.Id, "phase4-reconcile-worker", "test",
+                ["web-assessment", "private-web-assessment"]);
+            worker.ProvisionByAdministrator("test",
+                ["web-assessment", "private-web-assessment"], ["10.0.0.0/8"]);
+            worker.Heartbeat(0, 2);
+
+            var previousJob = new AgentJob(tenant.Id, scope.Id, creatorId, WebAssessmentOperationProfiles.Passive);
+            var previousAssessment = new WebAssessment(tenant.Id, previousJob.Id, scope.Id,
+                "https://10.4.5.6/", WebAssessmentOperationProfiles.Passive, WebHostingMode.Private);
+            previousAssessment.Complete("previous-report", 0);
+            var previousFinding = new Finding(tenant.Id, null, "Missing security headers", FindingSeverity.High);
+            previousFinding.ConfigureAssessmentDetails(previousAssessment.Id, "security-headers", "High",
+                "https://10.4.5.6/headers", "GET", null, "Previous finding", "impact", null, "fix", null,
+                WebCheckStatus.FindingDetected);
+            var previousCheck = new WebAssessmentCheck(tenant.Id, previousAssessment.Id,
+                "security-headers", "Security headers", "security-headers", WebCheckStatus.FindingDetected,
+                "https://10.4.5.6/headers");
+
+            await using (var seed = new AppDbContext(options))
+            {
+                seed.AddRange(tenant, creator, scope, worker, previousJob, previousAssessment,
+                    previousFinding, previousCheck);
+                await seed.SaveChangesAsync();
+            }
+
+            string persistedFingerprint;
+            await using (var scopeRead = new AppDbContext(options))
+            {
+                var persistedScope = await scopeRead.TargetScopes.AsNoTracking()
+                    .SingleAsync(x => x.Id == scope.Id);
+                persistedFingerprint = persistedScope.GetAuthorizationFingerprint();
+            }
+
+            var schedule = new AssessmentSchedule(tenant.Id, scope.Id, creatorId,
+                WebAssessmentOperationProfiles.Passive, persistedFingerprint,
+                24, now.AddDays(5), now.AddHours(-25));
+            await using (var seedSchedule = new AppDbContext(options))
+            {
+                seedSchedule.AssessmentSchedules.Add(schedule);
+                await seedSchedule.SaveChangesAsync();
+            }
+
+            var processors = Enumerable.Range(0, 8).Select(_ => CreateProcessor(options)).ToArray();
+            await processors[0].RunOnceAsync();
+
+            await using (var completeCurrent = new AppDbContext(options))
+            {
+                var run = await completeCurrent.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == schedule.Id);
+                Assert.NotNull(run.AssessmentId);
+                var currentAssessment = await completeCurrent.WebAssessments.SingleAsync(x => x.Id == run.AssessmentId);
+                currentAssessment.Complete("current-report", 0);
+
+                var newFinding = new Finding(tenant.Id, null, "New reflected input", FindingSeverity.High);
+                newFinding.ConfigureAssessmentDetails(currentAssessment.Id, "xss", "High",
+                    "https://10.4.5.6/search", "GET", "q", "New finding", "impact", null, "fix", null,
+                    WebCheckStatus.FindingDetected);
+                var successfulRecheck = new WebAssessmentCheck(tenant.Id, currentAssessment.Id,
+                    "security-headers", "Security headers", "security-headers", WebCheckStatus.Passed,
+                    "https://10.4.5.6/headers");
+                completeCurrent.AddRange(newFinding, successfulRecheck);
+                await completeCurrent.SaveChangesAsync();
+            }
+
+            // Competing API-hosted schedulers all observe the same completed queued run.
+            // The transaction, schedule row-version and unique event/notification indexes must
+            // allow exactly one reconciliation to persist the comparison.
+            await Task.WhenAll(processors.Select(processor => processor.RunOnceAsync(batchSize: 20)));
+
+            await using var verify = new AppDbContext(options);
+            var completedRun = await verify.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == schedule.Id);
+            Assert.Equal(AssessmentScheduleRunStatus.Completed, completedRun.Status);
+            Assert.NotNull(completedRun.ComparedAt);
+
+            var driftEvents = await verify.AssessmentDriftEvents
+                .Where(x => x.TenantId == tenant.Id && x.ScheduleRunId == completedRun.Id)
+                .ToListAsync();
+            Assert.Equal(2, driftEvents.Count);
+            Assert.Contains(driftEvents, x => x.EventType == "NewFinding");
+            Assert.Contains(driftEvents, x => x.EventType == "NoLongerObserved");
+
+            var notifications = await verify.Notifications
+                .Where(x => x.TenantId == tenant.Id && x.Channel == "in-app")
+                .ToListAsync();
+            Assert.Equal(2, notifications.Count);
+            Assert.Equal(2, notifications.Select(x => x.ResourceId).Distinct().Count());
+        }
+        finally
+        {
+            await DropSchemaAsync(connectionString!, schema);
+        }
+    }
+
     private static async Task CreateSchemaAsync(string connectionString, string schema)
     {
         await using var connection = new NpgsqlConnection(connectionString);

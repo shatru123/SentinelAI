@@ -38,6 +38,9 @@ data:
   Artifacts__S3__KmsKeyId: alias/sentinelai-evidence-replace-me
   Artifacts__S3__ForcePathStyle: "false"
   Secrets__Provider: ExternalSecrets
+  HTTP_PROXY: http://sentinelai-egress-gateway.sentinelai-operations.svc.cluster.local:443
+  HTTPS_PROXY: http://sentinelai-egress-gateway.sentinelai-operations.svc.cluster.local:443
+  NO_PROXY: localhost,127.0.0.1,::1,.svc,.cluster.local,sentinelai-api,sentinelai-api-worker,sentinelai-postgres,sentinelai-rabbitmq,sentinelai-otel-collector
   OTEL_EXPORTER_OTLP_ENDPOINT: http://sentinelai-otel-collector:4317
   Api__BaseUrl: https://api.sentinelai.example.invalid
   Api__HealthBaseUrl: http://sentinelai-api:8080

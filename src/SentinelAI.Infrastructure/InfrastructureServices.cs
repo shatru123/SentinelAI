@@ -26,7 +26,7 @@ public static class InfrastructureServices
         Action<DbContextOptionsBuilder> configureDb = options =>
         {
             var provider = configuration["Database:Provider"] ?? (environment.IsDevelopment() ? "InMemory" : "Postgres");
-            if (provider.Equals("InMemory", StringComparison.OrdinalIgnoreCase)) options.UseInMemoryDatabase("sentinelai");
+            if (provider.Equals("InMemory", StringComparison.OrdinalIgnoreCase)) options.UseInMemoryDatabase(configuration["Database:InMemoryName"] ?? "sentinelai");
             else options.UseNpgsql(configuration.GetConnectionString("SentinelAI") ?? "Host=localhost;Database=sentinelai;Username=sentinelai;Password=sentinelai");
         };
         services.AddDbContext<AppDbContext>(configureDb, ServiceLifetime.Scoped, ServiceLifetime.Singleton);

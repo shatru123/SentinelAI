@@ -97,19 +97,22 @@ The PR #8 implementation adds the following runtime pieces:
 - Events and in-app notifications are tenant scoped and linked by a database foreign key. Notification text contains only a safe event type and workspace pointer; no evidence, credential, query string, fragment or screenshot payload is sent. Acknowledgement marks both the drift event and its notification as read.
 - The Blazor Schedules workspace exposes create, run history, pause/resume/disable, drift review and acknowledgement. API Reader/Operator policies remain authoritative.
 
-### Verification status (2026-11-04)
+### Verification status (2026-11-05)
 
-The consolidated GitHub Actions workflow passed on the PR #8 head (`5fc5723006b2f1f7c7b0244b8eb476dd90a69cb3`): Release build (0 warnings, 0 errors), 296 tests (251 unit, 33 integration, 10 security, 2 architecture), Playwright Chromium installation and executable verification, and Docker Compose configuration validation. The workflow also provisioned PostgreSQL and RabbitMQ for the test run. The successful aggregate run is not, by itself, proof of every Phase 4.4 exit criterion.
+The Phase 4.4 implementation and acceptance closure are in [PR #9](https://github.com/shatru123/SentinelAI/pull/9). The latest full GitHub Actions run, [run #583](https://github.com/shatru123/SentinelAI/actions/runs/41973265915), passed on commit `033cbb6b79a28630ac9ce658cfcf5807ca13d708`.
 
-The following feature-specific acceptance coverage must be added and pass before Phase 4.4 is declared fully closed:
+- Release build, Chromium provisioning/executable verification, all test projects and Docker Compose validation passed.
+- Automated tests: **343 passed, 0 failed, 0 skipped** — 289 unit, 42 integration, 10 security and 2 architecture tests.
+- Real schedule API lifecycle coverage exercises creation/list/history, Viewer restrictions, pause/resume/disable, acknowledgement, notification read state, tenant isolation, and resume blocking after public authorization revocation.
+- **Full in-process scheduled execution test:** creates approved authorization/scope/schedule through the API, makes the due occurrence eligible, invokes the real schedule processor and in-process worker, verifies live authorization and lease admission, observes a completed web assessment/job, and reconciles the schedule run to Completed.
+- Scheduled processor coverage verifies one-time dispatch and retries, first-run/no-baseline behavior, persistence of NewFinding/SeverityIncreased/NoLongerObserved/CoverageRegression events and in-app notifications, and failed/cancelled/expired outcomes without false drift.
+- PostgreSQL acceptance covers migration upgrade/rollback/reapply, authorization fingerprint round-trip, eight-processor dispatch concurrency, and eight-processor completed-run reconciliation concurrency with no duplicate drift events or notifications.
+- Authorization tests cover scope mutation/expiry, public authorization revocation/expiry, private worker missing/disabled/unhealthy/stale/capability/CIDR changes, creator deletion/role downgrade, supported/unsupported profiles and scope-profile allow-listing.
+- Real finding-analysis API coverage uses a deterministic provider and validates Operator submission, Reader history, cross-tenant denial, missing-evidence rejection, provenance persistence and unchanged finding severity.
+- Real advisory-report API coverage validates default export without AI generation, explicit opt-in generation, staged/published artifact retrieval and cleanup, and cross-tenant denial. Generator unit tests separately validate HTML encoding and advisory provenance.
+- Retry/idempotency, tenant isolation, alert privacy and acknowledgement behavior passed.
 
-- Two independent scheduler processors racing on the same due occurrence, proving one persisted run/job/outbox entry; retry after a failed dispatch or reconciliation must not lose or duplicate work.
-- Due-time authorization revalidation tests for scope mutation, expiry, public authorization revocation, private worker missing/disabled/unhealthy/capability or CIDR changes, and creator deletion or role downgrade. Each case must fail closed and block the schedule.
-- Tenant-isolation and privacy tests for drift notifications and event summaries, including absence of raw evidence, secrets, query strings, URL fragments and screenshot content; acknowledgement must update the linked notification read state.
-- Browser-driven workflow coverage for schedule creation, pause/resume/disable, blocked authorization, run history, drift display and acknowledgement.
-- PostgreSQL migration-upgrade coverage against the previous released schema, including foreign keys, unique constraints and rollback/recovery behavior.
-
-Until these cases are covered, keep Phase 4.4 implementation status distinct from Phase 4.4 acceptance closure.
+The Phase 4.4 browser page tests use deterministic fixture APIs; real API workflows are tested separately through TestServer, and processor/migration/concurrency paths are tested against PostgreSQL. The additional in-process integration test exercises the API-to-scheduler-to-worker flow using the configured in-process worker and in-memory messaging/database test mode. This is end-to-end application-pipeline coverage, not a claim that browser tests run the complete separately deployed RabbitMQ/PostgreSQL topology.
 
 ### Implementation choices and limitations
 

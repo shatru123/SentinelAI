@@ -13,6 +13,7 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <PackageReference Include="Microsoft.Playwright" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,6 +27,10 @@
     <ProjectReference Include="..\..\src\SentinelAI.Security.Policy\SentinelAI.Security.Policy.csproj" />
     <ProjectReference Include="..\..\src\SentinelAI.Infrastructure\SentinelAI.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\SentinelAI.Web\SentinelAI.Web.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>

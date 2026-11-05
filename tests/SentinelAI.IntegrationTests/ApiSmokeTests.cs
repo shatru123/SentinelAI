@@ -825,6 +825,149 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task Scheduled_reassessment_executes_through_the_in_process_worker_pipeline()
+    {
+        var tenant = Guid.NewGuid();
+        var requester = Guid.NewGuid();
+        var approver = Guid.NewGuid();
+        var probe = new InProcessWorkerProbe();
+
+        using var localFactory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development")
+                .UseSetting("Database:Provider", "InMemory")
+                .UseSetting("Messaging:Mode", "InMemory")
+                .UseSetting("Worker:RunInProcess", "true")
+                .UseSetting("Scheduling:Enabled", "false");
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IHostAddressResolver>();
+                services.AddSingleton<IHostAddressResolver, FixedPublicAddressResolver>();
+                services.RemoveAll<IWebAssessmentEngine>();
+                services.AddSingleton(probe);
+                services.AddScoped<IWebAssessmentEngine, InProcessWorkerProbeEngine>();
+            });
+        });
+
+        using var requesterClient = CreateAuthenticatedClient(localFactory, tenant, requester, UserRole.SecurityAnalyst);
+        using var approverClient = CreateAuthenticatedClient(localFactory, tenant, approver, UserRole.Admin);
+
+        var authorizationResponse = await requesterClient.PostAsJsonAsync(
+            "/api/v1/public-target-authorizations",
+            new PublicTargetAuthorizationRequest("https://scheduled-execution.example", "Authorized scheduled execution integration test"));
+        Assert.Equal(HttpStatusCode.Created, authorizationResponse.StatusCode);
+        var authorization = await authorizationResponse.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(authorization);
+
+        var approvalResponse = await approverClient.PostAsJsonAsync(
+            $"/api/v1/public-target-authorizations/{authorization!.Id}/approve",
+            new PublicTargetAuthorizationApprovalRequest(
+                "scheduled-execution-evidence",
+                "separate-admin-approval",
+                DateTimeOffset.UtcNow.AddDays(6)));
+        Assert.Equal(HttpStatusCode.OK, approvalResponse.StatusCode);
+
+        var scopeResponse = await requesterClient.PostAsJsonAsync("/api/v1/scopes",
+            new CreateScopeRequest(
+                "scheduled-execution-scope",
+                [new TargetDefinition(TargetKind.Web, "https://scheduled-execution.example")],
+                [],
+                [WebAssessmentOperationProfiles.Passive],
+                30,
+                300,
+                "scheduled-execution-evidence",
+                DateTimeOffset.UtcNow.AddDays(5),
+                false,
+                null,
+                [authorization.Id]));
+        Assert.Equal(HttpStatusCode.Created, scopeResponse.StatusCode);
+        var scope = await scopeResponse.Content.ReadFromJsonAsync<ScopeResponse>();
+        Assert.NotNull(scope);
+
+        var scheduleResponse = await requesterClient.PostAsJsonAsync("/api/v1/assessment-schedules",
+            new CreateAssessmentScheduleRequest(
+                scope!.Id,
+                WebAssessmentOperationProfiles.Passive,
+                24,
+                scope.ExpiresAt.AddTicks(-1)));
+        Assert.Equal(HttpStatusCode.Created, scheduleResponse.StatusCode);
+        var schedule = await scheduleResponse.Content.ReadFromJsonAsync<AssessmentScheduleResponse>();
+        Assert.NotNull(schedule);
+
+        // Make the persisted occurrence due without changing the authorization or schedule boundary.
+        using (var seedScope = localFactory.Services.CreateScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var persisted = await db.AssessmentSchedules.SingleAsync(x => x.Id == schedule!.Id);
+            db.Entry(persisted).Property(x => x.NextRunAt).CurrentValue = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync();
+        }
+
+        // Invoke the real processor registered by the API. In-memory mode uses the immediate
+        // scan-job queue, while the normal in-process worker still performs lease and authorization checks.
+        await using (var schedulerScope = localFactory.Services.CreateAsyncScope())
+        {
+            var processor = schedulerScope.ServiceProvider.GetRequiredService<AssessmentScheduleProcessor>();
+            await processor.RunOnceAsync();
+        }
+
+        var executionSignal = await Task.WhenAny(probe.Executed.Task, Task.Delay(TimeSpan.FromSeconds(10)));
+        Assert.Same(probe.Executed.Task, executionSignal);
+        var execution = await probe.Executed.Task;
+        Assert.Equal("in-process", execution.WorkerIdentity);
+        Assert.Contains(WebAssessmentCapabilities.WebAssessment, execution.WorkerCapabilities);
+        Assert.True(execution.LeaseWasValid);
+        Assert.True(execution.LiveAuthorizationWasValid);
+
+        WebAssessmentResponse? final = null;
+        Guid assessmentId = Guid.Empty;
+        using (var inspectScope = localFactory.Services.CreateScope())
+        {
+            var db = inspectScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var queuedRun = await db.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == schedule!.Id);
+            Assert.Equal(AssessmentScheduleRunStatus.Queued, queuedRun.Status);
+            Assert.NotNull(queuedRun.AssessmentId);
+            assessmentId = queuedRun.AssessmentId!.Value;
+        }
+
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            var response = await requesterClient.GetAsync($"/api/v1/web-assessments/{assessmentId}");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            final = await response.Content.ReadFromJsonAsync<WebAssessmentResponse>();
+            if (final?.Status is WebAssessmentStatus.Completed or WebAssessmentStatus.Failed) break;
+            await Task.Delay(100);
+        }
+
+        Assert.NotNull(final);
+        Assert.Equal(WebAssessmentStatus.Completed, final.Status);
+        Assert.Equal(ScanJobStatus.Completed, final.JobStatus);
+
+        await using (var reconcileScope = localFactory.Services.CreateAsyncScope())
+        {
+            var processor = reconcileScope.ServiceProvider.GetRequiredService<AssessmentScheduleProcessor>();
+            await processor.RunOnceAsync();
+        }
+
+        using (var verifyScope = localFactory.Services.CreateScope())
+        {
+            var db = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var run = await db.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == schedule!.Id);
+            var persistedAssessment = await db.WebAssessments.SingleAsync(x => x.Id == assessmentId);
+            var persistedJob = await db.AgentJobs.SingleAsync(x => x.Id == run.JobId);
+            var persistedSchedule = await db.AssessmentSchedules.SingleAsync(x => x.Id == schedule.Id);
+
+            Assert.Equal(AssessmentScheduleRunStatus.Completed, run.Status);
+            Assert.NotNull(run.CompletedAt);
+            Assert.Equal(WebAssessmentStatus.Completed, persistedAssessment.Status);
+            Assert.Equal(ScanJobStatus.Completed, persistedJob.Status);
+            Assert.Equal("Completed", persistedSchedule.LastResult);
+            Assert.Empty(await db.AssessmentDriftEvents.Where(x => x.ScheduleRunId == run.Id).ToListAsync());
+            Assert.Single(await db.OutboxMessages.Where(x => x.TenantId == tenant).ToListAsync());
+        }
+    }
+
+    [Fact]
     public async Task In_process_worker_completes_an_authorized_public_web_assessment()
     {
         var tenant = Guid.NewGuid();

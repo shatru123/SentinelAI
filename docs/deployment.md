@@ -21,3 +21,7 @@ CI renders the local, staging and production Kustomize overlays and validates bu
 **The staging and production overlays are templates, not deployable environments yet.** Replace the example hostnames, OIDC issuer/client registration, trusted proxy IPs, bucket/KMS identifiers, tenant/worker IDs and all-zero container image digests. Provision the selected cloud resources, ClusterSecretStore, workload identity, CA and secret values out of band. No provider/account/region has been selected by this repository.
 
 Before any shared or Production exposure, complete a disposable-cluster install/upgrade test, prove external secret injection and rotation, verify mTLS enrollment/rotation/revocation end to end, run load/chaos/security tests, conduct an independent penetration test, and demonstrate the approved backup/restore RPO/RTO. Do not expose the worker directly to the public network.
+
+## Provider-specific egress prerequisites
+
+The Kubernetes base policy allows database and broker traffic to operator-managed pods labelled in the `sentinelai-data` namespace. Staging/production ConfigMap broker hostnames are placeholders. When using cloud-managed PostgreSQL or RabbitMQ outside the cluster, add narrow NetworkPolicy rules for the approved endpoint CIDRs or the selected CNI's FQDN policy before deployment. The default-deny policy must remain in place. The operator-managed egress gateway also needs an explicit destination allow-list for HTTPS dependencies such as OIDC and object storage.

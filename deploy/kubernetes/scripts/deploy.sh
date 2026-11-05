@@ -53,6 +53,10 @@ if [[ -z "$api_image" || "$api_image" != *@sha256:* ]]; then
 fi
 
 kubectl get crd externalsecrets.external-secrets.io >/dev/null
+if ! kubectl get storageclass sentinelai-shared-rwx >/dev/null 2>&1; then
+  echo "Refusing deployment: the operator must provision the sentinelai-shared-rwx ReadWriteMany StorageClass first." >&2
+  exit 1
+fi
 
 echo "Applying namespace, service accounts and base runtime configuration."
 kubectl apply -f "$K8S_DIR/base/namespace.yaml"

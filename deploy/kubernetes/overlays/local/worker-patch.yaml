@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sentinelai-worker
+  namespace: sentinelai
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: worker
+          env:
+            - name: Worker__ControlPlaneUrl
+              value: http://sentinelai-api:8080
+            - name: Worker__ControlPlaneToken
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-local-secrets
+                  key: WORKER_CONTROL_PLANE_TOKEN
+            - name: Worker__Identity
+              value: local-worker
+            - name: Worker__TenantId
+              value: 00000000-0000-0000-0000-000000000001
+            - name: ConnectionStrings__SentinelAI
+              value: Host=sentinelai-postgres;Database=sentinelai;Username=$(POSTGRES_USER);Password=$(POSTGRES_PASSWORD)
+            - name: RabbitMQ__Host
+              value: sentinelai-rabbitmq
+            - name: RabbitMQ__Username
+              value: $(RABBITMQ_USER)
+            - name: RabbitMQ__Password
+              value: $(RABBITMQ_PASSWORD)
+            - name: Worker__ClientCertificatePaths__0
+              $patch: delete
+            - name: Worker__ClientCertificatePaths__1
+              $patch: delete
+            - name: Worker__ClientCertificatePassword
+              $patch: delete
+          envFrom:
+            - configMapRef:
+                name: sentinelai-runtime
+            - secretRef:
+                name: sentinelai-local-secrets
+          volumeMounts:
+            - name: worker-client
+              $patch: delete
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "test -d /proc/1"]
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test -d /proc/1"]
+            periodSeconds: 15
+          securityContext:
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: worker-client
+          $patch: delete

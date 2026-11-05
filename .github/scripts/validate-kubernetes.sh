@@ -35,10 +35,22 @@ for overlay in local staging production; do
       exit 1
     fi
     for image in "${images[@]}"; do
-      if [[ ! "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
-        echo "$overlay image is not pinned to a SHA-256 digest: $image" >&2
-        exit 1
-      fi
+      case "$image" in
+        ghcr.io/shatru123/sentinelai-api*|ghcr.io/shatru123/sentinelai-web*|ghcr.io/shatru123/sentinelai-worker*)
+          if [[ ! "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo "$overlay first-party image must be pinned to a SHA-256 digest: $image" >&2
+            exit 1
+          fi
+          ;;
+        *)
+          # Third-party runtime images must use an explicit release tag or digest.
+          # Reject floating aliases such as latest and untagged repository references.
+          if [[ "$image" == *:latest || "$image" != *@sha256:* && "$image" != *:* ]]; then
+            echo "$overlay third-party image must use an explicit version tag or digest: $image" >&2
+            exit 1
+          fi
+          ;;
+      esac
     done
     if grep -Eq '@sha256:0{64}$' "$rendered"; then
       echo "NOTICE: $overlay still contains placeholder image digests; it is not deployable until immutable release digests are promoted."

@@ -1,10 +1,14 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Net;
 using System.Threading.RateLimiting;
 using System.Security.Claims;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication.Certificate;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
@@ -23,6 +27,22 @@ using SentinelAI.Security.Policy;
 
 var builder = WebApplication.CreateBuilder(args);
 ProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment);
+if (builder.Environment.IsProduction())
+{
+    var serverCertificate = new X509Certificate2(
+        builder.Configuration["WorkerAuthentication:ServerCertificatePath"]!,
+        builder.Configuration["WorkerAuthentication:ServerCertificatePassword"],
+        X509KeyStorageFlags.EphemeralKeySet);
+    builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(8443, listen =>
+        listen.UseHttps(https =>
+        {
+            https.ServerCertificate = serverCertificate;
+            https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+            // TLS only requires the peer to present a certificate here. The application
+            // certificate handler validates the custom CA chain, EKU, expiry and DB revocation.
+            https.ClientCertificateValidation = (certificate, _, _) => certificate is not null;
+        })));
+}
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
@@ -66,6 +86,7 @@ builder.Services.AddScoped<IFindingAIAnalysisService, FindingAIAnalysisService>(
 builder.Services.AddScoped<IAssessmentScheduleService, AssessmentScheduleService>();
 builder.Services.AddScoped<AssessmentScheduleProcessor>();
 builder.Services.AddHostedService<AssessmentScheduleBackgroundService>();
+builder.Services.AddScoped<WorkerCertificateAuthenticator>();
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddSource("SentinelAI.RabbitMq", "SentinelAI.Worker").AddOtlpExporter())
     .WithMetrics(metrics => metrics.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddMeter("SentinelAI.Jobs").AddOtlpExporter());
@@ -78,17 +99,57 @@ if (builder.Environment.IsDevelopment())
         .AddScheme<AuthenticationSchemeOptions, SentinelAI.Api.DevelopmentAuthenticationHandler>("DevelopmentHeaders", _ => { })
         .AddScheme<AuthenticationSchemeOptions, SentinelAI.Api.WorkerAuthenticationHandler>("WorkerToken", _ => { });
 else
-    builder.Services.AddAuthentication(options => { options.DefaultAuthenticateScheme = "SmartBearer"; options.DefaultChallengeScheme = "SmartBearer"; })
-        .AddPolicyScheme("SmartBearer", null, options => options.ForwardDefaultSelector = context =>
-            WorkerAuthenticationHandler.IsConfiguredWorkerToken(context.Request.Headers.Authorization.ToString(), builder.Configuration)
-                ? "WorkerToken" : JwtBearerDefaults.AuthenticationScheme)
-        .AddScheme<AuthenticationSchemeOptions, SentinelAI.Api.WorkerAuthenticationHandler>("WorkerToken", _ => { })
+{
+    var trustedRoot = new X509Certificate2(builder.Configuration["WorkerAuthentication:TrustedRootCertificatePath"]!);
+    builder.Services.AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = "ProductionSmart";
+        options.DefaultChallengeScheme = "ProductionSmart";
+    })
+        .AddPolicyScheme("ProductionSmart", null, options =>
+            options.ForwardDefaultSelector = context =>
+                context.Connection.ClientCertificate is not null ? "WorkerCertificate" : JwtBearerDefaults.AuthenticationScheme)
+        .AddCertificate("WorkerCertificate", options =>
+        {
+            options.AllowedCertificateTypes = CertificateTypes.Chained;
+            options.ValidateCertificateUse = true;
+            options.ValidateValidityPeriod = true;
+            options.ChainTrustValidationMode = X509ChainTrustMode.CustomRootTrust;
+            options.CustomTrustStore.Add(trustedRoot);
+            options.RevocationMode = X509RevocationMode.NoCheck;
+            options.Events = new CertificateAuthenticationEvents
+            {
+                OnCertificateValidated = async certificateContext =>
+                {
+                    var authenticator = certificateContext.HttpContext.RequestServices
+                        .GetRequiredService<WorkerCertificateAuthenticator>();
+                    var principal = await authenticator.AuthenticateAsync(
+                        certificateContext.ClientCertificate,
+                        certificateContext.HttpContext.RequestAborted);
+                    if (principal is null)
+                    {
+                        certificateContext.Fail("The certificate is not enrolled, is expired, or has been revoked.");
+                        return;
+                    }
+                    certificateContext.Principal = principal;
+                    certificateContext.Success();
+                },
+                OnAuthenticationFailed = certificateContext =>
+                {
+                    certificateContext.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("SentinelAI.WorkerCertificate")
+                        .LogWarning("Worker client-certificate authentication failed.");
+                    return Task.CompletedTask;
+                }
+            };
+        })
         .AddJwtBearer(options =>
         {
             options.Authority = builder.Configuration["Authentication:Authority"];
             options.Audience = builder.Configuration["Authentication:Audience"] ?? "sentinelai-api";
             options.RequireHttpsMetadata = true;
         });
+}
 
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Operator", policy => policy.RequireAuthenticatedUser().RequireRole(nameof(UserRole.Admin), nameof(UserRole.SecurityAnalyst)))

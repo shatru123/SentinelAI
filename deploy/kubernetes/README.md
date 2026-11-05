@@ -43,3 +43,7 @@ The migration process uses the API image with `--migrate`, requires only the mig
 ## Production blockers
 
 Static rendering is not an install/upgrade test. It does not prove that a selected CNI enforces NetworkPolicies, that the ingress controller handles client affinity and mTLS correctly, or that an external secret provider can rotate mounted credentials. Complete a disposable-cluster install/upgrade/uninstall, secret rotation, mTLS handshake/enrollment/revocation, load/chaos tests, independent penetration test, backup restore and measured RPO/RTO before public production exposure. Do not expose the worker directly to the public network.
+
+## Environment-specific egress contract
+
+The base NetworkPolicies deliberately use pod/namespace selectors for database and broker traffic. They allow PostgreSQL and RabbitMQ only to data-plane pods labelled in the operator-managed `sentinelai-data` namespace. The current staging/production hostnames in the ConfigMap are placeholders; do not assume that a managed database or broker reachable by a public/private DNS name is automatically permitted by these rules. For managed services outside the cluster, the selected provider/CNI overlay must add narrow endpoint CIDR rules or supported FQDN policy for the exact database and broker endpoints. Keep the default-deny policy, and do not broaden the worker's destination scope. Validate connectivity from each workload pod during staging.

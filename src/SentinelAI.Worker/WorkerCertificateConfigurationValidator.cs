@@ -26,6 +26,19 @@ public static class WorkerCertificateConfigurationValidator
         if (!string.IsNullOrWhiteSpace(configuration["Worker:ControlPlaneToken"]))
             errors.Add("Worker:ControlPlaneToken is not permitted in Production; use a client certificate.");
 
+        if (string.IsNullOrWhiteSpace(configuration["ConnectionStrings:SentinelAIWorker"]))
+            errors.Add("ConnectionStrings:SentinelAIWorker is required; do not reuse the API database principal.");
+        if (!string.Equals(configuration["Messaging:Mode"], "RabbitMq", StringComparison.OrdinalIgnoreCase))
+            errors.Add("Messaging:Mode must be RabbitMq in Production.");
+        if (string.IsNullOrWhiteSpace(configuration["RabbitMQ:Host"]) ||
+            configuration["RabbitMQ:Host"]!.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            errors.Add("RabbitMQ:Host must identify the configured Production broker.");
+        if (string.IsNullOrWhiteSpace(configuration["RabbitMQ:WorkerUsername"]))
+            errors.Add("RabbitMQ:WorkerUsername is required; use a role-specific broker principal.");
+        if (string.IsNullOrWhiteSpace(configuration["RabbitMQ:WorkerPassword"]))
+            errors.Add("RabbitMQ:WorkerPassword must be injected from the external secret provider.");
+        if (string.IsNullOrWhiteSpace(configuration["Secrets:Provider"]))
+            errors.Add("Secrets:Provider must identify the external secret manager.");
         var certificatePaths = configuration.GetSection("Worker:ClientCertificatePaths").Get<string[]>() ?? [];
         var singlePath = configuration["Worker:ClientCertificatePath"];
         if (!string.IsNullOrWhiteSpace(singlePath))

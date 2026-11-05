@@ -836,6 +836,7 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         {
             builder.UseEnvironment("Development")
                 .UseSetting("Database:Provider", "InMemory")
+                .UseSetting("Database:InMemoryName", $"scheduled-worker-{Guid.NewGuid():N}")
                 .UseSetting("Messaging:Mode", "InMemory")
                 .UseSetting("Worker:RunInProcess", "true")
                 .UseSetting("Scheduling:Enabled", "false");

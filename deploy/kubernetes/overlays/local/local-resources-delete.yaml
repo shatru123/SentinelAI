@@ -69,13 +69,6 @@ metadata:
   namespace: sentinelai
 ---
 $patch: delete
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: sentinelai-web
-  namespace: sentinelai
----
-$patch: delete
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

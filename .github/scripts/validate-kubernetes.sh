@@ -67,9 +67,11 @@ validate_overlay() {
     # Production-like overlays must not place password, token, secret or private-key
     # values in plain manifest data. Workload secretKeyRef and ExternalSecret references
     # remain allowed because they reference provider-managed values.
-    if grep -Eq '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered"; then
+    secret_like_keys="$(grep -En '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered" \
+      | grep -Ev '^[0-9]+:[[:space:]]*automountServiceAccountToken:' || true)"
+    if [[ -n "$secret_like_keys" ]]; then
       echo "$overlay rendered a secret-like configuration key; move the value to the external secret provider." >&2
-      grep -En '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered" >&2
+      echo "$secret_like_keys" >&2
       exit 1
     fi
 

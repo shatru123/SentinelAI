@@ -69,7 +69,8 @@ public sealed class WebProductionConfigurationValidatorTests
             const string value = "tenant-scoped-authentication-ticket";
 
             string protectedPayload;
-            using (var oldReplicaServices = new ServiceCollection())
+            var oldReplicaServices = new ServiceCollection();
+            {
             {
                 oldReplicaServices.AddDataProtection()
                     .SetApplicationName("SentinelAI.Web")
@@ -80,7 +81,7 @@ public sealed class WebProductionConfigurationValidatorTests
                     .CreateProtector(purpose).Protect(value);
             }
 
-            using var replacementReplicaServices = new ServiceCollection();
+            var replacementReplicaServices = new ServiceCollection();
             replacementReplicaServices.AddDataProtection()
                 .SetApplicationName("SentinelAI.Web")
                 .PersistKeysToFileSystem(new DirectoryInfo(assets.KeyRingDirectory))
@@ -199,7 +200,7 @@ public sealed class WebProductionConfigurationValidatorTests
         }
         else
         {
-            using var publicOnlyCertificate = new X509Certificate2(certificate.Export(X509ContentType.Cert));
+            using var publicOnlyCertificate = X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
             certificateBytes = publicOnlyCertificate.Export(X509ContentType.Pfx, password);
         }
         File.WriteAllBytes(path, certificateBytes);

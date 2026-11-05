@@ -12,9 +12,21 @@ spec:
           env:
             - name: Authentication__ClientSecret
               $patch: delete
+            - name: DataProtection__CertificatePassword
+              $patch: delete
             - name: Api__BaseUrl
               value: http://sentinelai-api:8080
             - name: Api__UseDevelopmentHeaders
               value: "true"
+          volumeMounts:
+            - name: data-protection-key-ring
+              $patch: delete
+            - name: data-protection-certificate
+              $patch: delete
           securityContext:
             readOnlyRootFilesystem: false
+      volumes:
+        - name: data-protection-key-ring
+          $patch: delete
+        - name: data-protection-certificate
+          $patch: delete

@@ -80,7 +80,7 @@ public sealed class S3AssessmentArtifactStore(
         await foreach (var item in ListObjectsAsync(cancellationToken))
         {
             if (!item.Key.Contains("/.staging/", StringComparison.OrdinalIgnoreCase) ||
-                new DateTimeOffset(item.LastModified.ToUniversalTime()) >= olderThan)
+                item.LastModified is null || new DateTimeOffset(item.LastModified.Value.ToUniversalTime()) >= olderThan)
                 continue;
 
             await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = item.Key }, cancellationToken);
@@ -103,7 +103,7 @@ public sealed class S3AssessmentArtifactStore(
                 !Guid.TryParse(segments[1], out _) ||
                 !string.Equals(segments[2], "reports", StringComparison.OrdinalIgnoreCase))
                 continue;
-            if (new DateTimeOffset(item.LastModified.ToUniversalTime()) >= olderThan)
+            if (item.LastModified is null || new DateTimeOffset(item.LastModified.Value.ToUniversalTime()) >= olderThan)
                 continue;
 
             if (!await isReferencedAsync(item.Key))
@@ -178,7 +178,7 @@ public sealed class S3AssessmentArtifactStore(
                 if (++visited >= 10_000) yield break;
             }
 
-            continuationToken = page.IsTruncated ? page.NextContinuationToken : null;
+            continuationToken = page.IsTruncated == true ? page.NextContinuationToken : null;
         }
         while (!string.IsNullOrWhiteSpace(continuationToken));
     }

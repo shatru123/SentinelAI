@@ -64,7 +64,7 @@ The provider gateway is a transport and provenance layer; it deliberately does n
 
 1. **Phase 4.2 — Evidence-grounded finding analysis:** bounded/redacted evidence input, schema-validated output, evidence-ID allow-listing, tenant-scoped persistence and provider/model/prompt/input-hash/token provenance. See `phase4-finding-analysis.md`.
 2. **Phase 4.3 — Finding analysis experience:** explicit provider selection and analysis request for Admin/Security Analyst roles, Reader-visible persisted history, and no automatic provider call when opening a finding. See `phase4-finding-analysis-ui.md`.
-3. **Phase 4.4 — Scheduled reassessment and drift alerts:** bounded scope-bound schedules, authorization revalidation, transactional outbox dispatch, deterministic drift and tenant-scoped in-app notifications. Its PostgreSQL rollback and dedicated acceptance suite passed in PR #9 CI run #532. See `phase4-scheduled-reassessment.md`.
+3. **Phase 4.4 — Scheduled reassessment and drift alerts:** bounded scope-bound schedules, authorization revalidation, transactional outbox dispatch, deterministic drift and tenant-scoped in-app notifications. Its real API lifecycle, processor reconciliation and PostgreSQL dispatch/reconciliation concurrency acceptance suite passed in PR #9 CI run #555 (340 total tests across the Phase 4 solution). See `phase4-scheduled-reassessment.md`.
 4. **Optional report advisory summaries:** explicitly opt-in export of persisted analysis only; no provider request is made during export, and summaries remain labeled for human review.
 
 These features do not grant AI authority to confirm findings, change severity or policy, authorize targets, or dispatch work.

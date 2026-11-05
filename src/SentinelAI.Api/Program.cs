@@ -29,7 +29,7 @@ var builder = WebApplication.CreateBuilder(args);
 ProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment);
 if (builder.Environment.IsProduction())
 {
-    var serverCertificate = new X509Certificate2(
+    var serverCertificate = X509CertificateLoader.LoadPkcs12FromFile(
         builder.Configuration["WorkerAuthentication:ServerCertificatePath"]!,
         builder.Configuration["WorkerAuthentication:ServerCertificatePassword"],
         X509KeyStorageFlags.EphemeralKeySet);
@@ -100,7 +100,7 @@ if (builder.Environment.IsDevelopment())
         .AddScheme<AuthenticationSchemeOptions, SentinelAI.Api.WorkerAuthenticationHandler>("WorkerToken", _ => { });
 else
 {
-    var trustedRoot = new X509Certificate2(builder.Configuration["WorkerAuthentication:TrustedRootCertificatePath"]!);
+    var trustedRoot = X509CertificateLoader.LoadCertificateFromFile(builder.Configuration["WorkerAuthentication:TrustedRootCertificatePath"]!);
     builder.Services.AddAuthentication(options =>
     {
         options.DefaultAuthenticateScheme = "ProductionSmart";

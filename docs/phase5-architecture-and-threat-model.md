@@ -112,3 +112,13 @@ A DR drill must report actual achieved RPO/RTO; a backup job's green status is n
 8. Independent penetration-test scope and release approver.
 
 Until these decisions are recorded and the workstream exit evidence exists, Phase 5 is not production-ready.
+
+## Current customer-local worker connectivity boundary
+
+The API now has a dedicated mTLS listener and the standalone Worker can authenticate to it for registration and heartbeat. However, the current Worker process also consumes RabbitMQ queues and reads/writes PostgreSQL directly using a separate least-privilege worker database principal and broker credentials. The mTLS HTTP client is not yet a job-streaming transport or a proxy for the worker's database/broker operations.
+
+The Kubernetes `sentinelai-api-worker` Service is currently `ClusterIP`-only. It is intentionally not exposed through the public HTTP Ingress. Consequently, an external customer-network worker cannot yet connect to the deployed listener without an explicitly configured TCP/TLS-passthrough endpoint. A worker placed outside the cluster also needs a secure private path to its tenant-scoped broker and database endpoints.
+
+**Do not expose PostgreSQL or RabbitMQ management/data ports publicly to make this work.** The selected cloud design must provide private connectivity (for example, approved private endpoints/VPN) or replace direct worker data access with a bounded control-plane/broker gateway. It must also provide a TCP endpoint that preserves the client TLS certificate end to end. The source ranges, endpoint DNS/SANs, certificate trust roots, broker vhost/queue permissions and database grants must be tested from a customer-network worker before this capability is called production-ready.
+
+Until that design and its end-to-end tests exist, treat the in-cluster Worker StatefulSet as a controlled deployment profile, not proof that arbitrary customer-local workers can join a multi-tenant cloud control plane.

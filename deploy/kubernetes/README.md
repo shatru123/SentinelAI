@@ -46,4 +46,10 @@ Static rendering is not an install/upgrade test. It does not prove that a select
 
 ## Environment-specific egress contract
 
+## Customer-local worker connectivity
+
+The base `sentinelai-api-worker` Service is currently a ClusterIP on TCP 8443 for the in-cluster Worker StatefulSet. A customer-local Worker outside Kubernetes cannot reach that DNS name. Before onboarding an external Worker, the selected provider/network owner must provision a private L4 TCP load balancer or TCP-passthrough proxy that forwards to this Service on port 8443 and preserves the TLS client certificate end-to-end. Point that Worker’s `Worker:ControlPlaneUrl` at the provider-issued reachable HTTPS endpoint. The endpoint certificate must cover that DNS name, and the API must still perform its CA-chain, EKU, thumbprint, tenant, identity and revocation checks.
+
+Do not terminate worker mTLS at a generic HTTP ingress and do not trust caller-supplied certificate headers. Apply the narrowest feasible source CIDR allow-list, keep 8443 separate from the public user API ingress, and validate an actual external Worker registration/heartbeat/revocation flow from a customer-like network before production. No public worker endpoint is provisioned by these provider-neutral manifests.
+
 The base NetworkPolicies deliberately use pod/namespace selectors for database and broker traffic. They allow PostgreSQL and RabbitMQ only to data-plane pods labelled in the operator-managed `sentinelai-data` namespace. The current staging/production hostnames in the ConfigMap are placeholders; do not assume that a managed database or broker reachable by a public/private DNS name is automatically permitted by these rules. For managed services outside the cluster, the selected provider/CNI overlay must add narrow endpoint CIDR rules or supported FQDN policy for the exact database and broker endpoints. Keep the default-deny policy, and do not broaden the worker's destination scope. Validate connectivity from each workload pod during staging.

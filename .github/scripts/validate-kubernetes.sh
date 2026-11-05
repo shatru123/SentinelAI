@@ -56,8 +56,26 @@ for overlay in local staging production; do
       echo "NOTICE: $overlay still contains placeholder image digests; it is not deployable until immutable release digests are promoted."
     fi
 
-    if ! grep -q '^apiVersion: external-secrets.io/v1$' "$rendered" ||
-       ! grep -q '^kind: ExternalSecret$' "$rendered"; then
+    # Production-like overlays must not put secret values in ConfigMaps.
+    # Secret references belong in ExternalSecret resources and Pod secretKeyRef entries.
+    if grep -Eq '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered"; then
+      echo "$overlay rendered a secret-like configuration key; move the value to the external secret provider." >&2
+      grep -En '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered" >&2
+      exit 1
+    fi
+
+    if ! grep -q '^apiVersion: external-secrets.io/v1  fi
+
+  echo "Validated $overlay overlay."
+  echo "::endgroup::"
+done
+ "$rendered" ||
+       ! grep -q '^kind: ExternalSecret  fi
+
+  echo "Validated $overlay overlay."
+  echo "::endgroup::"
+done
+ "$rendered"; then
       echo "$overlay must render ExternalSecret resources using external-secrets.io/v1." >&2
       exit 1
     fi

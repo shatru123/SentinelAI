@@ -12,6 +12,19 @@ using SentinelAI.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 WebProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment);
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = builder.Configuration.GetValue<long>("Security:WebMaxRequestBodyBytes", 2 * 1024 * 1024);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:RequestHeadersTimeoutSeconds", 15));
+    options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:KeepAliveTimeoutSeconds", 120));
+});
+builder.Services.AddRequestTimeouts(options =>
+{
+    options.DefaultPolicy = new Microsoft.AspNetCore.Http.Timeouts.RequestTimeoutPolicy
+    {
+        Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:WebRequestTimeoutSeconds", 60))
+    };
+});
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
@@ -39,6 +52,12 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<SentinelApiClient>();
 builder.Services.AddHttpClient("SentinelApi", client => client.BaseAddress = new Uri(builder.Configuration["Api:BaseUrl"] ?? "http://localhost:5109"))
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddHttpClient("SentinelApiHealth", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Api:HealthBaseUrl"] ??
+        builder.Configuration["Api:BaseUrl"] ?? "http://localhost:5109");
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddAuthentication(options =>
 {
@@ -83,6 +102,7 @@ var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 app.UseForwardedHeaders();
+app.UseRequestTimeouts();
 app.Use(async (context, next) =>
 {
     context.Response.Headers.TryAdd("X-Content-Type-Options", "nosniff");
@@ -258,6 +278,24 @@ app.UseAuthorization();
 app.UseAntiforgery();
 
 app.MapStaticAssets();
+app.MapGet("/health/live", () => Results.Ok(new { status = "live", service = "sentinelai-web", utc = DateTimeOffset.UtcNow })).AllowAnonymous();
+app.MapGet("/health/ready", async (IHttpClientFactory clients, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        using var response = await clients.CreateClient("SentinelApiHealth").GetAsync("/health/ready", cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            return Results.Json(new { status = "not-ready", dependency = "api", apiStatusCode = (int)response.StatusCode },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        return Results.Ok(new { status = "ready", service = "sentinelai-web", api = "ready", utc = DateTimeOffset.UtcNow });
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+    catch
+    {
+        return Results.Json(new { status = "not-ready", dependency = "api" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+}).AllowAnonymous();
+
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

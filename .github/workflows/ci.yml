@@ -171,6 +171,15 @@ jobs:
           # secret-store and network policy rules require the selected provider/CNI gate.
           trivy config --severity CRITICAL,HIGH --format sarif \
             --output artifacts/security/configuration.sarif --exit-code 0 deploy
+          # Enforce infrastructure findings for the production-capable K8s base and
+          # environment overlays. The local Development overlay remains report-only.
+          for manifest_dir in deploy/kubernetes/base deploy/kubernetes/overlays/staging deploy/kubernetes/overlays/production; do
+            report_name="$(echo "$manifest_dir" | tr '/' '-')"
+            if ! trivy config --severity CRITICAL,HIGH --format sarif \
+              --output "artifacts/security/${report_name}.sarif" --exit-code 1 "$manifest_dir"; then
+              scan_status=1
+            fi
+          done
           exit "$scan_status"
       - uses: actions/upload-artifact@v4
         if: always()

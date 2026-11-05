@@ -37,7 +37,7 @@ data:
   Artifacts__S3__ServerSideEncryption: aws:kms
   Artifacts__S3__KmsKeyId: alias/sentinelai-evidence-replace-me
   Artifacts__S3__ForcePathStyle: "false"
-  Secrets__Provider: ExternalSecrets
+  ExternalConfig__Provider: ExternalSecrets
   HTTP_PROXY: http://sentinelai-egress-gateway.sentinelai-operations.svc.cluster.local:443
   HTTPS_PROXY: http://sentinelai-egress-gateway.sentinelai-operations.svc.cluster.local:443
   NO_PROXY: localhost,127.0.0.1,::1,.svc,.cluster.local,sentinelai-api,sentinelai-api-worker,sentinelai-postgres,sentinelai-rabbitmq,sentinelai-otel-collector

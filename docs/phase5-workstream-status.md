@@ -24,13 +24,13 @@ This matrix deliberately mirrors every Phase 5 requirement. An item is not marke
 
 | Requirement | Status | Evidence / remaining acceptance |
 |---|---|---|
-| API/Web/Worker/PostgreSQL/RabbitMQ/object-store/telemetry topology | In progress | Kustomize packaging and deployment documentation still required |
-| Public ingress separated from internal traffic | In progress | Dedicated worker mTLS listener added; service/ingress policies still required |
-| HTTPS-only public exposure and private DB/broker/metrics/admin ports | In progress | API/Web TLS/proxy controls started; ingress/network-policy deployment tests pending |
-| Production fail-closed OIDC/database/broker/storage/TLS/secret config | In progress | API/Web validators added; CI and Production TestServer validation pending |
-| Development identities, header auth and self-approval blocked in Production | In progress | Production scheme no longer registers bearer worker auth; tests pending |
+| API/Web/Worker/PostgreSQL/RabbitMQ/object-store/telemetry topology | Manifests implemented | Kustomize base/overlays and service boundaries are in `deploy/kubernetes`; cloud service provisioning, provider selection and live deployment remain |
+| Public ingress separated from internal traffic | Manifests implemented | HTTPS ingress is separate from the worker mTLS ClusterIP service; real ingress controller, firewall and trust-proxy exercise remain |
+| HTTPS-only public exposure and private DB/broker/metrics/admin ports | In progress | HTTPS ingress and default-deny/network policies are defined; live cluster enforcement, private endpoints and proxy-spoof tests remain |
+| Production fail-closed OIDC/database/broker/storage/TLS/secret config | Code and tests added | API/Web configuration validators and migration-only validation are covered by CI; staging IdP and real secret injection remain |
+| Development identities, header auth and self-approval blocked in Production | Code and tests added | Production configuration rejects development headers, static worker tokens and self-approval; live identity-provider exercise remains |
 | Liveness vs dependency readiness | Implemented in code; tests pending | API probes DB, RabbitMQ, object store, worker; Web readiness delegates to API |
-| Dedicated one-shot migrations | In progress | API supports `--migrate`; Kubernetes Job and rollback/roll-forward test pending |
+| Dedicated one-shot migrations | Code and Job implemented | `--migrate` now uses a database-only startup path without loading API listener certificates; migration upgrade/rollback and cluster rollout tests remain |
 | Trusted forwarded headers, CORS, secure cookies, rate/time/body limits, headers | In progress | Middleware/config added; proxy spoofing and ingress integration tests pending |
 | Durable tenant-prefixed encrypted object storage | In progress | S3-compatible adapter, KMS/AES256 and tenant-key validation; fake/MinIO integration tests pending |
 | Retention, staged cleanup and unreferenced-object reconciliation | In progress | S3 adapter cleanup/reconcile methods; lifecycle policy and test proof pending |
@@ -63,22 +63,22 @@ This matrix deliberately mirrors every Phase 5 requirement. An item is not marke
 
 | Requirement | Status | Evidence / remaining acceptance |
 |---|---|---|
-| Kustomize base and local/staging/production overlays | Not started | Manifests and rendered output required |
-| API, Web, Worker, ingress, service accounts, config and telemetry | Not started | Full workload and service resources required |
-| Separate namespaces and least-privilege identities | Not started | RBAC/service accounts/pod security policies required |
-| Non-root, read-only root FS, dropped capabilities, seccomp and limits | Not started | Manifest assertions and live pod checks required |
-| Startup/readiness/liveness probes, rollout, graceful shutdown and PDB | In progress | App probes added; manifests and rollout tests pending |
+| Kustomize base and local/staging/production overlays | Manifests implemented | All three overlays are checked into `deploy/kubernetes`; CI renders and schema-validates them. Staging/production placeholders must be replaced before use |
+| API, Web, Worker, ingress, service accounts, config and telemetry | Manifests implemented | Base includes API/Web Deployments, worker StatefulSet, services, ingress, ConfigMap, service accounts and OTEL collector; live-cluster validation remains |
+| Separate namespaces and least-privilege identities | Partial | Dedicated API/Web/Worker/Migrator service accounts and disabled token automount are defined; namespace/RBAC/workload-identity policy needs cluster validation |
+| Non-root, read-only root FS, dropped capabilities, seccomp and limits | Manifests implemented | Workload manifests define non-root UID, read-only root filesystem, dropped capabilities, RuntimeDefault seccomp and resource limits; admission/live-pod checks remain |
+| Startup/readiness/liveness probes, rollout, graceful shutdown and PDB | Partial | API/Web probes, rollout grace periods and disruption budgets are defined; stateful-worker shutdown and cluster rollout tests remain |
 | HPA only for valid stateless metrics | Not started | API/Web HPA plus worker queue-aware scale policy and duplicate-safety test required |
-| One-shot migration Job gated before API rollout | In progress | `--migrate` path added; Job/ordering/rollback test pending |
-| Network policies and outbound-only customer worker | Not started | Explicit ingress/egress policy and private endpoint documentation required |
-| External secret-manager integration via workload identity/CSI/operator | Not started | Provider-neutral integration contract and provider overlay required |
+| One-shot migration Job gated before API rollout | Job and code implemented | Dedicated Job runs `--migrate`; it now avoids HTTP/mTLS configuration. Release orchestration dependency gate and rollback exercise remain |
+| Network policies and outbound-only customer worker | Policy manifests implemented | Default-deny plus explicit ingress/egress policies and a worker outbound path are defined; verify enforcement on the selected CNI/cluster |
+| External secret-manager integration via workload identity/CSI/operator | Partial | External Secrets Operator `ExternalSecret` resources exist in staging/production overlays; ClusterSecretStore, provider IAM/workload identity and live refresh are environment-owned and unverified |
 | No secrets in manifests/ConfigMaps/rendered output/CI logs | Not started | Automated leak checks required |
 | Local worker outside cluster and firewall documentation | In progress | Existing worker separate process; mTLS endpoint and deployment profile required |
-| Local, staging and production overlays | Not started | Overlay rendering and install/upgrade evidence required |
+| Local, staging and production overlays | Manifests implemented | Local has Development-only resources; staging/production have separate secret references and digest placeholders. Rendering is added to CI; cluster install/upgrade remains |
 | Durable queue, storage classes, backup volumes, TLS, DNS and cert renewal | Not started | Manifest and runbook acceptance required |
-| Kustomize and Kubernetes schema validation | Not started | CI and cluster validation required |
+| Kustomize and Kubernetes schema validation | CI gate added | `kubectl kustomize` and strict `kubeconform` run for all three overlays; verify the current workflow result and validate operator CRDs on the target cluster |
 | Disposable install/upgrade/uninstall | Not started | kind or equivalent ephemeral cluster gate required |
-| Least privilege and NetworkPolicy live behavior | Not started | Cluster policy tests required |
+| Least privilege and NetworkPolicy live behavior | Manifest baseline only | Static manifests define least privilege and traffic boundaries; no disposable cluster/CNI policy test has run yet |
 | Secret rotation without image rebuild | Not started | Staging external-secret refresh test required |
 | Rolling restarts preserve jobs/outbox/leases | Not started | Cluster disruption test required |
 

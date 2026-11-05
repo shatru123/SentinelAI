@@ -1,6 +1,6 @@
 namespace SentinelAI.Contracts;
 
-public sealed record EnrollWorkerCertificateRequest(string CertificatePem);
+public sealed record EnrollWorkerCertificateRequest(string CertificatePem, IReadOnlyCollection<string>? IntermediateCertificatesPem = null);
 public sealed record RevokeWorkerCertificateRequest(string Reason);
 
 public sealed record WorkerClientCertificateResponse(

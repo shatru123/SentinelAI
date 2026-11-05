@@ -39,23 +39,3 @@ spec:
         target:
           type: Utilization
           averageUtilization: 65
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: sentinelai-web
-  namespace: sentinelai
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: sentinelai-web
-  minReplicas: 2
-  maxReplicas: 8
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 65

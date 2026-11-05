@@ -15,6 +15,7 @@ using SentinelAI.Domain;
 
 namespace SentinelAI.UnitTests;
 
+[Collection(BrowserAcceptanceCollection.Name)]
 public sealed class FindingAnalysisBrowserAcceptanceTests
 {
     [Fact]
@@ -246,13 +247,15 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
     private static async Task OpenFirstFindingAsync(IPage page, string baseUrl)
     {
         await page.GotoAsync($"{baseUrl}/findings", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        // Wait for Blazor Server prerendered content and the interactive circuit to settle before dispatching an event.
+        await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new PageWaitForLoadStateOptions { Timeout = 15_000 });
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Inspect Evidence" }).First.ClickAsync();
         try
         {
             await page.GetByText("AI Security Analysis", new PageGetByTextOptions { Exact = true })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 20_000 });
         }
-        catch (PlaywrightException exception)
+        catch (Exception exception) when (exception is PlaywrightException or TimeoutException)
         {
             var visiblePageText = await page.Locator("body").InnerTextAsync();
             throw new InvalidOperationException(

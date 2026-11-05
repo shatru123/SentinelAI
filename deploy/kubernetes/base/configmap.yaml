@@ -15,7 +15,6 @@ data:
   WorkerAuthentication__Mode: Mtls
   WorkerAuthentication__TrustedRootCertificatePath: /var/run/sentinelai-worker-ca/ca.crt
   WorkerAuthentication__ServerCertificatePath: /var/run/sentinelai-api-mtls/tls.pfx
-  WorkerAuthentication__ServerCertificatePassword: placeholder-is-overridden-by-secret
   Security__RequireHttps: "true"
   Security__MaxRequestBodyBytes: "10485760"
   Security__WebMaxRequestBodyBytes: "2097152"

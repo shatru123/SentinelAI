@@ -28,6 +28,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<AssessmentScheduleRun> AssessmentScheduleRuns => Set<AssessmentScheduleRun>();
     public DbSet<AssessmentDriftEvent> AssessmentDriftEvents => Set<AssessmentDriftEvent>();
     public DbSet<WorkerRegistration> Workers => Set<WorkerRegistration>();
+    public DbSet<WorkerClientCertificate> WorkerClientCertificates => Set<WorkerClientCertificate>();
     public DbSet<PublicTargetAuthorization> PublicTargetAuthorizations => Set<PublicTargetAuthorization>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<WebAssessment> WebAssessments => Set<WebAssessment>();
@@ -111,6 +112,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AssessmentScheduleRun>().HasKey(x => x.Id);
         modelBuilder.Entity<AssessmentDriftEvent>().HasKey(x => x.Id);
         modelBuilder.Entity<WorkerRegistration>().HasKey(x => x.Id);
+        modelBuilder.Entity<WorkerClientCertificate>().HasKey(x => x.Id);
         modelBuilder.Entity<PublicTargetAuthorization>().HasKey(x => x.Id);
         modelBuilder.Entity<OutboxMessage>().HasKey(x => x.Id);
         modelBuilder.Entity<WebAssessment>().HasKey(x => x.Id);
@@ -144,6 +146,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureTenant(modelBuilder.Entity<AssessmentScheduleRun>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<AssessmentDriftEvent>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<WorkerRegistration>().Property(x => x.TenantId));
+        ConfigureTenant(modelBuilder.Entity<WorkerClientCertificate>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<PublicTargetAuthorization>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<OutboxMessage>().Property(x => x.TenantId));
         ConfigureTenant(modelBuilder.Entity<WebAssessment>().Property(x => x.TenantId));
@@ -192,6 +195,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .HasForeignKey(x => new { x.TenantId, x.FindingId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<AuditEvent>().HasIndex(x => new { x.TenantId, x.OccurredAt });
         modelBuilder.Entity<WorkerRegistration>().HasIndex(x => new { x.TenantId, x.Identity }).IsUnique();
+        modelBuilder.Entity<WorkerClientCertificate>().Property(x => x.ThumbprintSha256).HasMaxLength(64);
+        modelBuilder.Entity<WorkerClientCertificate>().Property(x => x.WorkerIdentity).HasMaxLength(128);
+        modelBuilder.Entity<WorkerClientCertificate>().Property(x => x.SerialNumber).HasMaxLength(128);
+        modelBuilder.Entity<WorkerClientCertificate>().HasIndex(x => x.ThumbprintSha256).IsUnique();
+        modelBuilder.Entity<WorkerClientCertificate>().HasIndex(x => new { x.TenantId, x.WorkerIdentity, x.RevokedAt, x.NotAfter });
         modelBuilder.Entity<PublicTargetAuthorization>().HasIndex(x => new { x.TenantId, x.Target, x.Status });
         modelBuilder.Entity<OutboxMessage>().HasIndex(x => new { x.DispatchedAt, x.NextAttemptAt, x.LeaseExpiresAt, x.CreatedAt });
         modelBuilder.Entity<WebAssessment>().HasIndex(x => new { x.TenantId, x.CreatedAt });

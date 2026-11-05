@@ -13,9 +13,10 @@ namespace SentinelAI.UnitTests;
 public sealed class AssessmentScheduleProcessorAcceptanceTests
 {
     [Theory]
-    [InlineData(24)]
-    [InlineData(2160)]
-    public async Task Schedule_creation_accepts_both_interval_boundaries(int intervalHours)
+    [InlineData(24, WebAssessmentOperationProfiles.Passive)]
+    [InlineData(2160, WebAssessmentOperationProfiles.Passive)]
+    [InlineData(24, WebAssessmentOperationProfiles.SafeActive)]
+    public async Task Schedule_creation_accepts_bounded_interval_and_each_supported_profile(int intervalHours, string operationProfile)
     {
         var options = NewOptions();
         var now = DateTimeOffset.UtcNow;
@@ -24,7 +25,7 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
         var creator = new User(creatorId, tenant.Id, "interval-creator", "Interval creator", UserRole.SecurityAnalyst);
         var scope = new TargetScope(tenant.Id, "interval-boundary-scope", creatorId, now.AddDays(100));
         scope.Configure([new TargetDefinition(TargetKind.Web, "https://10.3.4.5/")], [],
-            [WebAssessmentOperationProfiles.Passive], 30, 300, "approved interval-boundary authorization", false);
+            [operationProfile], 30, 300, "approved interval-boundary authorization", false);
         scope.ConfigureWebHosting(WebHostingMode.Private, "interval-worker", ["10.0.0.0/8"]);
         var worker = new WorkerRegistration(tenant.Id, "interval-worker", "test",
             ["web-assessment", "private-web-assessment"]);
@@ -39,10 +40,11 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
         var principal = new PrincipalContext(tenant.Id, creatorId, creator.Subject, UserRole.SecurityAnalyst);
         var endsAt = now.AddHours(intervalHours + 24);
         var result = await service.CreateAsync(principal,
-            new CreateAssessmentScheduleRequest(scope.Id, WebAssessmentOperationProfiles.Passive, intervalHours, endsAt),
+            new CreateAssessmentScheduleRequest(scope.Id, operationProfile, intervalHours, endsAt),
             CancellationToken.None);
 
         Assert.Equal(intervalHours, result.IntervalHours);
+        Assert.Equal(operationProfile, result.OperationProfile);
         Assert.Equal(AssessmentScheduleStatus.Active, result.Status);
         Assert.NotNull(result.NextRunAt);
         Assert.Equal(scope.Id, result.ScopeId);
@@ -82,6 +84,7 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
     [InlineData("scope-mutated")]
     [InlineData("scope-expired")]
     [InlineData("public-authorization-revoked")]
+    [InlineData("public-authorization-expired")]
     [InlineData("worker-missing")]
     [InlineData("worker-disabled")]
     [InlineData("worker-unhealthy")]
@@ -98,7 +101,7 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
         var creatorId = Guid.NewGuid();
         var creator = new User(creatorId, tenant.Id, "schedule-creator", "Schedule creator", UserRole.SecurityAnalyst);
         var scope = new TargetScope(tenant.Id, "bounded-web-scope", creatorId, now.AddDays(6));
-        var isPublic = scenario == "public-authorization-revoked";
+        var isPublic = scenario is "public-authorization-revoked" or "public-authorization-expired";
         PublicTargetAuthorization? publicAuthorization = null;
         WorkerRegistration? worker = null;
 
@@ -171,6 +174,10 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
                 case "public-authorization-revoked":
                     publicAuthorization = await mutate.PublicTargetAuthorizations.SingleAsync(x => x.Id == publicAuthorization!.Id);
                     publicAuthorization.Revoke();
+                    break;
+                case "public-authorization-expired":
+                    publicAuthorization = await mutate.PublicTargetAuthorizations.SingleAsync(x => x.Id == publicAuthorization!.Id);
+                    mutate.Entry(publicAuthorization).Property(x => x.ExpiresAt).CurrentValue = now.AddSeconds(-1);
                     break;
                 case "worker-missing":
                     worker = await mutate.Workers.SingleAsync(x => x.Identity == "worker-a");

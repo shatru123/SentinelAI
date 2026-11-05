@@ -46,14 +46,16 @@ public sealed class S3AssessmentArtifactStore(
         ValidateOwnedReportKey(tenantId, assessmentId, stagingKey, requireStaging: true);
         var fileName = Path.GetFileName(stagingKey);
         var publishedKey = $"{tenantId:D}/{assessmentId:D}/reports/{fileName}";
-        await client.CopyObjectAsync(new CopyObjectRequest
+        var copyRequest = new CopyObjectRequest
         {
             SourceBucket = bucket,
             SourceKey = stagingKey,
             DestinationBucket = bucket,
             DestinationKey = publishedKey,
-            ServerSideEncryptionMethod = EncryptionMethod
-        } with { ServerSideEncryptionKeyManagementServiceKeyId = EncryptionKeyId }, cancellationToken);
+            ServerSideEncryptionMethod = EncryptionMethod,
+            ServerSideEncryptionKeyManagementServiceKeyId = EncryptionKeyId
+        };
+        await client.CopyObjectAsync(copyRequest, cancellationToken);
         await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = stagingKey }, cancellationToken);
         return publishedKey;
     }

@@ -50,7 +50,7 @@ public sealed class ProductionConfigurationValidatorTests
                 ["ReverseProxy:KnownProxies:0"] = "10.0.0.10",
                 ["Security:RequireHttps"] = "true",
                 ["AllowedHosts"] = "sentinelai.example.com;api.sentinelai.example.com",
-                ["Secrets:Provider"] = "KubernetesExternalSecrets",
+                ["ExternalConfig:Provider"] = "KubernetesExternalSecrets",
                 ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://otel-collector.monitoring:4317",
                 ["Health:RequireHealthyWorker"] = "true"
             };
@@ -96,7 +96,7 @@ public sealed class ProductionConfigurationValidatorTests
                 ["ReverseProxy:KnownProxies:0"] = "10.0.0.10",
                 ["Security:RequireHttps"] = "true",
                 ["AllowedHosts"] = "sentinelai.example.com",
-                ["Secrets:Provider"] = "KubernetesExternalSecrets",
+                ["ExternalConfig:Provider"] = "KubernetesExternalSecrets",
                 ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://otel-collector.monitoring:4317"
             };
             var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();

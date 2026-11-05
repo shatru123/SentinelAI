@@ -73,13 +73,21 @@ jobs:
           RABBITMQ_TEST_PASSWORD: sentinelai
           SENTINELAI_POSTGRES_CONNECTION: Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=sentinelai
           SENTINELAI_RUN_BROWSER_TESTS: "true"
-      - name: Smoke-test Production one-shot migration startup
+      - name: Create an isolated empty database for migration smoke testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          postgres_container="$(docker ps --filter 'ancestor=postgres:17-alpine' --format '{{.ID}}' | head -n 1)"
+          test -n "$postgres_container"
+          docker exec "$postgres_container" psql -U sentinelai -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE sentinelai_migration;"
+      - name: Smoke-test Production one-shot migration startup against an empty database
         run: dotnet src/SentinelAI.Api/bin/Release/net10.0/SentinelAI.Api.dll --migrate
         env:
           ASPNETCORE_ENVIRONMENT: Production
           Database__Provider: Postgres
           Database__ApplyMigrations: "false"
-          ConnectionStrings__SentinelAI: Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=sentinelai
+          ConnectionStrings__SentinelAI: Host=localhost;Port=5432;Database=sentinelai_migration;Username=sentinelai;Password=sentinelai
       - run: docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
       - name: Set up kubectl and Kustomize
         uses: azure/setup-kubectl@v4

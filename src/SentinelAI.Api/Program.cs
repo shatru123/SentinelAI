@@ -26,6 +26,20 @@ using SentinelAI.Infrastructure;
 using SentinelAI.Security.Policy;
 
 var builder = WebApplication.CreateBuilder(args);
+var migrateOnly = args.Any(argument => argument.Equals("--migrate", StringComparison.OrdinalIgnoreCase));
+if (migrateOnly)
+{
+    // The migration Job is deliberately a database-only process. It must not load
+    // HTTP listener certificates, OIDC settings, broker credentials or object storage.
+    ProductionConfigurationValidator.ValidateMigrationConfiguration(builder.Configuration, builder.Environment);
+    builder.Services.AddSentinelInfrastructure(builder.Configuration, builder.Environment);
+    var migrationApp = builder.Build();
+    await using var migrationScope = migrationApp.Services.CreateAsyncScope();
+    await migrationScope.ServiceProvider.GetRequiredService<SentinelAI.Infrastructure.AppDbContext>()
+        .Database.MigrateAsync();
+    return;
+}
+
 ProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment);
 X509Certificate2? workerListenerCertificate = null;
 if (builder.Environment.IsProduction())
@@ -176,13 +190,12 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Worker", policy => policy.RequireAuthenticatedUser().RequireRole(nameof(UserRole.Worker)));
 
 var app = builder.Build();
-if (args.Any(argument => argument.Equals("--migrate", StringComparison.OrdinalIgnoreCase)) ||
-    builder.Configuration.GetValue<bool>("Database:ApplyMigrations"))
+if (builder.Configuration.GetValue<bool>("Database:ApplyMigrations"))
 {
+    // Development Compose can opt into startup migrations. Production is rejected
+    // by ProductionConfigurationValidator and uses the dedicated migration Job.
     await using var migrationScope = app.Services.CreateAsyncScope();
     await migrationScope.ServiceProvider.GetRequiredService<SentinelAI.Infrastructure.AppDbContext>().Database.MigrateAsync();
-    if (args.Any(argument => argument.Equals("--migrate", StringComparison.OrdinalIgnoreCase)))
-        return;
 }
 app.UseForwardedHeaders();
 app.UseRequestTimeouts();

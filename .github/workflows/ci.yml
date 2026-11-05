@@ -74,6 +74,26 @@ jobs:
           SENTINELAI_POSTGRES_CONNECTION: Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=sentinelai
           SENTINELAI_RUN_BROWSER_TESTS: "true"
       - run: docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
+      - name: Set up kubectl and Kustomize
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.34.0"
+      - name: Install kubeconform
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="v0.8.0"
+          EXPECTED_SHA256="9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
+          ARCHIVE="$RUNNER_TEMP/kubeconform-linux-amd64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/yannh/kubeconform/releases/download/${VERSION}/kubeconform-linux-amd64.tar.gz" \
+            --output "$ARCHIVE"
+          echo "${EXPECTED_SHA256}  ${ARCHIVE}" | sha256sum --check -
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP" kubeconform
+          sudo install -m 0755 "$RUNNER_TEMP/kubeconform" /usr/local/bin/kubeconform
+          kubeconform -v
+      - name: Render and schema-validate Kubernetes overlays
+        run: bash .github/scripts/validate-kubernetes.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:

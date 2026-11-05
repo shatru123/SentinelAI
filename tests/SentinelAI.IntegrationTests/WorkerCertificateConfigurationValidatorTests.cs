@@ -22,7 +22,13 @@ public sealed class WorkerCertificateConfigurationValidatorTests
                 ["Worker:TenantId"] = Guid.NewGuid().ToString(),
                 ["Worker:Identity"] = "worker-east-01",
                 ["Worker:ClientCertificatePath"] = path,
-                ["Worker:ClientCertificatePassword"] = password
+                ["Worker:ClientCertificatePassword"] = password,
+                ["ConnectionStrings:SentinelAIWorker"] = "Host=db.internal;Database=sentinelai;Username=worker;Password=secret",
+                ["Messaging:Mode"] = "RabbitMq",
+                ["RabbitMQ:Host"] = "rabbitmq.internal",
+                ["RabbitMQ:WorkerUsername"] = "sentinelai-worker",
+                ["RabbitMQ:WorkerPassword"] = "worker-broker-secret",
+                ["Secrets:Provider"] = "ExternalSecrets"
             }).Build();
 
             var paths = WorkerCertificateConfigurationValidator.Validate(configuration, new TestEnvironment("Production"));
@@ -47,6 +53,12 @@ public sealed class WorkerCertificateConfigurationValidatorTests
                 ["Worker:Identity"] = "worker-east-01",
                 ["Worker:ClientCertificatePath"] = path,
                 ["Worker:ClientCertificatePassword"] = password,
+                ["ConnectionStrings:SentinelAIWorker"] = "Host=db.internal;Database=sentinelai;Username=worker;Password=secret",
+                ["Messaging:Mode"] = "RabbitMq",
+                ["RabbitMQ:Host"] = "rabbitmq.internal",
+                ["RabbitMQ:WorkerUsername"] = "sentinelai-worker",
+                ["RabbitMQ:WorkerPassword"] = "worker-broker-secret",
+                ["Secrets:Provider"] = "ExternalSecrets"
                 ["Worker:ControlPlaneToken"] = "legacy-token"
             }).Build();
 

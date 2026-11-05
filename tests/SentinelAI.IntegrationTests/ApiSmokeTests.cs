@@ -590,8 +590,22 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.NotNull(assessment);
         Assert.NotEqual(Guid.Empty, assessment!.ScopeId);
 
-        var filteredAssessments = await operatorClient.GetFromJsonAsync<PagedResponse<WebAssessmentResponse>>(
-            $"/api/v1/web-assessments?search=myapp.internal&status={assessment.Status}");
+        PagedResponse<WebAssessmentResponse>? filteredAssessments = null;
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            // A development in-process worker may advance a newly accepted assessment between
+            // the create response and this filtered list request. Query using the latest persisted
+            // state, retrying briefly if the state transitions during the two requests.
+            var currentAssessment = await operatorClient.GetFromJsonAsync<WebAssessmentResponse>(
+                $"/api/v1/web-assessments/{assessment.Id}");
+            Assert.NotNull(currentAssessment);
+            filteredAssessments = await operatorClient.GetFromJsonAsync<PagedResponse<WebAssessmentResponse>>(
+                $"/api/v1/web-assessments?search=myapp.internal&status={currentAssessment!.Status}");
+            if (filteredAssessments?.Items.Any(item => item.Id == assessment.Id) == true)
+                break;
+            await Task.Delay(50);
+        }
+
         Assert.NotNull(filteredAssessments);
         Assert.Contains(filteredAssessments.Items, item => item.Id == assessment.Id);
         Assert.Equal(1, filteredAssessments.TotalCount);

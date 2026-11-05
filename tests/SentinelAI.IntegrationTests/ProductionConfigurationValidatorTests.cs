@@ -124,6 +124,43 @@ public sealed class ProductionConfigurationValidatorTests
         Assert.Null(exception);
     }
 
+    [Fact]
+    public void Migration_mode_accepts_database_only_configuration_without_http_or_worker_secrets()
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["Database:Provider"] = "Postgres",
+            ["Database:ApplyMigrations"] = "false",
+            ["ConnectionStrings:SentinelAI"] = "Host=postgres.internal;Database=sentinelai;Username=migrator;Password=managed-secret"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+
+        var exception = Record.Exception(() =>
+            ProductionConfigurationValidator.ValidateMigrationConfiguration(configuration, new TestEnvironment("Production")));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Migration_mode_rejects_missing_or_unsafe_database_configuration()
+    {
+        var cases = new[]
+        {
+            (Values: new Dictionary<string, string?> { ["Database:Provider"] = "InMemory" }, Expected: "Database:Provider"),
+            (Values: new Dictionary<string, string?> { ["Database:Provider"] = "Postgres", ["Database:ApplyMigrations"] = "false" }, Expected: "ConnectionStrings:SentinelAI"),
+            (Values: new Dictionary<string, string?> { ["Database:Provider"] = "Postgres", ["Database:ApplyMigrations"] = "true", ["ConnectionStrings:SentinelAI"] = "Host=db;Database=sentinelai;Username=migrator;Password=secret" }, Expected: "Database:ApplyMigrations")
+        };
+
+        foreach (var testCase in cases)
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(testCase.Values).Build();
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                ProductionConfigurationValidator.ValidateMigrationConfiguration(configuration, new TestEnvironment("Production")));
+
+            Assert.Contains(testCase.Expected, exception.Message, StringComparison.Ordinal);
+        }
+    }
+
     private sealed class TestEnvironment(string environmentName) : IHostEnvironment
     {
         public string EnvironmentName { get; set; } = environmentName;

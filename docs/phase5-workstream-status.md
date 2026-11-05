@@ -30,12 +30,12 @@ This matrix deliberately mirrors every Phase 5 requirement. An item is not marke
 | Production fail-closed OIDC/database/broker/storage/TLS/secret config | Code and tests added | API/Web configuration validators and migration-only validation are covered by CI; staging IdP and real secret injection remain |
 | Development identities, header auth and self-approval blocked in Production | Code and tests added | Production configuration rejects development headers, static worker tokens and self-approval; live identity-provider exercise remains |
 | Liveness vs dependency readiness | Implemented in code; tests pending | API probes DB, RabbitMQ, object store, worker; Web readiness delegates to API |
-| Dedicated one-shot migrations | Code and Job implemented | `--migrate` now uses a database-only startup path without loading API listener certificates; migration upgrade/rollback and cluster rollout tests remain |
+| Dedicated one-shot migrations | Code and gated deployment script implemented | `--migrate` has a database-only startup path and CI smoke-tests it against a fresh PostgreSQL database. Staging/production deployment script waits for ExternalSecrets, runs migration to completion, then applies runtime workloads; live cluster/rollback test remains |
 | Trusted forwarded headers, CORS, secure cookies, rate/time/body limits, headers | In progress | Middleware/config added; proxy spoofing and ingress integration tests pending |
 | Durable tenant-prefixed encrypted object storage | In progress | S3-compatible adapter, KMS/AES256 and tenant-key validation; fake/MinIO integration tests pending |
 | Retention, staged cleanup and unreferenced-object reconciliation | In progress | S3 adapter cleanup/reconcile methods; lifecycle policy and test proof pending |
-| Immutable API/Web/Worker images | Not started | CI release build and digest-only promotion still required |
-| SBOM, provenance, vulnerability and secret scanning | Not started | Supply-chain workflow still required |
+| Immutable API/Web/Worker images | Partial | CI builds API/Web/Worker container images; release registry publication, digest signing/attestation and cross-environment promotion remain |
+| SBOM, provenance, vulnerability and secret scanning | Partial | CI generates CycloneDX SBOMs and runs Trivy vulnerability/secret scans for images and source; configuration scan is report-only. Signed provenance, release attestation and remediation baseline remain |
 | Promote exact image digest without rebuild | Not started | Release pipeline and environment overlay promotion tests required |
 | Deployment, config, rollback, schema compatibility, operator access | Not started | Runbooks and staging exercise required |
 
@@ -69,14 +69,14 @@ This matrix deliberately mirrors every Phase 5 requirement. An item is not marke
 | Non-root, read-only root FS, dropped capabilities, seccomp and limits | Manifests implemented | Workload manifests define non-root UID, read-only root filesystem, dropped capabilities, RuntimeDefault seccomp and resource limits; admission/live-pod checks remain |
 | Startup/readiness/liveness probes, rollout, graceful shutdown and PDB | Partial | API/Web probes, rollout grace periods and disruption budgets are defined; stateful-worker shutdown and cluster rollout tests remain |
 | HPA only for valid stateless metrics | Partial | API HPA uses CPU utilization; worker queue-aware scaling remains unimplemented. Web HPA was removed because Blazor Server keeps client circuits in process; persistent ingress cookie affinity is configured for the fixed Web replica pool |
-| One-shot migration Job gated before API rollout | Job and code implemented | Dedicated Job runs `--migrate`; it now avoids HTTP/mTLS configuration. Release orchestration dependency gate and rollback exercise remain |
+| One-shot migration Job gated before API rollout | Sequenced workflow implemented | Prerequisites, ExternalSecret readiness, migration Job and runtime rollout are separate Kustomize stages; `deploy.sh` guards kubectl context and waits for migration completion. Live staging/rollback acceptance remains |
 | Network policies and outbound-only customer worker | Policy manifests implemented | Default-deny plus explicit ingress/egress policies and a worker outbound path are defined; verify enforcement on the selected CNI/cluster |
 | External secret-manager integration via workload identity/CSI/operator | Partial | External Secrets Operator `ExternalSecret` resources exist in staging/production overlays; ClusterSecretStore, provider IAM/workload identity and live refresh are environment-owned and unverified |
-| No secrets in manifests/ConfigMaps/rendered output/CI logs | Not started | Automated leak checks required |
+| No secrets in manifests/ConfigMaps/rendered output/CI logs | Partial | Docker context excludes local env/certificate/private-key files; CI rejects secret-like manifest data and scans source/images. Full secret inventory and a green security scan remain |
 | Local worker outside cluster and firewall documentation | In progress | Existing worker separate process; mTLS endpoint and deployment profile required |
-| Local, staging and production overlays | Manifests implemented | Local has Development-only resources; staging/production have separate secret references and digest placeholders. Rendering is added to CI; cluster install/upgrade remains |
+| Local, staging and production overlays | Manifests implemented | Local has Development-only resources; staging/production have separate secret references, dedicated migration prerequisite/job stages and digest placeholders. CI validates render/schema; cluster install/upgrade remains |
 | Durable queue, storage classes, backup volumes, TLS, DNS and cert renewal | Not started | Manifest and runbook acceptance required |
-| Kustomize and Kubernetes schema validation | CI gate added | `kubectl kustomize` and strict `kubeconform` run for all three overlays; verify the current workflow result and validate operator CRDs on the target cluster |
+| Kustomize and Kubernetes schema validation | CI gate extended | `kubectl kustomize` and strict `kubeconform` cover local, staging, production and the four staging/production migration-stage overlays; latest gate is pending. Operator CRDs and live cluster validation remain |
 | Disposable install/upgrade/uninstall | Not started | kind or equivalent ephemeral cluster gate required |
 | Least privilege and NetworkPolicy live behavior | Manifest baseline only | Static manifests define least privilege and traffic boundaries; no disposable cluster/CNI policy test has run yet |
 | Secret rotation without image rebuild | Not started | Staging external-secret refresh test required |
@@ -95,7 +95,7 @@ This matrix deliberately mirrors every Phase 5 requirement. An item is not marke
 | Clock skew, delayed scheduler and coalescing | Not started | Deterministic time/chaos tests required |
 | Failed migration and interrupted rollout recovery | Not started | Upgrade/rollback exercise required |
 | Alert thresholds, dashboards, on-call and escalation | Not started | Operational runbooks and dashboard changes required |
-| Dependency/container/IaC/secret scanning | Not started | CI gates required |
+| Dependency/container/IaC/secret scanning | Partial | CI builds and scans runtime images, scans source secrets/vulnerabilities, generates SBOMs, and records Trivy configuration findings. Final scan result, signed provenance and enforced configuration policy remain |
 | Threat-model abuse cases and cross-tenant/worker impersonation/replay | In progress | Certificate, policy and storage tests pending |
 | Independent penetration test before public exposure | External gate | Must be performed by independent assessor; cannot be substituted by CI |
 | Critical/high findings fixed or approved exception | External gate | Signed report and exception record required |

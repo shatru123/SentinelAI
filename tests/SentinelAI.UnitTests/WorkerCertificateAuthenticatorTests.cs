@@ -31,6 +31,24 @@ public sealed class WorkerCertificateAuthenticatorTests
     }
 
     [Fact]
+    public async Task Certificate_binding_cannot_cross_tenant_even_when_worker_identity_matches()
+    {
+        using var certificate = CreateCertificate();
+        await using var db = CreateDb();
+        var certificateTenantId = Guid.NewGuid();
+        var registeredWorkerTenantId = Guid.NewGuid();
+        var worker = new WorkerRegistration(registeredWorkerTenantId, "worker-shared-name", "1.0", ["web-assessment"]);
+        worker.Heartbeat();
+        db.Workers.Add(worker);
+        db.WorkerClientCertificates.Add(CreateBinding(certificateTenantId, worker.Identity, certificate));
+        await db.SaveChangesAsync();
+
+        var principal = await new WorkerCertificateAuthenticator(db).AuthenticateAsync(certificate);
+
+        Assert.Null(principal);
+    }
+
+    [Fact]
     public async Task Unknown_certificate_is_rejected_even_when_the_presented_certificate_is_well_formed()
     {
         using var certificate = CreateCertificate();

@@ -2,6 +2,8 @@ using System.Data;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using SentinelAI.Application;
@@ -206,6 +208,139 @@ public sealed class Phase44PostgresAcceptanceTests
             Assert.Equal(1, await verify.AgentExecutions.CountAsync());
             Assert.Equal(1, await verify.WebAssessments.CountAsync(x => x.TenantId == tenant.Id && x.ScopeId == scope.Id));
             Assert.Equal(1, await verify.OutboxMessages.CountAsync(x => x.TenantId == tenant.Id));
+        }
+        finally
+        {
+            await DropSchemaAsync(connectionString!, schema);
+        }
+    }
+
+    [Fact]
+    public async Task Scheduled_outbox_is_dispatched_to_the_tenant_and_worker_bound_rabbitmq_queue()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("SENTINELAI_POSTGRES_CONNECTION");
+        Assert.False(string.IsNullOrWhiteSpace(connectionString),
+            "CI must provide SENTINELAI_POSTGRES_CONNECTION for scheduled outbox dispatch acceptance.");
+
+        var schema = $"phase44_rabbit_outbox_{Guid.NewGuid():N}";
+        await CreateSchemaAsync(connectionString!, schema);
+        try
+        {
+            var schemaConnectionString = WithSearchPath(connectionString!, schema);
+            var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(schemaConnectionString).Options;
+            await using (var migrate = new AppDbContext(options))
+                await migrate.Database.MigrateAsync();
+
+            var now = DateTimeOffset.UtcNow;
+            var tenant = new Tenant("Phase 4 scheduled RabbitMQ outbox tenant");
+            var creatorId = Guid.NewGuid();
+            var creator = new User(creatorId, tenant.Id, "phase44-rabbit-creator",
+                "Phase 4 RabbitMQ creator", UserRole.SecurityAnalyst);
+            const string workerIdentity = "phase44-rabbit-worker";
+            var scope = new TargetScope(tenant.Id, "phase44-rabbit-scope", creatorId, now.AddDays(6));
+            scope.Configure([new TargetDefinition(TargetKind.Web, "https://10.8.9.10/")], [],
+                [WebAssessmentOperationProfiles.Passive], 30, 300, "approved RabbitMQ outbox test authorization", false);
+            scope.ConfigureWebHosting(WebHostingMode.Private, workerIdentity, ["10.0.0.0/8"]);
+            var worker = new WorkerRegistration(tenant.Id, workerIdentity, "test",
+                ["web-assessment", "private-web-assessment"]);
+            worker.ProvisionByAdministrator("test",
+                ["web-assessment", "private-web-assessment"], ["10.0.0.0/8"]);
+            worker.Heartbeat(0, 1);
+
+            await using (var seed = new AppDbContext(options))
+            {
+                seed.AddRange(tenant, creator, scope, worker);
+                await seed.SaveChangesAsync();
+            }
+
+            string persistedFingerprint;
+            await using (var scopeRead = new AppDbContext(options))
+            {
+                var persistedScope = await scopeRead.TargetScopes.AsNoTracking()
+                    .SingleAsync(x => x.Id == scope.Id);
+                persistedFingerprint = persistedScope.GetAuthorizationFingerprint();
+            }
+
+            var schedule = new AssessmentSchedule(tenant.Id, scope.Id, creatorId,
+                WebAssessmentOperationProfiles.Passive, persistedFingerprint,
+                24, now.AddDays(5), now.AddHours(-25));
+            await using (var seedSchedule = new AppDbContext(options))
+            {
+                seedSchedule.AssessmentSchedules.Add(schedule);
+                await seedSchedule.SaveChangesAsync();
+            }
+
+            // Generate the exact outbox record written by the real scheduled-assessment processor.
+            await CreateProcessor(options).RunOnceAsync();
+
+            Guid expectedJobId;
+            await using (var verifyQueued = new AppDbContext(options))
+            {
+                var run = await verifyQueued.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == schedule.Id);
+                Assert.Equal(AssessmentScheduleRunStatus.Queued, run.Status);
+                expectedJobId = Assert.IsType<Guid>(run.JobId);
+                var outbox = await verifyQueued.OutboxMessages.SingleAsync(x => x.TenantId == tenant.Id);
+                Assert.Equal(OutboxMessageTypes.ScanJob, outbox.MessageType);
+                Assert.Null(outbox.DispatchedAt);
+            }
+
+            var rabbitConfiguration = new ConfigurationManager();
+            rabbitConfiguration["RabbitMQ:Host"] = Environment.GetEnvironmentVariable("RABBITMQ_TEST_HOST") ?? "localhost";
+            rabbitConfiguration["RabbitMQ:Port"] = Environment.GetEnvironmentVariable("RABBITMQ_TEST_PORT") ?? "5672";
+            rabbitConfiguration["RabbitMQ:Username"] = Environment.GetEnvironmentVariable("RABBITMQ_TEST_USER") ?? "sentinelai";
+            rabbitConfiguration["RabbitMQ:Password"] = Environment.GetEnvironmentVariable("RABBITMQ_TEST_PASSWORD") ?? "replace-with-local-dev-password";
+
+            await using var rabbitProvider = new RabbitMqConnectionProvider(
+                rabbitConfiguration, NullLogger<RabbitMqConnectionProvider>.Instance);
+            var rabbitQueue = new RabbitMqScanJobQueue(
+                rabbitProvider, rabbitConfiguration, NullLogger<RabbitMqScanJobQueue>.Instance);
+
+            var dispatcherServices = new ServiceCollection();
+            dispatcherServices.AddDbContext<AppDbContext>(builder => builder.UseNpgsql(schemaConnectionString));
+            await using var dispatcherProvider = dispatcherServices.BuildServiceProvider();
+            var dispatcher = new OutboxDispatcher(
+                dispatcherProvider.GetRequiredService<IServiceScopeFactory>(),
+                rabbitQueue,
+                rabbitConfiguration,
+                NullLogger<OutboxDispatcher>.Instance);
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            await using var deliveryReader = rabbitQueue
+                .ReadAllAsync(tenant.Id, workerIdentity, timeout.Token)
+                .GetAsyncEnumerator(timeout.Token);
+            var deliveryTask = deliveryReader.MoveNextAsync().AsTask();
+
+            await dispatcher.StartAsync(CancellationToken.None);
+            try
+            {
+                Assert.True(await deliveryTask.WaitAsync(TimeSpan.FromSeconds(15)),
+                    "The scheduled outbox message was not delivered to the bound RabbitMQ worker queue.");
+                var delivery = deliveryReader.Current;
+                Assert.Equal(expectedJobId, delivery.JobId);
+                Assert.Equal(tenant.Id, delivery.TenantId);
+                Assert.Equal(workerIdentity, delivery.WorkerIdentity);
+                await delivery.AcknowledgeAsync(timeout.Token);
+
+                var dispatched = false;
+                for (var attempt = 0; attempt < 50; attempt++)
+                {
+                    await using var verifyDispatch = new AppDbContext(options);
+                    var outbox = await verifyDispatch.OutboxMessages.SingleAsync(x => x.TenantId == tenant.Id);
+                    if (outbox.DispatchedAt is not null)
+                    {
+                        dispatched = true;
+                        Assert.Null(outbox.LeaseExpiresAt);
+                        break;
+                    }
+                    await Task.Delay(100, timeout.Token);
+                }
+
+                Assert.True(dispatched, "The real outbox dispatcher did not persist the dispatched state.");
+            }
+            finally
+            {
+                await dispatcher.StopAsync(CancellationToken.None);
+            }
         }
         finally
         {

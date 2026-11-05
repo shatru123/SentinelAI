@@ -72,7 +72,7 @@ public static class ProductionConfigurationValidator
             allowedHosts.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Length == 0)
             errors.Add("AllowedHosts must be an explicit host allow-list in Production.");
 
-        RequireValue(configuration["Secrets:Provider"], "Secrets:Provider", errors);
+        RequireValue(configuration["ExternalConfig:Provider"], "ExternalConfig:Provider", errors);
         RequireNonLocalValue(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"], "OTEL_EXPORTER_OTLP_ENDPOINT", errors);
 
         if (errors.Count > 0)

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinelai-runtime
+  namespace: sentinelai
+data:
+  Authentication__Authority: https://identity.example.invalid/
+  Authentication__ClientId: sentinelai-web-production
+  Security__AllowedOrigins__0: https://sentinelai.example.invalid
+  ReverseProxy__KnownProxies__0: 10.20.0.10
+  AllowedHosts: api.sentinelai.example.invalid;sentinelai.example.invalid
+  Artifacts__S3__Bucket: sentinelai-production-evidence-replace-me
+  Artifacts__S3__KmsKeyId: alias/sentinelai-production-evidence
+  Worker__Identity: production-worker-east-01
+  Worker__TenantId: 22222222-2222-2222-2222-222222222222

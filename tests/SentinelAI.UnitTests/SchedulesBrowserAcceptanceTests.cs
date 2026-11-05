@@ -15,6 +15,7 @@ using SentinelAI.Domain;
 
 namespace SentinelAI.UnitTests;
 
+[Collection(BrowserAcceptanceCollection.Name)]
 public sealed class SchedulesBrowserAcceptanceTests
 {
     [Fact]

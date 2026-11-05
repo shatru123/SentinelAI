@@ -35,7 +35,7 @@ This matrix deliberately mirrors every Phase 5 requirement. An item is not marke
 | Durable tenant-prefixed encrypted object storage | In progress | S3-compatible adapter, KMS/AES256 and tenant-key validation; fake/MinIO integration tests pending |
 | Retention, staged cleanup and unreferenced-object reconciliation | In progress | S3 adapter cleanup/reconcile methods; lifecycle policy and test proof pending |
 | Immutable API/Web/Worker images | Partial | CI builds API/Web/Worker container images; release registry publication, digest signing/attestation and cross-environment promotion remain |
-| SBOM, provenance, vulnerability and secret scanning | Remediation in progress | CI generated CycloneDX SBOMs and Trivy SARIF. Source scan had zero findings; API/Web/Worker images shared Ubuntu apt CVE-2026-109518. Runtime Dockerfiles now run apt security upgrades before packaging; final rebuilt-image scan is pending. Config scan is report-only and includes local-profile findings plus a key-name false positive for `Secrets__Provider`; signed provenance and release attestation remain |
+| SBOM, provenance, vulnerability and secret scanning | Build-time scans passed; supply-chain incomplete | CI run #775 generated CycloneDX SBOMs and Trivy SARIF; all three rebuilt runtime images and source had zero HIGH/CRITICAL findings after the Ubuntu apt security upgrade. Config scan is report-only: 12 findings are intentional local-development relaxations and one is a false positive on the `Secrets__Provider` selector. Signed image provenance, registry publication and digest promotion remain |
 | Promote exact image digest without rebuild | Not started | Release pipeline and environment overlay promotion tests required |
 | Deployment, config, rollback, schema compatibility, operator access | Not started | Runbooks and staging exercise required |
 
@@ -44,18 +44,18 @@ This matrix deliberately mirrors every Phase 5 requirement. An item is not marke
 | Requirement | Status | Evidence / remaining acceptance |
 |---|---|---|
 | Admin-approved immutable tenant/worker identity and capabilities | Existing foundation | Preserve existing provisioning boundary; add tests against mTLS enrollment |
-| Production mTLS, Development-only bearer auth | In progress | Certificate auth scheme and separate 8443 mTLS listener added; CI and handshake tests pending |
+| Production mTLS, Development-only bearer auth | In progress | Certificate auth scheme and separate 8443 listener, admin enrollment/revocation endpoints, local CSR/PFX tooling and manual lifecycle guide are present; real cluster mTLS handshake and external TCP/TLS-passthrough endpoint remain |
 | Certificate bound to DB worker identity and tenant | In progress | SHA-256 thumbprint binding model, authenticator and DB migration added; integration tests pending |
 | CA-signed public certificate enrollment; private key never sent to API | In progress | Admin-only endpoint and validation added; CA-chain tests pending |
 | CA issuance/revocation and trust material externalized | Partially implemented | Root/server certificate paths required from mounted secrets; external CA/secret-manager wiring pending |
-| Worker key generated/stored on worker or protected key service | In progress | Worker loads PFX from mounted path; key generation/CSR/enrollment workflow and filesystem permission proof pending |
+| Worker key generated/stored on worker or protected key service | Manual bootstrap implemented | OpenSSL utility generates a 3072-bit worker key and CSR with private directory/file permissions; packaging validates CA chain, worker identity, EKU and key match before creating a password-protected PFX. Lifecycle CI exercise added; secret-manager handoff and real worker-host validation remain |
 | Old/new certificate overlap | In progress | Worker accepts multiple mounted PFX certificates; end-to-end reconnect test pending |
 | Expiry, revocation, emergency disable and audit | In progress | Per-auth DB revocation lookup, admin revoke/disable, audit events added; auth/DB tests pending |
-| Certificate expiry <= 90 days and client-auth EKU | In progress | Enrollment validator added; tests added but not yet green |
-| Wrong CA, unknown, wrong tenant, expired, not-yet-valid, revoked rejection | In progress | Test cases added; CI pending |
+| Certificate expiry <= 90 days and client-auth EKU | Code and tests implemented | API enrollment validator enforces a maximum 90-day lifetime and client-authentication EKU; integration tests cover expiry, EKU and CA-chain rejection. Latest certificate-lifecycle CI is still running |
+| Wrong CA, unknown, wrong tenant, expired, not-yet-valid, revoked rejection | Code and tests implemented | API certificate-chain validation and DB authenticator binding reject untrusted, unknown, wrong-tenant, expired, not-yet-valid and revoked identities; a cross-tenant binding regression test and lifecycle CI step have been added |
 | Worker cannot self-grant tenant/capabilities/CIDRs | Existing foundation | Retest role and worker-origin boundaries with certificate identity |
 | TLS server validation, bounded reconnect/backoff, replay resistance | Partial | Default TLS validation preserved; heartbeat replay/idempotency and reconnect chaos coverage pending |
-| Rotation, replacement, lost-device and recovery procedures | Not started | Runbooks required |
+| Rotation, replacement, lost-device and recovery procedures | Manual runbook implemented | `docs/worker-certificate-lifecycle.md` documents initial enrollment, overlapping current/previous PFX rotation, revoke/disable, replacement and lost-device steps. Automated renewal, live reconnect/rotation chaos and real incident-recovery exercise remain |
 | Job admission/cancellation/expiry/lease/capability checks retained | Existing foundation | Regression/dispatch integration tests required under certificate-auth |
 | Safe Compose/local bearer migration | In progress | Compose worker switched explicitly to Development; compose and CI checks pending |
 
@@ -72,7 +72,7 @@ This matrix deliberately mirrors every Phase 5 requirement. An item is not marke
 | One-shot migration Job gated before API rollout | Sequenced workflow implemented | `deploy.sh` applies namespace/service accounts/ConfigMap and environment ExternalSecrets, waits for Ready, runs the Job with the exact runtime API digest, then applies runtime workloads. Live staging/rollback acceptance remains |
 | Network policies and outbound-only customer worker | Policy manifests implemented | Default-deny rules, worker outbound mTLS, private data-plane egress and Web-only egress through the operations gateway are defined; CI checks the proxy/NetworkPolicy contract. The gateway, destination allow-list and CNI enforcement remain cluster-owned acceptance |
 | External secret-manager integration via workload identity/CSI/operator | Partial | External Secrets Operator `ExternalSecret` resources exist in staging/production overlays; ClusterSecretStore, provider IAM/workload identity and live refresh are environment-owned and unverified |
-| No secrets in manifests/ConfigMaps/rendered output/CI logs | Partial | Docker context excludes local env/certificate/private-key files; CI rejects secret-like manifest data and scans source/images. Full secret inventory and a green security scan remain |
+| No secrets in manifests/ConfigMaps/rendered output/CI logs | Partial | Docker context excludes local environment files, certificates and private keys; Kustomize CI rejects secret-like manifest values and Trivy source/image secret scans passed with zero findings. The ConfigMap `Secrets__Provider` finding is a selector-name false positive, not a secret value; external secret-store/cluster verification remains |
 | Local worker outside cluster and firewall documentation | In progress | Existing worker separate process; mTLS endpoint and deployment profile required |
 | Local, staging and production overlays | Manifests implemented | Local has Development-only resources; staging/production have separate secret references and digest placeholders. The release script handles migration sequencing without invalid nested Kustomize roots; cluster install/upgrade remains |
 | Durable queue, storage classes, backup volumes, TLS, DNS and cert renewal | Not started | Manifest and runbook acceptance required |

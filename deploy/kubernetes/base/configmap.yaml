@@ -50,3 +50,6 @@ data:
   Worker__LeaseRenewalSeconds: "15"
   Worker__MaxAttempts: "5"
   Web__EnableHttpsRedirection: "true"
+  DataProtection__KeyRingPath: /var/lib/sentinelai-data-protection
+  DataProtection__CertificatePath: /var/run/sentinelai-web-data-protection/current.pfx
+  DataProtection__PreviousCertificatePaths__0: /var/run/sentinelai-web-data-protection/previous.pfx

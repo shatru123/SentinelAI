@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace SentinelAI.Api;
@@ -51,7 +52,7 @@ public static class WorkerCertificateEnrollmentValidator
             if (keyUsage is not null && !keyUsage.KeyUsages.HasFlag(X509KeyUsageFlags.DigitalSignature))
                 throw new ArgumentException("A worker certificate must permit digital signatures.", nameof(certificatePem));
 
-            using var root = new X509Certificate2(trustedRootCertificatePath);
+            using var root = X509CertificateLoader.LoadCertificateFromFile(trustedRootCertificatePath);
             var rootConstraints = root.Extensions.OfType<X509BasicConstraintsExtension>().SingleOrDefault();
             if (rootConstraints is null || !rootConstraints.CertificateAuthority)
                 throw new InvalidOperationException("The configured worker trust anchor is not a CA certificate.");

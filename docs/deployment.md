@@ -25,3 +25,9 @@ Before any shared or Production exposure, complete a disposable-cluster install/
 ## Provider-specific egress prerequisites
 
 The Kubernetes base policy allows database and broker traffic to operator-managed pods labelled in the `sentinelai-data` namespace. Staging/production ConfigMap broker hostnames are placeholders. When using cloud-managed PostgreSQL or RabbitMQ outside the cluster, add narrow NetworkPolicy rules for the approved endpoint CIDRs or the selected CNI's FQDN policy before deployment. The default-deny policy must remain in place. The operator-managed egress gateway also needs an explicit destination allow-list for HTTPS dependencies such as OIDC and object storage.
+
+## Customer-local Worker connectivity boundary
+
+The Worker uses the mTLS listener for its registration and heartbeat calls, but it also consumes RabbitMQ directly and uses a separate PostgreSQL worker principal for assessment state. It is therefore not yet a single outbound-HTTPS-only customer agent. The current `sentinelai-api-worker` Kubernetes Service is internal (`ClusterIP`); the public HTTP Ingress does not expose the mTLS listener.
+
+Do not expose PostgreSQL or RabbitMQ publicly. Before deploying a worker outside the trusted cloud network, provide private connectivity to tenant-scoped broker/database endpoints (or implement a control-plane gateway that removes those direct connections), and publish a TCP/TLS-passthrough endpoint for mTLS. Verify certificate SAN/trust, broker permissions, DB grants, tenant queue routing and cancellation from a real customer-network worker. Until then, deploy the Worker only in the controlled network where those private dependencies are reachable.

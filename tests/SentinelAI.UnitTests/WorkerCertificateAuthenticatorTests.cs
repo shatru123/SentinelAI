@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.EntityFrameworkCore;
-using SentinelAI.Api;
+using SentinelAI.Application;
 using SentinelAI.Domain;
 using SentinelAI.Infrastructure;
 

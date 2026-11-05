@@ -40,4 +40,7 @@ data:
   Dashboard__Role: Admin
   AI__DefaultProvider: ollama
   AI__Ollama__Endpoint: http://ollama:11434
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  NO_PROXY: localhost,127.0.0.1,::1,.svc,.cluster.local
   OTEL_EXPORTER_OTLP_ENDPOINT: http://sentinelai-otel-collector:4317

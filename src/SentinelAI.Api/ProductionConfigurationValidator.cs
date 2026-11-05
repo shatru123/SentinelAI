@@ -80,6 +80,23 @@ public static class ProductionConfigurationValidator
                 string.Join(Environment.NewLine, errors.Select(error => "- " + error)));
     }
 
+    public static void ValidateMigrationConfiguration(IConfiguration configuration, IHostEnvironment environment)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(environment);
+
+        var errors = new List<string>();
+        if (!string.Equals(configuration["Database:Provider"], "Postgres", StringComparison.OrdinalIgnoreCase))
+            errors.Add("Database:Provider must be Postgres for the migration job.");
+        RequireValue(configuration["ConnectionStrings:SentinelAI"], "ConnectionStrings:SentinelAI", errors);
+        if (configuration.GetValue<bool>("Database:ApplyMigrations"))
+            errors.Add("Database:ApplyMigrations must be false; migrations are invoked explicitly by the one-shot migration command.");
+
+        if (errors.Count > 0)
+            throw new InvalidOperationException("Migration configuration is unsafe or incomplete:" + Environment.NewLine +
+                string.Join(Environment.NewLine, errors.Select(error => "- " + error)));
+    }
+
     private static bool IsHttpsOrigin(string? value)
         => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
            uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&

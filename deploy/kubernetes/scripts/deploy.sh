@@ -27,22 +27,42 @@ if [[ "$actual_context" != "$expected_context" ]]; then
 fi
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
-OVERLAY_DIR="$ROOT_DIR/deploy/kubernetes/overlays/$environment"
-PREREQUISITES="$OVERLAY_DIR/migration-prerequisites"
-MIGRATION_JOB="$OVERLAY_DIR/migration-job"
+K8S_DIR="$ROOT_DIR/deploy/kubernetes"
+OVERLAY_DIR="$K8S_DIR/overlays/$environment"
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
-for directory in "$PREREQUISITES" "$MIGRATION_JOB" "$OVERLAY_DIR"; do
-  rendered="$(kubectl kustomize "$directory")"
-  if grep -Eq 'example\.invalid|replace-me|placeholder|sha256:0{64}|11111111-1111-1111-1111-111111111111|22222222-2222-2222-2222-222222222222|staging-worker-east-01|production-worker-east-01' <<< "$rendered"; then
-    echo "Refusing deployment: '$directory' still contains environment or image placeholders." >&2
-    exit 1
-  fi
-done
+# Validate the exact runtime overlay and its first-party image digests before
+# creating or changing any cluster resources.
+RUNTIME_MANIFEST="$TEMP_DIR/runtime.yaml"
+kubectl kustomize "$OVERLAY_DIR" > "$RUNTIME_MANIFEST"
+if grep -Eq 'example\.invalid|replace-me|placeholder|sha256:0{64}|11111111-1111-1111-1111-111111111111|22222222-2222-2222-2222-222222222222|staging-worker-east-01|production-worker-east-01' "$RUNTIME_MANIFEST"; then
+  echo "Refusing deployment: the $environment overlay still contains environment or image placeholders." >&2
+  exit 1
+fi
+
+api_image="$(awk '
+  /^kind: Deployment$/ { in_deployment=1; is_api=0; next }
+  in_deployment && /^[[:space:]]*name: sentinelai-api$/ { is_api=1; next }
+  is_api && /^[[:space:]]*image:/ { sub(/^[[:space:]]*image:[[:space:]]*/, ""); print; exit }
+  /^---$/ { in_deployment=0; is_api=0 }
+' "$RUNTIME_MANIFEST")"
+if [[ -z "$api_image" || "$api_image" != *@sha256:* ]]; then
+  echo "Refusing deployment: the API runtime image is not pinned to an immutable digest." >&2
+  exit 1
+fi
 
 kubectl get crd externalsecrets.external-secrets.io >/dev/null
 
-echo "Applying namespace, service accounts, runtime configuration and external secret references."
-kubectl apply -k "$PREREQUISITES"
+echo "Applying namespace, service accounts and base runtime configuration."
+kubectl apply -f "$K8S_DIR/base/namespace.yaml"
+kubectl apply -f "$K8S_DIR/base/service-accounts.yaml"
+kubectl apply -f "$K8S_DIR/base/configmap.yaml"
+
+echo "Applying $environment external secret references and runtime overrides."
+kubectl apply -f "$OVERLAY_DIR/external-secrets.yaml"
+kubectl patch configmap sentinelai-runtime --namespace sentinelai \
+  --type merge --patch-file "$OVERLAY_DIR/runtime-patch.yaml"
 
 echo "Waiting for all external secrets to synchronize before migration."
 kubectl wait --for=condition=Ready externalsecrets.external-secrets.io \
@@ -58,8 +78,16 @@ if kubectl get job sentinelai-migrate --namespace sentinelai >/dev/null 2>&1; th
   kubectl delete job sentinelai-migrate --namespace sentinelai --wait=true
 fi
 
-echo "Running the one-shot schema migration."
-kubectl apply -k "$MIGRATION_JOB"
+echo "Preparing the migration Job with the exact API image digest selected by the runtime overlay."
+sed -E "s#^([[:space:]]*image:)[[:space:]]*.*#\1 $api_image#" \
+  "$K8S_DIR/base/migration-job.yaml" > "$TEMP_DIR/migration-job.yaml"
+if ! grep -Fq "image: $api_image" "$TEMP_DIR/migration-job.yaml"; then
+  echo "Could not set the migration Job image to the promoted API digest." >&2
+  exit 1
+fi
+
+echo "Running the one-shot schema migration before changing application workloads."
+kubectl apply -f "$TEMP_DIR/migration-job.yaml"
 kubectl wait --for=condition=Complete job/sentinelai-migrate \
   --namespace sentinelai --timeout=900s
 

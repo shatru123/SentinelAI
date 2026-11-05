@@ -94,6 +94,10 @@ kubectl wait --for=condition=Complete job/sentinelai-migrate \
 echo "Database migration completed. Applying API, Web, Worker and supporting services."
 kubectl apply -k "$OVERLAY_DIR"
 
+echo "Waiting for the shared ReadWriteMany Web Data Protection key-ring volume."
+kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/sentinelai-web-data-protection \
+  --namespace sentinelai --timeout=300s
+
 echo "Waiting for Worker, API and Web rollouts."
 kubectl rollout status statefulset/sentinelai-worker --namespace sentinelai --timeout=900s
 kubectl rollout status deployment/sentinelai-api --namespace sentinelai --timeout=900s

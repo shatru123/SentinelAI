@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net.Http.Json;
@@ -303,7 +304,7 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal(HttpStatusCode.OK, pauseBeforeRevocation.StatusCode);
         var revoked = await administrator.PostAsync(
             $"/api/v1/public-target-authorizations/{authorization.Id}/revoke", content: null);
-        Assert.Equal(HttpStatusCode.OK, revoked.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, revoked.StatusCode);
 
         var blockedResumeResponse = await analyst.PostAsync(
             $"/api/v1/assessment-schedules/{schedule.Id}/resume", content: null);

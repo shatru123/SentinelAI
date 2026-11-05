@@ -58,7 +58,7 @@ public sealed class WorkerCertificateConfigurationValidatorTests
                 ["RabbitMQ:Host"] = "rabbitmq.internal",
                 ["RabbitMQ:WorkerUsername"] = "sentinelai-worker",
                 ["RabbitMQ:WorkerPassword"] = "worker-broker-secret",
-                ["Secrets:Provider"] = "ExternalSecrets"
+                ["Secrets:Provider"] = "ExternalSecrets",
                 ["Worker:ControlPlaneToken"] = "legacy-token"
             }).Build();
 

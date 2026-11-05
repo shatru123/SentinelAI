@@ -90,7 +90,7 @@ public sealed class WorkerCertificateEnrollmentValidatorTests
         try
         {
             var now = DateTimeOffset.UtcNow;
-            using var leaf = CreateLeaf(authority, "worker-a", now.AddDays(-30), now.AddDays(-1));
+            using var leaf = CreateLeaf(authority, "worker-a", now.AddDays(-1), now.AddHours(-1));
             Assert.Throws<ArgumentException>(() =>
                 WorkerCertificateEnrollmentValidator.Validate(Pem(leaf), [], "worker-a", rootPath, now));
         }

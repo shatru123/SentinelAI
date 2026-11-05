@@ -47,8 +47,8 @@ public static class ProductionConfigurationValidator
             errors.Add("WorkerAuthentication:Mode must be Mtls in Production; bearer-token worker authentication is Development-only.");
         var caPath = configuration["WorkerAuthentication:TrustedRootCertificatePath"];
         RequireFile(caPath, "WorkerAuthentication:TrustedRootCertificatePath", errors);
-        if (!configuration.GetSection("WorkerAuthentication:CertificateBindings").GetChildren().Any())
-            errors.Add("At least one WorkerAuthentication:CertificateBindings entry is required.");
+        RequireFile(configuration["WorkerAuthentication:ServerCertificatePath"], "WorkerAuthentication:ServerCertificatePath", errors);
+        RequireNonDefaultSecret(configuration["WorkerAuthentication:ServerCertificatePassword"], "WorkerAuthentication:ServerCertificatePassword", errors);
         if (!string.IsNullOrWhiteSpace(configuration["Authentication:WorkerToken"]) ||
             configuration.GetSection("Authentication:WorkerCredentials").GetChildren().Any())
             errors.Add("Static worker bearer credentials must not be configured in Production.");

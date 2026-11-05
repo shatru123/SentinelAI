@@ -9,6 +9,14 @@ using SentinelAI.Worker;
 var builder = Host.CreateApplicationBuilder(args);
 var isDevelopment = builder.Environment.IsDevelopment();
 var clientCertificatePaths = WorkerCertificateConfigurationValidator.Validate(builder.Configuration, builder.Environment);
+if (!isDevelopment)
+{
+    // The standalone worker gets its own least-privilege database and broker principals.
+    // These values are injected by the external secret manager, never committed to source.
+    builder.Configuration["ConnectionStrings:SentinelAI"] = builder.Configuration["ConnectionStrings:SentinelAIWorker"];
+    builder.Configuration["RabbitMQ:Username"] = builder.Configuration["RabbitMQ:WorkerUsername"];
+    builder.Configuration["RabbitMQ:Password"] = builder.Configuration["RabbitMQ:WorkerPassword"];
+}
 
 builder.Services.AddSingleton<WorkerOptions>();
 builder.Services.AddSentinelInfrastructure(builder.Configuration, builder.Environment);

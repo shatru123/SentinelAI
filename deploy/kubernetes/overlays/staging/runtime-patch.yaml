@@ -6,6 +6,7 @@ metadata:
 data:
   Authentication__Authority: https://identity.staging.example.invalid/
   Authentication__ClientId: sentinelai-web-staging
+  Api__BaseUrl: https://api.sentinelai.staging.example.invalid
   Security__AllowedOrigins__0: https://sentinelai.staging.example.invalid
   ReverseProxy__KnownProxies__0: 10.10.0.10
   AllowedHosts: api.sentinelai.staging.example.invalid;sentinelai.staging.example.invalid

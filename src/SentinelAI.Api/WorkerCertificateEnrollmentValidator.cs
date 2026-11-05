@@ -22,6 +22,9 @@ public static class WorkerCertificateEnrollmentValidator
         if (string.IsNullOrWhiteSpace(trustedRootCertificatePath) || !File.Exists(trustedRootCertificatePath))
             throw new InvalidOperationException("The trusted worker CA certificate is not mounted.");
 
+        if (certificatePem.Contains("PRIVATE KEY", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Private keys must never be uploaded to the control plane.", nameof(certificatePem));
+
         var certificate = X509Certificate2.CreateFromPem(certificatePem);
         try
         {
@@ -69,6 +72,8 @@ public static class WorkerCertificateEnrollmentValidator
             {
                 if (string.IsNullOrWhiteSpace(intermediatePem) || intermediatePem.Length > 64 * 1024)
                     throw new ArgumentException("An intermediate certificate PEM is invalid.", nameof(intermediateCertificatesPem));
+                if (intermediatePem.Contains("PRIVATE KEY", StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("Private keys must never be uploaded to the control plane.", nameof(intermediateCertificatesPem));
                 using var intermediate = X509Certificate2.CreateFromPem(intermediatePem);
                 if (intermediate.HasPrivateKey)
                     throw new ArgumentException("Private keys must never be uploaded to the control plane.", nameof(intermediateCertificatesPem));

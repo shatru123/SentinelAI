@@ -198,7 +198,9 @@ app.MapGet("/health/ready", async (
     }
 
     var artifactStore = services.GetService<IAssessmentArtifactStore>();
-    var storageReady = artifactStore is not null;
+    var storageProbe = services.GetService<IAssessmentArtifactStoreReadiness>();
+    var storageReady = artifactStore is not null && storageProbe is not null &&
+        await storageProbe.CheckAvailabilityAsync(cancellationToken);
     var workerCount = 0;
     try
     {

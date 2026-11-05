@@ -5,7 +5,7 @@ resources:
   - namespace.yaml
   - service-accounts.yaml
   - configmap.yaml
-  - external-secrets.yaml
+  - telemetry.yaml
   - api.yaml
   - web.yaml
   - worker.yaml

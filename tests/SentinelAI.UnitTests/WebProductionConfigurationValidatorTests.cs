@@ -71,7 +71,6 @@ public sealed class WebProductionConfigurationValidatorTests
             string protectedPayload;
             var oldReplicaServices = new ServiceCollection();
             {
-            {
                 oldReplicaServices.AddDataProtection()
                     .SetApplicationName("SentinelAI.Web")
                     .PersistKeysToFileSystem(new DirectoryInfo(assets.KeyRingDirectory))

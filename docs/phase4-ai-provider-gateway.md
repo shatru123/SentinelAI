@@ -58,13 +58,16 @@ Example response shape:
 
 Health checks use a maximum five-second timeout and are skipped for unconfigured providers. The response does not include model names, endpoint URLs or secrets.
 
-## Remaining Phase 4 work
+## Subsequent Phase 4 increments
 
-This gateway does not yet invoke AI during assessment triage or report generation. Next increments should add:
-1. Evidence-grounded analysis contracts and schema-versioned result types.
-2. Persisted analysis provenance (provider, model, prompt-template version, input evidence hashes, token usage, timestamp and structured result).
-3. Human-reviewed AI prioritization and natural-language explanations that cannot mutate findings or policy.
-4. Scheduled re-assessment, drift detection and alert workflows.
+The provider gateway is a transport and provenance layer; it deliberately does not invoke AI automatically during assessment or triage. The following operator-controlled, advisory-only capabilities have since been implemented:
+
+1. **Phase 4.2 — Evidence-grounded finding analysis:** bounded/redacted evidence input, schema-validated output, evidence-ID allow-listing, tenant-scoped persistence and provider/model/prompt/input-hash/token provenance. See `phase4-finding-analysis.md`.
+2. **Phase 4.3 — Finding analysis experience:** explicit provider selection and analysis request for Admin/Security Analyst roles, Reader-visible persisted history, and no automatic provider call when opening a finding. See `phase4-finding-analysis-ui.md`.
+3. **Phase 4.4 — Scheduled reassessment and drift alerts:** bounded scope-bound schedules, authorization revalidation, transactional outbox dispatch, deterministic drift and tenant-scoped in-app notifications. Its PostgreSQL rollback and dedicated acceptance suite passed in PR #9 CI run #532. See `phase4-scheduled-reassessment.md`.
+4. **Optional report advisory summaries:** explicitly opt-in export of persisted analysis only; no provider request is made during export, and summaries remain labeled for human review.
+
+These features do not grant AI authority to confirm findings, change severity or policy, authorize targets, or dispatch work.
 
 ## References
 

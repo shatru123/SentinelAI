@@ -147,7 +147,7 @@ public sealed class WorkerCertificateEnrollmentValidatorTests
         var request = new CertificateRequest("CN=SentinelAI Test Worker CA", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
         request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
-        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddDays(365));
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-365), DateTimeOffset.UtcNow.AddDays(365));
     }
 
     private static X509Certificate2 CreateLeaf(

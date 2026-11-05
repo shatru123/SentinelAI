@@ -28,7 +28,7 @@ public sealed class WorkerCertificateConfigurationValidatorTests
                 ["RabbitMQ:Host"] = "rabbitmq.internal",
                 ["RabbitMQ:WorkerUsername"] = "sentinelai-worker",
                 ["RabbitMQ:WorkerPassword"] = "worker-broker-secret",
-                ["Secrets:Provider"] = "ExternalSecrets"
+                ["ExternalConfig:Provider"] = "ExternalSecrets"
             }).Build();
 
             var paths = WorkerCertificateConfigurationValidator.Validate(configuration, new TestEnvironment("Production"));
@@ -58,7 +58,7 @@ public sealed class WorkerCertificateConfigurationValidatorTests
                 ["RabbitMQ:Host"] = "rabbitmq.internal",
                 ["RabbitMQ:WorkerUsername"] = "sentinelai-worker",
                 ["RabbitMQ:WorkerPassword"] = "worker-broker-secret",
-                ["Secrets:Provider"] = "ExternalSecrets",
+                ["ExternalConfig:Provider"] = "ExternalSecrets",
                 ["Worker:ControlPlaneToken"] = "legacy-token"
             }).Build();
 

@@ -1,6 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  namespace: sentinelai
   name: sentinelai-api
 spec:
   replicas: 3
@@ -8,6 +9,7 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  namespace: sentinelai
   name: sentinelai-web
 spec:
   replicas: 3

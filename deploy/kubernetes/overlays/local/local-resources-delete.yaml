@@ -6,13 +6,6 @@ metadata:
   namespace: sentinelai
 ---
 $patch: delete
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: sentinelai-migrate
-  namespace: sentinelai
----
-$patch: delete
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

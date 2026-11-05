@@ -151,12 +151,16 @@ jobs:
       - name: Generate image SBOMs and run vulnerability scans
         shell: bash
         run: |
-          set -u
+          set -uo pipefail
           mkdir -p artifacts/security
           scan_status=0
           for component in api web worker; do
             image="sentinelai-${component}:ci"
-            syft "$image" --output "cyclonedx-json=artifacts/security/${component}.cdx.json"
+            sbom="artifacts/security/${component}.cdx.json"
+            if ! syft "$image" --output "cyclonedx-json=$sbom" || [[ ! -s "$sbom" ]]; then
+              echo "Failed to generate a non-empty CycloneDX SBOM for $image." >&2
+              scan_status=1
+            fi
             if ! trivy image --scanners vuln,secret --ignore-unfixed --severity CRITICAL,HIGH \
               --format sarif --output "artifacts/security/${component}.sarif" --exit-code 1 "$image"; then
               scan_status=1
@@ -169,8 +173,11 @@ jobs:
           fi
           # Configuration findings are recorded for review. Cluster-specific ingress,
           # secret-store and network policy rules require the selected provider/CNI gate.
-          trivy config --severity CRITICAL,HIGH --format sarif \
-            --output artifacts/security/configuration.sarif --exit-code 0 deploy
+          if ! trivy config --severity CRITICAL,HIGH --format sarif \
+            --output artifacts/security/configuration.sarif --exit-code 0 deploy; then
+            echo "Failed to generate the report-only deployment configuration SARIF." >&2
+            scan_status=1
+          fi
           # Enforce infrastructure findings for the production-capable K8s base and
           # environment overlays. The local Development overlay remains report-only.
           for manifest_dir in deploy/kubernetes/base deploy/kubernetes/overlays/staging deploy/kubernetes/overlays/production; do

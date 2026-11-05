@@ -1,6 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  RabbitMQ__Host: rabbitmq.production.example.invalid
+  RabbitMQ__Port: "5672"
+  RabbitMQ__VirtualHost: /
   name: sentinelai-runtime
   namespace: sentinelai
 data:

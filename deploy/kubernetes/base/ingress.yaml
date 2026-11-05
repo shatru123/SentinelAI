@@ -8,6 +8,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: 10m
     nginx.ingress.kubernetes.io/proxy-read-timeout: "70"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "70"
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "sentinelai-route"
 spec:
   ingressClassName: nginx
   tls:

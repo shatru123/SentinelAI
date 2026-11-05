@@ -6,6 +6,7 @@ metadata:
 data:
   Authentication__Authority: https://identity.example.invalid/
   Authentication__ClientId: sentinelai-web-production
+  Api__BaseUrl: https://api.sentinelai.example.invalid
   Security__AllowedOrigins__0: https://sentinelai.example.invalid
   ReverseProxy__KnownProxies__0: 10.20.0.10
   AllowedHosts: api.sentinelai.example.invalid;sentinelai.example.invalid

@@ -1,3 +1,5 @@
+using Amazon;
+using Amazon.S3;
 using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
@@ -49,7 +51,32 @@ public static class InfrastructureServices
         services.AddHttpClient<CisaKevFeedClient>(client => CisaKevFeedClient.Configure(client));
         services.AddHttpClient<FirstEpssFeedClient>(client => FirstEpssFeedClient.Configure(client));
         services.AddScoped<IScreenshotCaptureService, PlaywrightScreenshotCaptureService>();
-        services.AddSingleton<IAssessmentArtifactStore, FileSystemAssessmentArtifactStore>();
+        if (string.Equals(configuration["Artifacts:Provider"], "S3", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<IAmazonS3>(_ =>
+            {
+                var region = configuration["Artifacts:S3:Region"]
+                    ?? throw new InvalidOperationException("Artifacts:S3:Region is required for S3 storage.");
+                var clientConfiguration = new AmazonS3Config
+                {
+                    RegionEndpoint = RegionEndpoint.GetBySystemName(region),
+                    ForcePathStyle = configuration.GetValue("Artifacts:S3:ForcePathStyle", false)
+                };
+                var serviceUrl = configuration["Artifacts:S3:ServiceUrl"];
+                if (!string.IsNullOrWhiteSpace(serviceUrl))
+                    clientConfiguration.ServiceURL = serviceUrl;
+                return new AmazonS3Client(clientConfiguration);
+            });
+            services.AddSingleton<S3AssessmentArtifactStore>();
+            services.AddSingleton<IAssessmentArtifactStore>(sp => sp.GetRequiredService<S3AssessmentArtifactStore>());
+            services.AddSingleton<IAssessmentArtifactStoreReadiness>(sp => sp.GetRequiredService<S3AssessmentArtifactStore>());
+        }
+        else
+        {
+            services.AddSingleton<FileSystemAssessmentArtifactStore>();
+            services.AddSingleton<IAssessmentArtifactStore>(sp => sp.GetRequiredService<FileSystemAssessmentArtifactStore>());
+            services.AddSingleton<IAssessmentArtifactStoreReadiness>(sp => sp.GetRequiredService<FileSystemAssessmentArtifactStore>());
+        }
         services.AddHostedService<AssessmentArtifactCleanupService>();
         services.AddSingleton<IPassiveInventoryAdapter, PassiveNetworkInventoryAdapter>();
         services.AddSingleton<WorkerCancellationRegistry>();

@@ -328,6 +328,136 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
     }
 
     [Fact]
+    public async Task Completed_scheduled_assessment_is_reconciled_into_persisted_drift_events_and_notifications()
+    {
+        var options = NewOptions();
+        var seed = await SeedValidPrivateScheduleAsync(options);
+        var previousJob = new AgentJob(seed.Tenant.Id, seed.Scope.Id, seed.Creator.Id,
+            WebAssessmentOperationProfiles.Passive);
+        var previousAssessment = new WebAssessment(seed.Tenant.Id, previousJob.Id, seed.Scope.Id,
+            "https://10.1.2.3/", WebAssessmentOperationProfiles.Passive, WebHostingMode.Private);
+        previousAssessment.Complete("previous-report", 0);
+
+        var oldHeaders = new Finding(seed.Tenant.Id, null, "Missing security headers", FindingSeverity.Medium);
+        oldHeaders.ConfigureAssessmentDetails(previousAssessment.Id, "security-headers", "High",
+            "https://10.1.2.3/headers", "GET", null, "Old header finding", "impact", null, "fix", null,
+            WebCheckStatus.FindingDetected);
+        var oldCors = new Finding(seed.Tenant.Id, null, "Overly broad CORS", FindingSeverity.High);
+        oldCors.ConfigureAssessmentDetails(previousAssessment.Id, "cors", "High",
+            "https://10.1.2.3/settings/cors", "GET", null, "Old CORS finding", "impact", null, "fix", null,
+            WebCheckStatus.FindingDetected);
+        var oldHeadersCheck = new WebAssessmentCheck(seed.Tenant.Id, previousAssessment.Id,
+            "security-headers", "Security headers", "security-headers", WebCheckStatus.FindingDetected,
+            "https://10.1.2.3/headers");
+        var oldCorsCheck = new WebAssessmentCheck(seed.Tenant.Id, previousAssessment.Id,
+            "cors", "CORS policy", "cors", WebCheckStatus.FindingDetected,
+            "https://10.1.2.3/settings/cors");
+        var oldCoverageCheck = new WebAssessmentCheck(seed.Tenant.Id, previousAssessment.Id,
+            "legacy-cookie", "Legacy cookie check", "cookies", WebCheckStatus.Passed,
+            "https://10.1.2.3/cookies");
+
+        await using (var seedDb = new AppDbContext(options))
+        {
+            seedDb.AddRange(previousJob, previousAssessment, oldHeaders, oldCors,
+                oldHeadersCheck, oldCorsCheck, oldCoverageCheck);
+            await seedDb.SaveChangesAsync();
+        }
+
+        var processor = CreateProcessor(options);
+        await processor.RunOnceAsync();
+
+        Guid currentAssessmentId;
+        await using (var completeCurrent = new AppDbContext(options))
+        {
+            var run = await completeCurrent.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == seed.Schedule.Id);
+            Assert.Equal(AssessmentScheduleRunStatus.Queued, run.Status);
+            Assert.NotNull(run.AssessmentId);
+            currentAssessmentId = run.AssessmentId!.Value;
+
+            var currentAssessment = await completeCurrent.WebAssessments.SingleAsync(x => x.Id == currentAssessmentId);
+            currentAssessment.Complete("current-report", 0);
+
+            var currentHeaders = new Finding(seed.Tenant.Id, null, "Missing security headers", FindingSeverity.Critical);
+            currentHeaders.ConfigureAssessmentDetails(currentAssessmentId, "security-headers", "High",
+                "https://10.1.2.3/headers", "GET", null, "Current header finding", "impact", null, "fix", null,
+                WebCheckStatus.FindingDetected);
+            var newXss = new Finding(seed.Tenant.Id, null, "Reflected input", FindingSeverity.High);
+            newXss.ConfigureAssessmentDetails(currentAssessmentId, "xss", "High",
+                "https://10.1.2.3/search", "GET", "q", "New XSS finding", "impact", null, "fix", null,
+                WebCheckStatus.FindingDetected);
+            var currentHeadersCheck = new WebAssessmentCheck(seed.Tenant.Id, currentAssessmentId,
+                "security-headers", "Security headers", "security-headers", WebCheckStatus.FindingDetected,
+                "https://10.1.2.3/headers");
+            var currentCorsCheck = new WebAssessmentCheck(seed.Tenant.Id, currentAssessmentId,
+                "cors", "CORS policy", "cors", WebCheckStatus.Passed,
+                "https://10.1.2.3/settings/cors");
+            var regressedCoverageCheck = new WebAssessmentCheck(seed.Tenant.Id, currentAssessmentId,
+                "legacy-cookie", "Legacy cookie check", "cookies", WebCheckStatus.Unsupported,
+                "https://10.1.2.3/cookies");
+
+            completeCurrent.AddRange(currentHeaders, newXss, currentHeadersCheck, currentCorsCheck, regressedCoverageCheck);
+            await completeCurrent.SaveChangesAsync();
+        }
+
+        await processor.RunOnceAsync();
+
+        await using var verify = new AppDbContext(options);
+        var completedRun = await verify.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == seed.Schedule.Id);
+        Assert.Equal(AssessmentScheduleRunStatus.Completed, completedRun.Status);
+        Assert.NotNull(completedRun.CompletedAt);
+        Assert.NotNull(completedRun.ComparedAt);
+
+        var driftEvents = await verify.AssessmentDriftEvents.Where(x => x.ScheduleRunId == completedRun.Id).ToListAsync();
+        Assert.Equal(4, driftEvents.Count);
+        Assert.Contains(driftEvents, x => x.EventType == "NewFinding");
+        Assert.Contains(driftEvents, x => x.EventType == "SeverityIncreased");
+        Assert.Contains(driftEvents, x => x.EventType == "NoLongerObserved");
+        Assert.Contains(driftEvents, x => x.EventType == "CoverageRegression");
+
+        var notifications = await verify.Notifications
+            .Where(x => x.TenantId == seed.Tenant.Id && driftEvents.Select(d => d.Id).Contains(x.ResourceId!.Value))
+            .ToListAsync();
+        Assert.Equal(driftEvents.Count, notifications.Count);
+        Assert.All(notifications, notification =>
+        {
+            Assert.Equal("in-app", notification.Channel);
+            Assert.Contains("Scheduled assessment drift:", notification.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("10.1.2.3", notification.Message, StringComparison.Ordinal);
+        });
+        Assert.Equal(AssessmentScheduleStatus.Active,
+            (await verify.AssessmentSchedules.SingleAsync(x => x.Id == seed.Schedule.Id)).Status);
+    }
+
+    [Fact]
+    public async Task Failed_scheduled_assessment_is_reconciled_without_creating_drift_or_notifications()
+    {
+        var options = NewOptions();
+        var seed = await SeedValidPrivateScheduleAsync(options);
+        var processor = CreateProcessor(options);
+
+        await processor.RunOnceAsync();
+
+        await using (var failCurrent = new AppDbContext(options))
+        {
+            var run = await failCurrent.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == seed.Schedule.Id);
+            var assessment = await failCurrent.WebAssessments.SingleAsync(x => x.Id == run.AssessmentId);
+            assessment.Fail("Simulated worker failure.");
+            await failCurrent.SaveChangesAsync();
+        }
+
+        await processor.RunOnceAsync();
+
+        await using var verify = new AppDbContext(options);
+        var failedRun = await verify.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == seed.Schedule.Id);
+        Assert.Equal(AssessmentScheduleRunStatus.Failed, failedRun.Status);
+        Assert.Equal("The scheduled assessment did not complete successfully.", failedRun.BlockedReason);
+        Assert.Empty(await verify.AssessmentDriftEvents.ToListAsync());
+        Assert.Empty(await verify.Notifications.ToListAsync());
+        Assert.Equal("Failed",
+            (await verify.AssessmentSchedules.SingleAsync(x => x.Id == seed.Schedule.Id)).LastResult);
+    }
+
+    [Fact]
     public async Task Drift_notifications_are_tenant_isolated_private_and_acknowledgement_marks_notification_read()
     {
         var options = NewOptions();

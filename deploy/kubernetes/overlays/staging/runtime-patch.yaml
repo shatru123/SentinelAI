@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinelai-runtime
+  namespace: sentinelai
+data:
+  Authentication__Authority: https://identity.staging.example.invalid/
+  Authentication__ClientId: sentinelai-web-staging
+  Security__AllowedOrigins__0: https://sentinelai.staging.example.invalid
+  ReverseProxy__KnownProxies__0: 10.10.0.10
+  AllowedHosts: api.sentinelai.staging.example.invalid;sentinelai.staging.example.invalid
+  Artifacts__S3__Bucket: sentinelai-staging-evidence-replace-me
+  Artifacts__S3__KmsKeyId: alias/sentinelai-staging-evidence
+  Worker__Identity: staging-worker-east-01
+  Worker__TenantId: 11111111-1111-1111-1111-111111111111

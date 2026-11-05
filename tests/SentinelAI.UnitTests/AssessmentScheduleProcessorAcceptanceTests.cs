@@ -428,8 +428,11 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
             (await verify.AssessmentSchedules.SingleAsync(x => x.Id == seed.Schedule.Id)).Status);
     }
 
-    [Fact]
-    public async Task Failed_scheduled_assessment_is_reconciled_without_creating_drift_or_notifications()
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("cancelled")]
+    [InlineData("expired")]
+    public async Task Failed_cancelled_or_expired_scheduled_assessment_reconciles_without_false_drift(string terminalState)
     {
         var options = NewOptions();
         var seed = await SeedValidPrivateScheduleAsync(options);
@@ -437,12 +440,25 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
 
         await processor.RunOnceAsync();
 
-        await using (var failCurrent = new AppDbContext(options))
+        await using (var updateCurrent = new AppDbContext(options))
         {
-            var run = await failCurrent.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == seed.Schedule.Id);
-            var assessment = await failCurrent.WebAssessments.SingleAsync(x => x.Id == run.AssessmentId);
-            assessment.Fail("Simulated worker failure.");
-            await failCurrent.SaveChangesAsync();
+            var run = await updateCurrent.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == seed.Schedule.Id);
+            var assessment = await updateCurrent.WebAssessments.SingleAsync(x => x.Id == run.AssessmentId);
+            switch (terminalState)
+            {
+                case "failed":
+                    assessment.Fail("Simulated worker failure.");
+                    break;
+                case "cancelled":
+                    assessment.Cancel();
+                    break;
+                case "expired":
+                    assessment.Expire("Simulated execution expiry.");
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(terminalState), terminalState, "Unknown terminal state.");
+            }
+            await updateCurrent.SaveChangesAsync();
         }
 
         await processor.RunOnceAsync();
@@ -455,6 +471,32 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
         Assert.Empty(await verify.Notifications.ToListAsync());
         Assert.Equal("Failed",
             (await verify.AssessmentSchedules.SingleAsync(x => x.Id == seed.Schedule.Id)).LastResult);
+    }
+
+    [Fact]
+    public async Task First_completed_scheduled_assessment_without_a_prior_baseline_completes_without_fabricated_drift()
+    {
+        var options = NewOptions();
+        var seed = await SeedValidPrivateScheduleAsync(options);
+        var processor = CreateProcessor(options);
+
+        await processor.RunOnceAsync();
+
+        await using (var completeCurrent = new AppDbContext(options))
+        {
+            var run = await completeCurrent.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == seed.Schedule.Id);
+            var assessment = await completeCurrent.WebAssessments.SingleAsync(x => x.Id == run.AssessmentId);
+            assessment.Complete("first-run-report", 0);
+            await completeCurrent.SaveChangesAsync();
+        }
+
+        await processor.RunOnceAsync();
+
+        await using var verify = new AppDbContext(options);
+        var completedRun = await verify.AssessmentScheduleRuns.SingleAsync(x => x.ScheduleId == seed.Schedule.Id);
+        Assert.Equal(AssessmentScheduleRunStatus.Completed, completedRun.Status);
+        Assert.Empty(await verify.AssessmentDriftEvents.ToListAsync());
+        Assert.Empty(await verify.Notifications.ToListAsync());
     }
 
     [Fact]

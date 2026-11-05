@@ -1288,6 +1288,28 @@ namespace SentinelAI.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Cascade).IsRequired();
                 });
 
+            modelBuilder.Entity("SentinelAI.Domain.WorkerClientCertificate", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<Guid>("TenantId").HasColumnType("uuid");
+                    b.Property<string>("WorkerIdentity").IsRequired().HasMaxLength(128).HasColumnType("character varying(128)");
+                    b.Property<string>("ThumbprintSha256").IsRequired().HasMaxLength(64).HasColumnType("character varying(64)");
+                    b.Property<string>("SerialNumber").IsRequired().HasMaxLength(128).HasColumnType("character varying(128)");
+                    b.Property<string>("Subject").IsRequired().HasColumnType("text");
+                    b.Property<string>("Issuer").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset>("NotBefore").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset>("NotAfter").HasColumnType("timestamp with time zone");
+                    b.Property<Guid>("EnrolledBy").HasColumnType("uuid");
+                    b.Property<DateTimeOffset>("EnrolledAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("RevokedAt").HasColumnType("timestamp with time zone");
+                    b.Property<Guid?>("RevokedBy").HasColumnType("uuid");
+                    b.Property<string>("RevocationReason").HasColumnType("text");
+                    b.HasKey("Id");
+                    b.HasIndex("ThumbprintSha256").IsUnique();
+                    b.HasIndex("TenantId", "WorkerIdentity", "RevokedAt", "NotAfter");
+                    b.ToTable("WorkerClientCertificates");
+                });
+
 #pragma warning restore 612, 618
         }
     }

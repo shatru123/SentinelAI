@@ -83,6 +83,21 @@ public sealed class WorkerCertificateEnrollmentValidatorTests
     }
 
     [Fact]
+    public void Rejects_expired_worker_certificate()
+    {
+        using var authority = CreateAuthority();
+        var rootPath = WriteRoot(authority);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            using var leaf = CreateLeaf(authority, "worker-a", now.AddDays(-30), now.AddDays(-1));
+            Assert.Throws<ArgumentException>(() =>
+                WorkerCertificateEnrollmentValidator.Validate(Pem(leaf), [], "worker-a", rootPath, now));
+        }
+        finally { File.Delete(rootPath); }
+    }
+
+    [Fact]
     public void Rejects_certificate_lifetime_longer_than_ninety_days()
     {
         using var authority = CreateAuthority();

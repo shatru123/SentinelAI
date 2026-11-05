@@ -48,8 +48,15 @@ echo "Waiting for all external secrets to synchronize before migration."
 kubectl wait --for=condition=Ready externalsecrets.external-secrets.io \
   --all --namespace sentinelai --timeout=300s
 
-echo "Replacing any completed migration Job from a previous release."
-kubectl delete job sentinelai-migrate --namespace sentinelai --ignore-not-found=true --wait=true
+echo "Checking whether a migration Job from a previous release is still active."
+if kubectl get job sentinelai-migrate --namespace sentinelai >/dev/null 2>&1; then
+  active_jobs="$(kubectl get job sentinelai-migrate --namespace sentinelai -o jsonpath='{.status.active}' 2>/dev/null || true)"
+  if [[ -n "$active_jobs" && "$active_jobs" != "0" ]]; then
+    echo "Refusing deployment because the previous migration Job is still active." >&2
+    exit 1
+  fi
+  kubectl delete job sentinelai-migrate --namespace sentinelai --wait=true
+fi
 
 echo "Running the one-shot schema migration."
 kubectl apply -k "$MIGRATION_JOB"

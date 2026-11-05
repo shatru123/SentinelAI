@@ -19,13 +19,24 @@ var dataProtection = builder.Services.AddDataProtection()
     .SetApplicationName("SentinelAI.Web");
 if (builder.Environment.IsProduction())
 {
-    var dataProtectionCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+    var certificatePassword = builder.Configuration["DataProtection:CertificatePassword"];
+    var currentDataProtectionCertificate = X509CertificateLoader.LoadPkcs12FromFile(
         builder.Configuration["DataProtection:CertificatePath"]!,
-        builder.Configuration["DataProtection:CertificatePassword"],
+        certificatePassword,
         X509KeyStorageFlags.EphemeralKeySet);
+    var certificatesForDecryption = new List<X509Certificate2> { currentDataProtectionCertificate };
+    var previousCertificatePaths = builder.Configuration
+        .GetSection("DataProtection:PreviousCertificatePaths").Get<string[]>() ?? [];
+    foreach (var previousPath in previousCertificatePaths.Where(path => !string.IsNullOrWhiteSpace(path)))
+    {
+        certificatesForDecryption.Add(X509CertificateLoader.LoadPkcs12FromFile(
+            previousPath, certificatePassword, X509KeyStorageFlags.EphemeralKeySet));
+    }
+
     dataProtection
         .PersistKeysToFileSystem(new DirectoryInfo(builder.Configuration["DataProtection:KeyRingPath"]!))
-        .ProtectKeysWithCertificate(dataProtectionCertificate);
+        .ProtectKeysWithCertificate(currentDataProtectionCertificate)
+        .UnprotectKeysWithAnyCertificate(certificatesForDecryption.ToArray());
 }
 builder.WebHost.ConfigureKestrel(options =>
 {

@@ -63,7 +63,7 @@ builder.Services.AddAuthentication(options =>
 {
     options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
     options.DefaultChallengeScheme = "oidc";
-}).AddCookie(options => { options.LoginPath = "/auth/login"; options.AccessDeniedPath = "/auth/denied"; options.SlidingExpiration = true; options.Cookie.HttpOnly = true; options.Cookie.SecurePolicy = CookieSecurePolicy.Always; options.Cookie.SameSite = SameSiteMode.Lax; });
+}).AddCookie(options => { options.LoginPath = "/auth/login"; options.AccessDeniedPath = "/auth/denied"; options.SlidingExpiration = true; options.Cookie.HttpOnly = true; options.Cookie.SecurePolicy = builder.Environment.IsDevelopment() ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always; options.Cookie.SameSite = SameSiteMode.Lax; });
 var authority = builder.Configuration["Authentication:Authority"];
 if (!string.IsNullOrWhiteSpace(authority))
 {

@@ -31,3 +31,16 @@ The Kubernetes base policy allows database and broker traffic to operator-manage
 The Worker uses the mTLS listener for its registration and heartbeat calls, but it also consumes RabbitMQ directly and uses a separate PostgreSQL worker principal for assessment state. It is therefore not yet a single outbound-HTTPS-only customer agent. The current `sentinelai-api-worker` Kubernetes Service is internal (`ClusterIP`); the public HTTP Ingress does not expose the mTLS listener.
 
 Do not expose PostgreSQL or RabbitMQ publicly. Before deploying a worker outside the trusted cloud network, provide private connectivity to tenant-scoped broker/database endpoints (or implement a control-plane gateway that removes those direct connections), and publish a TCP/TLS-passthrough endpoint for mTLS. Verify certificate SAN/trust, broker permissions, DB grants, tenant queue routing and cancellation from a real customer-network worker. Until then, deploy the Worker only in the controlled network where those private dependencies are reachable.
+
+## Shared Web authentication key ring
+
+Production Web replicas use one shared ASP.NET Core Data Protection key ring so authentication cookies remain readable across replicas and pod replacement. The Kustomize base creates the `sentinelai-web-data-protection` PVC with `ReadWriteMany` access and mounts it at `/var/lib/sentinelai-data-protection`. The required StorageClass name is `sentinelai-shared-rwx`; provision it using the cloud provider's encrypted shared-filesystem service before deployment. It must support concurrent read/write access from all Web replicas, durable storage and encryption at rest.
+
+The Data Protection key XML is additionally encrypted with a PFX from the external secret manager. Staging/production ExternalSecret templates read:
+- `<environment>/sentinelai/pki/web-data-protection-current-pfx`
+- `<environment>/sentinelai/pki/web-data-protection-previous-pfx`
+- `<environment>/sentinelai/pki/web-data-protection-pfx-password`
+
+At initial provisioning, set the previous PFX to the same certificate as current (or otherwise ensure every certificate referenced by an existing key-ring entry is available). When rotating the encryption certificate, update current to the new PFX and previous to the old PFX; the application encrypts newly generated key-ring entries with current and can decrypt entries protected by either certificate. Keep all older decryption certificates required by the retained key-ring entries; do not discard an old PFX while keys encrypted with it may still be needed. Certificate secret changes require a controlled Web rollout so each replica reloads the mounted PFX material. Never commit PFX files or passwords.
+
+The local Development overlay explicitly removes the shared PVC, certificate secret mount and environment-specific password so `docker compose` and local Kubernetes do not depend on a cloud file service or external secret provider. Staging/production deployment remains blocked until the RWX StorageClass, storage encryption, ExternalSecret values and multi-replica cookie continuity have been validated in a real cluster.

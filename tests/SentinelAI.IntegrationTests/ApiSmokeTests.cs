@@ -1069,7 +1069,10 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
             => Task.FromResult(0);
 
         private static string Key(Guid tenantId, Guid assessmentId, string storageKey)
-            => $"{tenantId:N}/{assessmentId:N}/{storageKey}";
+        {
+            var prefix = $"{tenantId:N}/{assessmentId:N}/";
+            return storageKey.StartsWith(prefix, StringComparison.Ordinal) ? storageKey : prefix + storageKey;
+        }
     }
 
     private sealed class IntegrationFakeProvider : IAIProvider

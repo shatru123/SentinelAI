@@ -150,6 +150,7 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
             await analystPage.GetByText("AI summary: provider call successful", new PageGetByTextOptions { Exact = true })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
             Assert.Equal(1, analysisCalls.GetValueOrDefault(findingId));
+            await BrowserScreenshotArtifacts.CaptureAsync(analystPage, "04-finding-ai-analysis-success.png");
             await analystContext.CloseAsync();
 
             // Provider failure is surfaced as a safe user-facing error; no source finding is changed.
@@ -163,6 +164,7 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
             await failurePage.GetByRole(AriaRole.Alert)
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
             Assert.Equal(2, analysisCalls.GetValueOrDefault(findingId)); // one successful and one failed request
+            await BrowserScreenshotArtifacts.CaptureAsync(failurePage, "05-finding-ai-provider-error.png");
             await failureContext.CloseAsync();
             simulateProviderFailure = false;
 
@@ -179,6 +181,7 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
             await noEvidencePage.GetByRole(AriaRole.Alert)
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
             Assert.Equal(1, analysisCalls.GetValueOrDefault(noEvidenceFindingId));
+            await BrowserScreenshotArtifacts.CaptureAsync(noEvidencePage, "06-finding-ai-no-evidence.png");
             await noEvidenceContext.CloseAsync();
 
             // No configured provider: show configuration guidance and disable the request control.
@@ -219,6 +222,7 @@ public sealed class FindingAnalysisBrowserAcceptanceTests
             Assert.False(await viewerPage.GetByRole(AriaRole.Button,
                 new PageGetByRoleOptions { NameRegex = new System.Text.RegularExpressions.Regex("Analyze with AI") }).IsVisibleAsync());
             Assert.Equal(3, analysisCalls.GetValueOrDefault(findingId));
+            await BrowserScreenshotArtifacts.CaptureAsync(viewerPage, "07-finding-viewer-read-only.png");
             await viewerContext.CloseAsync();
         }
         finally

@@ -205,3 +205,35 @@ spec:
       ports:
         - protocol: TCP
           port: 4317
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-egress
+  namespace: sentinelai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sentinelai-web
+  policyTypes: ["Egress"]
+  egress:
+    # External HTTPS calls (API ingress and OIDC endpoints) traverse the
+    # operator-managed outbound proxy; no direct Internet egress is allowed.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinelai-operations
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-egress-gateway
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317

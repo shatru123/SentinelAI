@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - ../../base/external-secrets.yaml
+patches:
+  - path: runtime-patch.yaml
+  - path: secret-store-patch.yaml
+  - path: replicas-patch.yaml
+images:
+  - name: ghcr.io/shatru123/sentinelai-api
+    newName: ghcr.io/shatru123/sentinelai-api
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  - name: ghcr.io/shatru123/sentinelai-web
+    newName: ghcr.io/shatru123/sentinelai-web
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  - name: ghcr.io/shatru123/sentinelai-worker
+    newName: ghcr.io/shatru123/sentinelai-worker
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

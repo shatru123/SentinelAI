@@ -11,6 +11,5 @@ resources:
   - worker.yaml
   - services.yaml
   - ingress.yaml
-  - migration-job.yaml
   - network-policies.yaml
   - disruption-and-scaling.yaml

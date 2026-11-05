@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.DataProtection;
 using System.Net;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -12,6 +14,19 @@ using SentinelAI.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 WebProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment);
+
+var dataProtection = builder.Services.AddDataProtection()
+    .SetApplicationName("SentinelAI.Web");
+if (builder.Environment.IsProduction())
+{
+    var dataProtectionCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+        builder.Configuration["DataProtection:CertificatePath"]!,
+        builder.Configuration["DataProtection:CertificatePassword"],
+        X509KeyStorageFlags.EphemeralKeySet);
+    dataProtection
+        .PersistKeysToFileSystem(new DirectoryInfo(builder.Configuration["DataProtection:KeyRingPath"]!))
+        .ProtectKeysWithCertificate(dataProtectionCertificate);
+}
 builder.WebHost.ConfigureKestrel(options =>
 {
     options.Limits.MaxRequestBodySize = builder.Configuration.GetValue<long>("Security:WebMaxRequestBodyBytes", 2 * 1024 * 1024);

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net.Http.Json;
 using System.Text.Json;
+using SentinelAI.AI.Abstractions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
@@ -366,6 +367,81 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.NotNull(disabled);
         Assert.Equal(AssessmentScheduleStatus.Disabled, disabled.Status);
         Assert.Null(disabled.NextRunAt);
+    }
+
+    [Fact]
+    public async Task Finding_analysis_API_uses_the_configured_provider_and_enforces_operator_reader_and_tenant_boundaries()
+    {
+        var provider = new IntegrationFakeProvider();
+        using var configuredFactory = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IAIProviderFactory>();
+                services.AddSingleton<IAIProviderFactory>(new AIProviderFactory([provider]));
+            }));
+
+        var findingId = Guid.NewGuid();
+        var noEvidenceFindingId = Guid.NewGuid();
+        using (var seedScope = configuredFactory.Services.CreateScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var finding = new Finding(tenantId, null, "Missing security header", FindingSeverity.Medium);
+            finding.ConfigureAssessmentDetails(Guid.NewGuid(), "security-headers", "High",
+                "https://example.test/", "GET", null, "Stored finding description", "Stored impact",
+                null, "Configure the missing header.", null, WebCheckStatus.FindingDetected);
+            var evidence = new Evidence(tenantId, finding.Id, "http-response",
+                "The response headers did not contain the expected security header.", new string('A', 64));
+            evidence.ConfigureContent("HTTP/1.1 200 OK\nContent-Type: text/html", "text/plain");
+
+            var noEvidence = new Finding(tenantId, null, "Finding without evidence", FindingSeverity.Low);
+            noEvidence.ConfigureAssessmentDetails(Guid.NewGuid(), "cookies", "Medium",
+                "https://example.test/login", "GET", null, "No evidence has been stored.", "Unknown impact",
+                null, "Collect evidence first.", null, WebCheckStatus.PotentialFinding);
+            findingId = finding.Id;
+            noEvidenceFindingId = noEvidence.Id;
+            db.AddRange(finding, evidence, noEvidence);
+            await db.SaveChangesAsync();
+        }
+
+        using var analyst = CreateAuthenticatedClient(configuredFactory, tenantId, userId, UserRole.SecurityAnalyst);
+        var request = new AnalyzeFindingRequest("test");
+        var created = await analyst.PostAsJsonAsync($"/api/v1/findings/{findingId}/ai-analysis", request);
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        var analysis = await created.Content.ReadFromJsonAsync<FindingAIAnalysisResponse>();
+        Assert.NotNull(analysis);
+        Assert.Equal("test", analysis!.Provider);
+        Assert.Equal("integration-test-model", analysis.Model);
+        Assert.Equal("finding-analysis-v1", analysis.PromptTemplateVersion);
+        Assert.Equal(64, analysis.EvidenceSha256.Length);
+        Assert.Equal(1, provider.CallCount);
+
+        using var viewer = CreateAuthenticatedClient(configuredFactory, tenantId, Guid.NewGuid(), UserRole.Viewer);
+        var history = await viewer.GetFromJsonAsync<List<FindingAIAnalysisResponse>>(
+            $"/api/v1/findings/{findingId}/ai-analyses");
+        Assert.NotNull(history);
+        Assert.Contains(history, item => item.Id == analysis.Id);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await viewer.PostAsJsonAsync($"/api/v1/findings/{findingId}/ai-analysis", request)).StatusCode);
+
+        using var otherTenant = CreateAuthenticatedClient(configuredFactory, Guid.NewGuid(), Guid.NewGuid(), UserRole.Viewer);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await otherTenant.GetAsync($"/api/v1/findings/{findingId}/ai-analyses")).StatusCode);
+
+        var withoutEvidence = await analyst.PostAsJsonAsync(
+            $"/api/v1/findings/{noEvidenceFindingId}/ai-analysis", request);
+        Assert.Equal(HttpStatusCode.Conflict, withoutEvidence.StatusCode);
+        Assert.Equal(1, provider.CallCount);
+
+        using (var verifyScope = configuredFactory.Services.CreateScope())
+        {
+            var db = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var stored = await db.FindingAIAnalyses.SingleAsync(x => x.Id == analysis.Id);
+            Assert.Equal(tenantId, stored.TenantId);
+            Assert.Equal(userId, stored.ActorId);
+            Assert.Equal(FindingSeverity.Medium,
+                (await db.Findings.SingleAsync(x => x.Id == findingId)).Severity);
+            Assert.Empty(await db.FindingAIAnalyses.Where(x => x.FindingId == noEvidenceFindingId).ToListAsync());
+        }
     }
 
     [Fact]
@@ -847,6 +923,32 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
             => Task.FromResult(Addresses);
     }
 
+
+    private sealed class IntegrationFakeProvider : IAIProvider
+    {
+        public string Name => "test";
+        public bool IsConfigured => true;
+        public int CallCount { get; private set; }
+
+        public Task<AIResponse> AnalyzeAsync(AIRequest request, CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            Assert.Contains("untrusted data", request.SystemPrompt, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("evidence", request.UserPrompt, StringComparison.OrdinalIgnoreCase);
+            Assert.NotNull(request.JsonSchemaJson);
+            var result = JsonSerializer.Serialize(new FindingAIAnalysisResultResponse(
+                "The stored evidence supports analyst review.",
+                "The evidence indicates a potential security posture gap.",
+                "Medium",
+                [],
+                ["Browser and runtime behavior were not independently verified."]));
+            return Task.FromResult(new AIResponse(Name, "integration-test-model", result,
+                18, 7, "api-integration-response", "stop", true));
+        }
+
+        public Task<bool> IsHealthyAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(true);
+    }
 
     private HttpClient CreateAuthenticatedClient(Guid tenant, Guid user, UserRole role)
     {

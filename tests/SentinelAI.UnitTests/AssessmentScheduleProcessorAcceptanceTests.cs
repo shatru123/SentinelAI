@@ -66,6 +66,47 @@ public sealed class AssessmentScheduleProcessorAcceptanceTests
             CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData("network-discovery")]
+    [InlineData("arbitrary-ai-command")]
+    public async Task Schedule_creation_rejects_profiles_outside_the_supported_allowlist(string operationProfile)
+    {
+        await using var db = new AppDbContext(NewOptions());
+        var service = new AssessmentScheduleService(db, new AcceptingScopeValidator());
+        var principal = new PrincipalContext(Guid.NewGuid(), Guid.NewGuid(), "unsupported-profile-operator",
+            UserRole.SecurityAnalyst);
+
+        await Assert.ThrowsAsync<ScopeValidationException>(() => service.CreateAsync(principal,
+            new CreateAssessmentScheduleRequest(Guid.NewGuid(), operationProfile, 24,
+                DateTimeOffset.UtcNow.AddHours(48)),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Schedule_creation_rejects_a_supported_profile_not_approved_by_the_original_scope()
+    {
+        var options = NewOptions();
+        var seed = await SeedValidPrivateScheduleAsync(options);
+
+        await using (var updateScope = new AppDbContext(options))
+        {
+            var scope = await updateScope.TargetScopes.SingleAsync(x => x.Id == seed.Scope.Id);
+            scope.Configure(scope.Targets, scope.Exclusions, [WebAssessmentOperationProfiles.Passive],
+                scope.RequestsPerMinute, scope.MaxExecutionSeconds, scope.AuthorizationEvidence, false);
+            await updateScope.SaveChangesAsync();
+        }
+
+        await using var db = new AppDbContext(options);
+        var service = new AssessmentScheduleService(db, new AcceptingScopeValidator());
+        var principal = new PrincipalContext(seed.Tenant.Id, seed.Creator.Id, seed.Creator.Subject,
+            UserRole.SecurityAnalyst);
+
+        await Assert.ThrowsAsync<ScopeValidationException>(() => service.CreateAsync(principal,
+            new CreateAssessmentScheduleRequest(seed.Scope.Id, WebAssessmentOperationProfiles.SafeActive, 24,
+                DateTimeOffset.UtcNow.AddHours(48)),
+            CancellationToken.None));
+    }
+
     [Fact]
     public async Task Schedule_creation_rejects_an_end_time_that_does_not_allow_one_complete_interval()
     {

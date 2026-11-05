@@ -37,8 +37,8 @@ public static class WorkerCertificateConfigurationValidator
             errors.Add("RabbitMQ:WorkerUsername is required; use a role-specific broker principal.");
         if (string.IsNullOrWhiteSpace(configuration["RabbitMQ:WorkerPassword"]))
             errors.Add("RabbitMQ:WorkerPassword must be injected from the external secret provider.");
-        if (string.IsNullOrWhiteSpace(configuration["Secrets:Provider"]))
-            errors.Add("Secrets:Provider must identify the external secret manager.");
+        if (string.IsNullOrWhiteSpace(configuration["ExternalConfig:Provider"]))
+            errors.Add("ExternalConfig:Provider must identify the external secret manager.");
         var certificatePaths = configuration.GetSection("Worker:ClientCertificatePaths").Get<string[]>() ?? [];
         var singlePath = configuration["Worker:ClientCertificatePath"];
         if (!string.IsNullOrWhiteSpace(singlePath))

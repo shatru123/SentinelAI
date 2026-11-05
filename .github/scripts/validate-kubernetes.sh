@@ -88,15 +88,12 @@ validate_overlay() {
   echo "::endgroup::"
 }
 
-for overlay in \
-  local \
-  staging \
-  production \
-  staging/migration-prerequisites \
-  staging/migration-job \
-  production/migration-prerequisites \
-  production/migration-job; do
+for overlay in local staging production; do
   validate_overlay "$overlay"
 done
+
+echo "::group::Validate the standalone one-shot migration Job"
+kubeconform -strict -summary -ignore-missing-schemas "$K8S_DIR/base/migration-job.yaml"
+echo "::endgroup::"
 
 bash -n "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh"

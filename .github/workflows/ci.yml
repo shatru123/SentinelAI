@@ -111,6 +111,8 @@ jobs:
         run: bash .github/scripts/validate-kubernetes.sh
       - name: Verify deployment script fails closed
         run: bash .github/scripts/test-deploy-script-safety.sh
+      - name: Verify worker certificate bootstrap and packaging
+        run: bash .github/scripts/test-worker-certificate-lifecycle.sh
       - name: Install Trivy vulnerability scanner
         shell: bash
         run: |

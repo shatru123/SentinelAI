@@ -79,6 +79,17 @@ validate_overlay() {
       echo "$overlay must render ExternalSecret resources using external-secrets.io/v1." >&2
       exit 1
     fi
+
+    if ! grep -Fq 'ReadWriteMany' "$rendered" ||
+       ! grep -Fq 'DataProtection__KeyRingPath: /var/lib/sentinelai-data-protection' "$rendered" ||
+       ! grep -Fq 'DataProtection__CertificatePath: /var/run/sentinelai-web-data-protection/current.pfx' "$rendered" ||
+       ! grep -Fq 'DataProtection__PreviousCertificatePaths__0: /var/run/sentinelai-web-data-protection/previous.pfx' "$rendered" ||
+       ! grep -Fq 'secretKey: current.pfx' "$rendered" ||
+       ! grep -Fq 'secretKey: previous.pfx' "$rendered" ||
+       ! grep -Fq 'secretKey: password' "$rendered"; then
+      echo "$overlay must provide the shared RWX encrypted Web Data Protection key ring and current/previous certificate secrets." >&2
+      exit 1
+    fi
   fi
 
   echo "Validated $overlay."
@@ -88,6 +99,19 @@ validate_overlay() {
 for overlay in local staging production; do
   validate_overlay "$overlay"
 done
+
+LOCAL_RENDERED="$TEMP_DIR/local.yaml"
+if grep -Eq 'claimName: sentinelai-web-data-protection|secretName: sentinelai-web-data-protection|name: data-protection-key-ring|name: data-protection-certificate' "$LOCAL_RENDERED"; then
+  echo "Local Development overlay must not require Production Data Protection PVC/certificate secrets." >&2
+  exit 1
+fi
+
+if ! grep -Fq "ReadWriteMany" "$K8S_DIR/base/data-protection-storage.yaml" ||
+   ! grep -Fq "kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/sentinelai-web-data-protection" "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh" ||
+   ! grep -Fq "kubectl get storageclass sentinelai-shared-rwx" "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh"; then
+  echo "Production deploy must require a provisioned shared RWX StorageClass and wait for the Data Protection PVC to bind." >&2
+  exit 1
+fi
 
 echo "::group::Validate the standalone one-shot migration Job"
 kubeconform -strict -summary -ignore-missing-schemas "$K8S_DIR/base/migration-job.yaml"

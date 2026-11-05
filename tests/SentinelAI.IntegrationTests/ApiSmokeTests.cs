@@ -38,6 +38,75 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task Readiness_is_healthy_when_development_dependencies_are_available()
+    {
+        using var client = factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/live")).StatusCode);
+        var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var checks = document.RootElement.GetProperty("checks");
+        Assert.Equal("ready", checks.GetProperty("database").GetString());
+        Assert.Equal("ready", checks.GetProperty("broker").GetString());
+        Assert.Equal("configured", checks.GetProperty("artifactStorage").GetString());
+        Assert.False(checks.GetProperty("workerRequired").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Readiness_fails_when_database_is_unavailable_but_liveness_stays_healthy()
+    {
+        using var unavailableDatabaseFactory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Database:Provider", "Postgres")
+                .UseSetting("Database:ApplyMigrations", "false")
+                .UseSetting("ConnectionStrings:SentinelAI",
+                    "Host=127.0.0.1;Port=1;Database=sentinelai;Username=test;Password=test;Timeout=1;Pooling=false")
+                .UseSetting("Messaging:Mode", "InMemory");
+        });
+        using var client = unavailableDatabaseFactory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/live")).StatusCode);
+        var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("unavailable", document.RootElement.GetProperty("checks").GetProperty("database").GetString());
+    }
+
+    [Fact]
+    public async Task Readiness_fails_when_artifact_storage_probe_is_missing()
+    {
+        using var storageUnavailableFactory = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+                services.RemoveAll<IAssessmentArtifactStoreReadiness>()));
+        using var client = storageUnavailableFactory.CreateClient();
+
+        var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("unavailable", document.RootElement.GetProperty("checks").GetProperty("artifactStorage").GetString());
+    }
+
+    [Fact]
+    public async Task Readiness_fails_when_a_healthy_worker_is_required_but_none_is_registered()
+    {
+        using var workerRequiredFactory = factory.WithWebHostBuilder(builder =>
+            builder.UseSetting("Health:RequireHealthyWorker", "true"));
+        using var client = workerRequiredFactory.CreateClient();
+
+        var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var checks = document.RootElement.GetProperty("checks");
+        Assert.True(checks.GetProperty("workerRequired").GetBoolean());
+        Assert.Equal(0, checks.GetProperty("healthyWorkers").GetInt32());
+    }
+
+    [Fact]
     public async Task AI_provider_status_is_authenticated_and_does_not_call_unconfigured_providers()
     {
         using var anonymous = factory.CreateClient();

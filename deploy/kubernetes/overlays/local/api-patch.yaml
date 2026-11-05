@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinelai-api
+  namespace: sentinelai
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: ConnectionStrings__SentinelAI
+              value: Host=sentinelai-postgres;Database=sentinelai;Username=$(POSTGRES_USER);Password=$(POSTGRES_PASSWORD)
+            - name: RabbitMQ__Username
+              value: $(RABBITMQ_USER)
+            - name: RabbitMQ__Password
+              value: $(RABBITMQ_PASSWORD)
+            - name: Authentication__WorkerToken
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-local-secrets
+                  key: WORKER_CONTROL_PLANE_TOKEN
+            - name: Authentication__WorkerCredentials__local-worker
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-local-secrets
+                  key: WORKER_CONTROL_PLANE_TOKEN
+            - name: Authentication__WorkerTenants__local-worker
+              value: 00000000-0000-0000-0000-000000000001
+            - name: Worker__RunInProcess
+              value: "false"
+          envFrom:
+            - configMapRef:
+                name: sentinelai-runtime
+            - secretRef:
+                name: sentinelai-local-secrets
+          volumeMounts:
+            - name: worker-ca
+              $patch: delete
+            - name: api-mtls
+              $patch: delete
+          securityContext:
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: worker-ca
+          $patch: delete
+        - name: api-mtls
+          $patch: delete

@@ -8,6 +8,8 @@ This is an execution plan, not a claim that production deployment is already com
 
 ## Decisions and constraints
 
+Track every requirement and its implementation/test evidence in [Phase 5 workstream status](phase5-workstream-status.md). Phase 5.0 architecture, data classification, trust zones, provisional service objectives and threat model are recorded in [Phase 5 architecture and threat model](phase5-architecture-and-threat-model.md). These documents are living acceptance evidence; the matrices are not a declaration of production readiness.
+
 - Keep the cloud provider and target region configurable until a deployment decision is recorded. Keep the application and deployment design portable; provider-specific identity, registry, managed database, secret manager and Kubernetes integrations must be isolated behind configuration and documented infrastructure modules.
 - The production control plane must not use Development header authentication, passwordless local identities, Admin self-approval defaults or development-only API behavior.
 - Operators authenticate with OIDC/JWT over TLS. Workers authenticate independently with tenant-bound, revocable credentials; the target design is mutual TLS with short-lived, rotatable client certificates.

@@ -313,7 +313,7 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.NotNull(blockedResume);
         Assert.Equal(AssessmentScheduleStatus.Blocked, blockedResume.Status);
         Assert.Null(blockedResume.NextRunAt);
-        Assert.Contains("revoked", blockedResume.BlockedReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("authorization changed", blockedResume.BlockedReason, StringComparison.OrdinalIgnoreCase);
 
         var run = new AssessmentScheduleRun(tenantId, schedule.Id, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow);
         run.MarkQueued(Guid.NewGuid(), Guid.NewGuid());

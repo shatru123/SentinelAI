@@ -224,6 +224,135 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task Scheduled_reassessment_API_supports_the_full_reader_operator_and_notification_lifecycle()
+    {
+        var analystId = Guid.NewGuid();
+        using var analyst = CreateAuthenticatedClient(tenantId, analystId, UserRole.SecurityAnalyst);
+        var requested = await analyst.PostAsJsonAsync("/api/v1/public-target-authorizations",
+            new PublicTargetAuthorizationRequest("https://schedule-lifecycle.example", "Approved recurring assessment lifecycle test"));
+        Assert.Equal(HttpStatusCode.Created, requested.StatusCode);
+        var authorization = await requested.Content.ReadFromJsonAsync<PublicTargetAuthorizationResponse>();
+        Assert.NotNull(authorization);
+
+        using var administrator = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Admin);
+        var approved = await administrator.PostAsJsonAsync(
+            $"/api/v1/public-target-authorizations/{authorization!.Id}/approve",
+            new PublicTargetAuthorizationApprovalRequest("ticket-schedule-lifecycle", "api-integration-test", DateTimeOffset.UtcNow.AddDays(8)));
+        Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
+
+        var scopeRequest = new CreateScopeRequest(
+            "scheduled-lifecycle-scope",
+            [new TargetDefinition(TargetKind.Web, "https://schedule-lifecycle.example/")],
+            [],
+            [WebAssessmentOperationProfiles.Passive],
+            30,
+            300,
+            "ticket-schedule-lifecycle",
+            DateTimeOffset.UtcNow.AddDays(7),
+            false,
+            null,
+            [authorization.Id]);
+        var createdScope = await analyst.PostAsJsonAsync("/api/v1/scopes", scopeRequest);
+        Assert.Equal(HttpStatusCode.Created, createdScope.StatusCode);
+        var targetScope = await createdScope.Content.ReadFromJsonAsync<ScopeResponse>();
+        Assert.NotNull(targetScope);
+
+        var scheduleRequest = new CreateAssessmentScheduleRequest(
+            targetScope!.Id,
+            WebAssessmentOperationProfiles.Passive,
+            24,
+            targetScope.ExpiresAt.AddTicks(-1));
+        var created = await analyst.PostAsJsonAsync("/api/v1/assessment-schedules", scheduleRequest);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var schedule = await created.Content.ReadFromJsonAsync<AssessmentScheduleResponse>();
+        Assert.NotNull(schedule);
+
+        var listed = await analyst.GetFromJsonAsync<List<AssessmentScheduleResponse>>("/api/v1/assessment-schedules");
+        Assert.NotNull(listed);
+        Assert.Contains(listed, item => item.Id == schedule!.Id);
+        var initiallyEmptyHistory = await analyst.GetFromJsonAsync<List<AssessmentScheduleRunResponse>>(
+            $"/api/v1/assessment-schedules/{schedule!.Id}/runs");
+        Assert.NotNull(initiallyEmptyHistory);
+        Assert.Empty(initiallyEmptyHistory);
+
+        using var viewer = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Viewer);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await viewer.PostAsync($"/api/v1/assessment-schedules/{schedule.Id}/pause", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await viewer.PostAsync($"/api/v1/assessment-schedules/{schedule.Id}/resume", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await viewer.PostAsync($"/api/v1/assessment-schedules/{schedule.Id}/disable", content: null)).StatusCode);
+
+        var pausedResponse = await analyst.PostAsync($"/api/v1/assessment-schedules/{schedule.Id}/pause", content: null);
+        Assert.Equal(HttpStatusCode.OK, pausedResponse.StatusCode);
+        var paused = await pausedResponse.Content.ReadFromJsonAsync<AssessmentScheduleResponse>();
+        Assert.NotNull(paused);
+        Assert.Equal(AssessmentScheduleStatus.Paused, paused.Status);
+        Assert.Null(paused.NextRunAt);
+
+        var resumedResponse = await analyst.PostAsync($"/api/v1/assessment-schedules/{schedule.Id}/resume", content: null);
+        Assert.Equal(HttpStatusCode.OK, resumedResponse.StatusCode);
+        var resumed = await resumedResponse.Content.ReadFromJsonAsync<AssessmentScheduleResponse>();
+        Assert.NotNull(resumed);
+        Assert.Equal(AssessmentScheduleStatus.Active, resumed.Status);
+        Assert.True(resumed.NextRunAt > DateTimeOffset.UtcNow);
+
+        var run = new AssessmentScheduleRun(tenantId, schedule.Id, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow);
+        run.MarkQueued(Guid.NewGuid(), Guid.NewGuid());
+        var driftEvent = new AssessmentDriftEvent(tenantId, schedule.Id, run.Id,
+            Guid.NewGuid(), Guid.NewGuid(), "NewFinding", new string('D', 64), null, FindingSeverity.High,
+            "A new finding was detected by a completed scheduled assessment.", DateTimeOffset.UtcNow);
+        var notification = new Notification(tenantId, "in-app",
+            "Scheduled assessment drift: NewFinding. Review the event in the SentinelAI Schedules workspace.", driftEvent.Id);
+        using (var seedScope = factory.Services.CreateScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.AssessmentScheduleRuns.Add(run);
+            db.AssessmentDriftEvents.Add(driftEvent);
+            db.Notifications.Add(notification);
+            await db.SaveChangesAsync();
+        }
+
+        var history = await analyst.GetFromJsonAsync<List<AssessmentScheduleRunResponse>>(
+            $"/api/v1/assessment-schedules/{schedule.Id}/runs");
+        Assert.NotNull(history);
+        Assert.Contains(history, item => item.Id == run.Id && item.Status == AssessmentScheduleRunStatus.Queued);
+
+        var driftEvents = await analyst.GetFromJsonAsync<List<AssessmentDriftEventResponse>>("/api/v1/assessment-drift-events");
+        Assert.NotNull(driftEvents);
+        Assert.Contains(driftEvents, item => item.Id == driftEvent.Id && item.AcknowledgedAt is null);
+        var notifications = await analyst.GetFromJsonAsync<List<AssessmentNotificationResponse>>("/api/v1/notifications");
+        Assert.NotNull(notifications);
+        Assert.Contains(notifications, item => item.EventId == driftEvent.Id && !item.IsRead);
+
+        using var otherTenant = CreateAuthenticatedClient(Guid.NewGuid(), Guid.NewGuid(), UserRole.Viewer);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await otherTenant.GetAsync($"/api/v1/assessment-schedules/{schedule.Id}/runs")).StatusCode);
+        Assert.Empty(await otherTenant.GetFromJsonAsync<List<AssessmentDriftEventResponse>>("/api/v1/assessment-drift-events") ?? []);
+        Assert.Empty(await otherTenant.GetFromJsonAsync<List<AssessmentNotificationResponse>>("/api/v1/notifications") ?? []);
+
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await viewer.PostAsync($"/api/v1/assessment-drift-events/{driftEvent.Id}/acknowledge", content: null)).StatusCode);
+        var acknowledged = await analyst.PostAsync(
+            $"/api/v1/assessment-drift-events/{driftEvent.Id}/acknowledge", content: null);
+        Assert.Equal(HttpStatusCode.NoContent, acknowledged.StatusCode);
+
+        var acknowledgedEvents = await analyst.GetFromJsonAsync<List<AssessmentDriftEventResponse>>("/api/v1/assessment-drift-events");
+        Assert.NotNull(acknowledgedEvents);
+        Assert.Contains(acknowledgedEvents, item => item.Id == driftEvent.Id && item.AcknowledgedAt is not null);
+        var readNotifications = await analyst.GetFromJsonAsync<List<AssessmentNotificationResponse>>("/api/v1/notifications");
+        Assert.NotNull(readNotifications);
+        Assert.Contains(readNotifications, item => item.EventId == driftEvent.Id && item.IsRead);
+
+        var disabledResponse = await analyst.PostAsync($"/api/v1/assessment-schedules/{schedule.Id}/disable", content: null);
+        Assert.Equal(HttpStatusCode.OK, disabledResponse.StatusCode);
+        var disabled = await disabledResponse.Content.ReadFromJsonAsync<AssessmentScheduleResponse>();
+        Assert.NotNull(disabled);
+        Assert.Equal(AssessmentScheduleStatus.Disabled, disabled.Status);
+        Assert.Null(disabled.NextRunAt);
+    }
+
+    [Fact]
     public async Task Worker_can_register_and_heartbeat_through_authenticated_endpoint()
     {
         using var administrator = CreateAuthenticatedClient(tenantId, Guid.NewGuid(), UserRole.Admin);

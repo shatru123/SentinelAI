@@ -15,8 +15,7 @@ internal static class BrowserScreenshotArtifacts
         await page.ScreenshotAsync(new PageScreenshotOptions
         {
             Path = path,
-            FullPage = true,
-            Animations = ScreenshotAnimations.Disabled
+            FullPage = true
         });
     }
 }

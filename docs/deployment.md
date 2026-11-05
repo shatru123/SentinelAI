@@ -1,11 +1,23 @@
 # Deployment
 
-`deploy/docker/docker-compose.yml` is the Phase 1.2 local deployment. It includes the API, Blazor Web App, standalone worker, PostgreSQL, RabbitMQ, OpenTelemetry Collector, Prometheus, Tempo and Grafana with named volumes, health checks, local-only published ports, a bridge network and resource limits.
+## Local development
 
-The worker is intentionally non-root and does not expose a management port. API-to-worker jobs use tenant-specific durable persistent RabbitMQ queues, a retry queue and a tenant-specific dead-letter queue. Cancellations use queues keyed by tenant plus a collision-resistant key for the exact worker identity, and the message payload is validated before acknowledgement. The API outbox publishes with publisher confirms and retries after a broker outage. Worker-to-control-plane registration binds a configured credential to `Worker__Identity` and tenant assignment; replace the sample token with a secret-manager value and use short-lived JWT/OIDC credentials or mTLS for production. During a credential rotation, configure old and new worker tokens separated by `|`, then remove the old value or add it to `Authentication:RevokedWorkerTokens`. Secrets are supplied through `.env` or a secret manager; `.env.example` contains placeholders only.
+`deploy/docker/docker-compose.yml` is the supported local runtime. It includes the API, Blazor Web App, standalone worker, PostgreSQL, RabbitMQ, OpenTelemetry Collector, Prometheus, Tempo and Grafana with named volumes, health checks, local-only published ports, a bridge network and resource limits.
 
-Compose is explicitly a local development environment: the API and web services run in the Development environment so the server-configured dashboard login can use development headers. Never carry that setting into a shared or production deployment. Production requires JWT/OIDC for operators and per-worker credentials or mTLS for workers.
+Compose is explicitly a local Development environment. Its passwordless dashboard identities, development-header authentication, static worker token and automatic EF migration setting must never be copied into a shared or Production deployment. Production requires OIDC/JWT for operators, tenant-bound mTLS for workers, externalized secrets, PostgreSQL, RabbitMQ and encrypted object storage.
+
+The worker is non-root and does not expose a management port. API-to-worker jobs use tenant-specific durable persistent RabbitMQ queues, retry/dead-letter handling and the transactional outbox. Worker admission continues to require tenant, identity, capability, health, scope, lease and authorization checks.
 
 OpenTelemetry exports API and worker traces/metrics to the collector. The collector forwards traces to Tempo and metrics to Prometheus; Grafana provisions both data sources and a SentinelAI overview dashboard.
 
-Kubernetes deployment remains a later operational milestone. Before production Kubernetes rollout, implement authenticated worker enrollment, mTLS or short-lived credentials, broker-backed job delivery, certificate rotation, egress policies, secret-manager integration and a tested migration strategy.
+## Kubernetes preparation (Phase 5)
+
+Kustomize resources are checked in under `deploy/kubernetes` with `local`, `staging` and `production` overlays. The base defines API/Web workloads, a standalone worker StatefulSet, private services, HTTPS ingress, probes, resource/security contexts, a one-shot migration Job, network policies, telemetry and External Secrets Operator resource templates. Staging and production overlays use separate ExternalSecret manifests.
+
+The migration Job runs the API image with `--migrate`. That command follows a database-only startup path and does not load the API's HTTP listener certificate, OIDC configuration or worker mTLS listener. Production API replicas must have `Database__ApplyMigrations=false`; schema migration is a release operation, not a per-replica startup task.
+
+CI renders the local, staging and production Kustomize overlays and validates built-in Kubernetes resource schemas. This is static validation only. It does not prove that a cluster can install or run the resources, that a particular CNI enforces the NetworkPolicies, or that External Secrets Operator can access a real provider.
+
+**The staging and production overlays are templates, not deployable environments yet.** Replace the example hostnames, OIDC issuer/client registration, trusted proxy IPs, bucket/KMS identifiers, tenant/worker IDs and all-zero container image digests. Provision the selected cloud resources, ClusterSecretStore, workload identity, CA and secret values out of band. No provider/account/region has been selected by this repository.
+
+Before any shared or Production exposure, complete a disposable-cluster install/upgrade test, prove external secret injection and rotation, verify mTLS enrollment/rotation/revocation end to end, run load/chaos/security tests, conduct an independent penetration test, and demonstrate the approved backup/restore RPO/RTO. Do not expose the worker directly to the public network.

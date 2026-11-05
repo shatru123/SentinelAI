@@ -1565,6 +1565,105 @@ api.MapGet("/vulnerability-intelligence/report", async (
 static Task<bool> CheckProviderAsync(IAIProvider provider, CancellationToken cancellationToken)
     => provider.IsConfigured ? provider.IsHealthyAsync(cancellationToken) : Task.FromResult(false);
 
+api.MapGet("/workers/{identity}/certificates", async (
+    HttpContext context,
+    string identity,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var tenantId = ToPrincipal(context).TenantId;
+    var worker = await db.Workers.AsNoTracking().SingleOrDefaultAsync(
+        item => item.TenantId == tenantId && item.Identity == identity.Trim(), cancellationToken);
+    if (worker is null) return Results.NotFound();
+
+    var certificates = await db.WorkerClientCertificates.AsNoTracking()
+        .Where(item => item.TenantId == tenantId && item.WorkerIdentity == worker.Identity)
+        .OrderByDescending(item => item.EnrolledAt)
+        .Select(item => new WorkerClientCertificateResponse(
+            item.Id, item.WorkerIdentity, item.ThumbprintSha256, item.SerialNumber, item.Subject, item.Issuer,
+            item.NotBefore, item.NotAfter, item.EnrolledBy, item.EnrolledAt, item.RevokedAt, item.RevokedBy, item.RevocationReason))
+        .ToListAsync(cancellationToken);
+    return Results.Ok(certificates);
+}).RequireAuthorization("Admin");
+
+api.MapPost("/workers/{identity}/certificates", async (
+    HttpContext context,
+    string identity,
+    EnrollWorkerCertificateRequest request,
+    IAppDbContext db,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var workerIdentity = identity.Trim();
+    if (workerIdentity.Length is 0 or > 128)
+        return Results.BadRequest("A valid provisioned worker identity is required.");
+
+    var worker = await db.Workers.SingleOrDefaultAsync(
+        item => item.TenantId == principal.TenantId && item.Identity == workerIdentity, cancellationToken);
+    if (worker is null) return Results.NotFound();
+    if (worker.Status == WorkerStatus.Disabled) return Results.Conflict("A disabled worker cannot enroll a certificate.");
+
+    using var certificate = WorkerCertificateEnrollmentValidator.Validate(
+        request.CertificatePem,
+        request.IntermediateCertificatesPem,
+        workerIdentity,
+        configuration["WorkerAuthentication:TrustedRootCertificatePath"]!);
+    var thumbprint = Convert.ToHexString(SHA256.HashData(certificate.RawData));
+    if (await db.WorkerClientCertificates.AnyAsync(item => item.ThumbprintSha256 == thumbprint, cancellationToken))
+        return Results.Conflict("This certificate is already enrolled.");
+
+    var binding = new WorkerClientCertificate(
+        principal.TenantId,
+        workerIdentity,
+        thumbprint,
+        certificate.SerialNumber,
+        certificate.Subject,
+        certificate.Issuer,
+        new DateTimeOffset(certificate.NotBefore.ToUniversalTime()),
+        new DateTimeOffset(certificate.NotAfter.ToUniversalTime()),
+        principal.UserId);
+    db.WorkerClientCertificates.Add(binding);
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "worker.certificate.enrolled",
+        nameof(WorkerClientCertificate), binding.Id,
+        $"Administrator enrolled a client certificate for worker {workerIdentity}; thumbprint {thumbprint}."));
+    await db.SaveChangesAsync(cancellationToken);
+
+    var response = new WorkerClientCertificateResponse(
+        binding.Id, binding.WorkerIdentity, binding.ThumbprintSha256, binding.SerialNumber, binding.Subject, binding.Issuer,
+        binding.NotBefore, binding.NotAfter, binding.EnrolledBy, binding.EnrolledAt, binding.RevokedAt, binding.RevokedBy, binding.RevocationReason);
+    return Results.Created($"/api/v1/workers/{Uri.EscapeDataString(workerIdentity)}/certificates/{binding.ThumbprintSha256}", response);
+}).RequireAuthorization("Admin");
+
+api.MapPost("/workers/{identity}/certificates/{thumbprint}/revoke", async (
+    HttpContext context,
+    string identity,
+    string thumbprint,
+    RevokeWorkerCertificateRequest request,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var normalizedThumbprint = thumbprint.Replace(":", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
+    var binding = await db.WorkerClientCertificates.SingleOrDefaultAsync(
+        item => item.TenantId == principal.TenantId &&
+            item.WorkerIdentity == identity.Trim() &&
+            item.ThumbprintSha256 == normalizedThumbprint,
+        cancellationToken);
+    if (binding is null) return Results.NotFound();
+    if (binding.RevokedAt is null)
+    {
+        binding.Revoke(principal.UserId, request.Reason);
+        db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "worker.certificate.revoked",
+            nameof(WorkerClientCertificate), binding.Id,
+            $"Administrator revoked worker certificate {binding.ThumbprintSha256} for worker {binding.WorkerIdentity}."));
+        await db.SaveChangesAsync(cancellationToken);
+    }
+    return Results.Ok(new WorkerClientCertificateResponse(
+        binding.Id, binding.WorkerIdentity, binding.ThumbprintSha256, binding.SerialNumber, binding.Subject, binding.Issuer,
+        binding.NotBefore, binding.NotAfter, binding.EnrolledBy, binding.EnrolledAt, binding.RevokedAt, binding.RevokedBy, binding.RevocationReason));
+}).RequireAuthorization("Admin");
+
 app.Run();
 
 static PrincipalContext ToPrincipal(HttpContext context)

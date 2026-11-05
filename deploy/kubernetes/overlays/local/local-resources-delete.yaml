@@ -1,0 +1,41 @@
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sentinelai
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sentinelai-migrate
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: .*
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: .*
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: .*
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinelai-api-worker
+  namespace: sentinelai

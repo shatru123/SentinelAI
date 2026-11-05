@@ -107,9 +107,10 @@ if grep -Eq 'claimName: sentinelai-web-data-protection|secretName: sentinelai-we
 fi
 
 if ! grep -Fq "ReadWriteMany" "$K8S_DIR/base/data-protection-storage.yaml" ||
+   ! grep -Fq "kubectl get storageclass sentinelai-shared-rwx" "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh" ||
    ! grep -Fq "kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/sentinelai-web-data-protection" "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh" ||
-   ! grep -Fq "kubectl get storageclass sentinelai-shared-rwx" "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh"; then
-  echo "Production deploy must require a provisioned shared RWX StorageClass and wait for the Data Protection PVC to bind." >&2
+   ! grep -Fq "kubectl rollout restart deployment/sentinelai-web" "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh"; then
+  echo "Production deploy must require the shared RWX StorageClass, wait for the Data Protection PVC, and restart Web to load rotated certificates." >&2
   exit 1
 fi
 

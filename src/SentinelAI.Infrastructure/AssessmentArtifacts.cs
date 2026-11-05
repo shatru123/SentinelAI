@@ -3,9 +3,23 @@ using SentinelAI.Agent.Vulnerability;
 
 namespace SentinelAI.Infrastructure;
 
-public sealed class FileSystemAssessmentArtifactStore(IConfiguration configuration) : IAssessmentArtifactStore
+public sealed class FileSystemAssessmentArtifactStore(IConfiguration configuration) : IAssessmentArtifactStore, IAssessmentArtifactStoreReadiness
 {
     private readonly string root = Path.GetFullPath(configuration["Artifacts:Root"] ?? Path.Combine(AppContext.BaseDirectory, "artifacts"));
+
+    public async Task<bool> CheckAvailabilityAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            Directory.CreateDirectory(root);
+            var probe = Path.Combine(root, $".readiness-{Guid.NewGuid():N}.tmp");
+            await File.WriteAllBytesAsync(probe, [1], cancellationToken);
+            File.Delete(probe);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch { return false; }
+    }
 
     public async Task<string> PutAsync(Guid tenantId, Guid assessmentId, string name, byte[] content, CancellationToken cancellationToken)
     {

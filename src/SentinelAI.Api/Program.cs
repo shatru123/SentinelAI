@@ -1565,6 +1565,25 @@ api.MapGet("/vulnerability-intelligence/report", async (
 static Task<bool> CheckProviderAsync(IAIProvider provider, CancellationToken cancellationToken)
     => provider.IsConfigured ? provider.IsHealthyAsync(cancellationToken) : Task.FromResult(false);
 
+api.MapPost("/workers/{identity}/disable", async (
+    HttpContext context,
+    string identity,
+    IAppDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    var principal = ToPrincipal(context);
+    var normalizedIdentity = identity.Trim();
+    var worker = await db.Workers.SingleOrDefaultAsync(
+        item => item.TenantId == principal.TenantId && item.Identity == normalizedIdentity,
+        cancellationToken);
+    if (worker is null) return Results.NotFound();
+    worker.Disable();
+    db.AuditEvents.Add(new AuditEvent(principal.TenantId, principal.UserId, "worker.disabled",
+        nameof(WorkerRegistration), worker.Id, $"Administrator disabled worker {worker.Identity}; new mTLS authentication is rejected."));
+    await db.SaveChangesAsync(cancellationToken);
+    return Results.Ok(ToWorkerResponse(worker));
+}).RequireAuthorization("Admin");
+
 api.MapGet("/workers/{identity}/certificates", async (
     HttpContext context,
     string identity,

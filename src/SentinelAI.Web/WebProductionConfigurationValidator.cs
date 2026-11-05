@@ -89,10 +89,26 @@ public static class WebProductionConfigurationValidator
             var now = DateTime.UtcNow;
             if (certificate.NotBefore.ToUniversalTime() > now || certificate.NotAfter.ToUniversalTime() <= now)
                 errors.Add("The Data Protection encryption certificate must be currently valid.");
+
+            var previousCertificatePaths = configuration
+                .GetSection("DataProtection:PreviousCertificatePaths").Get<string[]>() ?? [];
+            foreach (var previousPath in previousCertificatePaths.Where(path => !string.IsNullOrWhiteSpace(path)))
+            {
+                if (!Path.IsPathFullyQualified(previousPath) || !File.Exists(previousPath))
+                {
+                    errors.Add("Every DataProtection:PreviousCertificatePaths entry must point to a mounted previous key-encryption certificate.");
+                    continue;
+                }
+
+                using var previousCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+                    previousPath, password, X509KeyStorageFlags.EphemeralKeySet);
+                if (!previousCertificate.HasPrivateKey)
+                    errors.Add("Every previous Data Protection certificate must include its private key.");
+            }
         }
         catch (Exception exception) when (exception is CryptographicException or IOException or ArgumentException)
         {
-            errors.Add("The Data Protection encryption certificate could not be loaded from the mounted secret.");
+            errors.Add("A Data Protection encryption certificate could not be loaded from the mounted secret.");
         }
     }
 

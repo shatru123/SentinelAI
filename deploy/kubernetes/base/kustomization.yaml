@@ -5,6 +5,7 @@ resources:
   - namespace.yaml
   - service-accounts.yaml
   - configmap.yaml
+  - data-protection-storage.yaml
   - telemetry.yaml
   - api.yaml
   - web.yaml

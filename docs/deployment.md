@@ -12,7 +12,7 @@ OpenTelemetry exports API and worker traces/metrics to the collector. The collec
 
 ## Kubernetes preparation (Phase 5)
 
-Kustomize resources are checked in under `deploy/kubernetes` with `local`, `staging` and `production` overlays. The base defines API/Web workloads, a standalone worker StatefulSet, private services, HTTPS ingress, probes, resource/security contexts, a one-shot migration Job, network policies, telemetry and External Secrets Operator resource templates. Staging and production overlays use separate ExternalSecret manifests.
+Kustomize resources are checked in under `deploy/kubernetes` with `local`, `staging` and `production` overlays. The base defines API/Web workloads, a standalone worker StatefulSet, private services, HTTPS ingress, probes, resource/security contexts, network policies, telemetry and External Secrets Operator resources. Staging and production keep migration prerequisites and the one-shot migration Job in separate release stages before the runtime overlay.
 
 The migration Job runs the API image with `--migrate`. That command follows a database-only startup path and does not load the API's HTTP listener certificate, OIDC configuration or worker mTLS listener. Production API replicas must have `Database__ApplyMigrations=false`; schema migration is a release operation, not a per-replica startup task.
 

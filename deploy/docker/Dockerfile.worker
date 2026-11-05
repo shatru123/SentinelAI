@@ -5,7 +5,9 @@ RUN dotnet restore src/SentinelAI.Worker/SentinelAI.Worker.csproj
 RUN dotnet publish src/SentinelAI.Worker/SentinelAI.Worker.csproj -c Release -o /app/publish --no-restore
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
+USER root
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends libgssapi-krb5-2 nodejs \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/publish .

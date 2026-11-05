@@ -297,6 +297,22 @@ public sealed class ApiSmokeTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal(AssessmentScheduleStatus.Active, resumed.Status);
         Assert.True(resumed.NextRunAt > DateTimeOffset.UtcNow);
 
+        var pauseBeforeRevocation = await analyst.PostAsync(
+            $"/api/v1/assessment-schedules/{schedule.Id}/pause", content: null);
+        Assert.Equal(HttpStatusCode.OK, pauseBeforeRevocation.StatusCode);
+        var revoked = await administrator.PostAsync(
+            $"/api/v1/public-target-authorizations/{authorization.Id}/revoke", content: null);
+        Assert.Equal(HttpStatusCode.OK, revoked.StatusCode);
+
+        var blockedResumeResponse = await analyst.PostAsync(
+            $"/api/v1/assessment-schedules/{schedule.Id}/resume", content: null);
+        Assert.Equal(HttpStatusCode.OK, blockedResumeResponse.StatusCode);
+        var blockedResume = await blockedResumeResponse.Content.ReadFromJsonAsync<AssessmentScheduleResponse>();
+        Assert.NotNull(blockedResume);
+        Assert.Equal(AssessmentScheduleStatus.Blocked, blockedResume.Status);
+        Assert.Null(blockedResume.NextRunAt);
+        Assert.Contains("revoked", blockedResume.BlockedReason, StringComparison.OrdinalIgnoreCase);
+
         var run = new AssessmentScheduleRun(tenantId, schedule.Id, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow);
         run.MarkQueued(Guid.NewGuid(), Guid.NewGuid());
         var driftEvent = new AssessmentDriftEvent(tenantId, schedule.Id, run.Id,

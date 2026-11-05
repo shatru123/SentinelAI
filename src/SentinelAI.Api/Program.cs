@@ -27,22 +27,32 @@ using SentinelAI.Security.Policy;
 
 var builder = WebApplication.CreateBuilder(args);
 ProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment);
+X509Certificate2? workerListenerCertificate = null;
 if (builder.Environment.IsProduction())
 {
-    var serverCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+    workerListenerCertificate = X509CertificateLoader.LoadPkcs12FromFile(
         builder.Configuration["WorkerAuthentication:ServerCertificatePath"]!,
         builder.Configuration["WorkerAuthentication:ServerCertificatePassword"],
         X509KeyStorageFlags.EphemeralKeySet);
-    builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(8443, listen =>
-        listen.UseHttps(https =>
-        {
-            https.ServerCertificate = serverCertificate;
-            https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
-            // TLS only requires the peer to present a certificate here. The application
-            // certificate handler validates the custom CA chain, EKU, expiry and DB revocation.
-            https.ClientCertificateValidation = (certificate, _, _) => certificate is not null;
-        })));
 }
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = builder.Configuration.GetValue<long>("Security:MaxRequestBodyBytes", 10 * 1024 * 1024);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:RequestHeadersTimeoutSeconds", 15));
+    options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:KeepAliveTimeoutSeconds", 120));
+    if (workerListenerCertificate is not null)
+    {
+        options.ListenAnyIP(8443, listen =>
+            listen.UseHttps(https =>
+            {
+                https.ServerCertificate = workerListenerCertificate;
+                https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+                // TLS only requires the peer to present a certificate here. The application
+                // certificate handler validates the custom CA chain, EKU, expiry and DB revocation.
+                https.ClientCertificateValidation = (certificate, _, _) => certificate is not null;
+            }));
+    }
+});
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
@@ -60,6 +70,13 @@ builder.Services.AddCors(options => options.AddPolicy("browser", policy =>
     else
         policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
 }));
+builder.Services.AddRequestTimeouts(options =>
+{
+    options.DefaultPolicy = new Microsoft.AspNetCore.Http.Timeouts.RequestTimeoutPolicy
+    {
+        Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:ApiRequestTimeoutSeconds", 60))
+    };
+});
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -167,6 +184,7 @@ if (args.Any(argument => argument.Equals("--migrate", StringComparison.OrdinalIg
         return;
 }
 app.UseForwardedHeaders();
+app.UseRequestTimeouts();
 if (!app.Environment.IsDevelopment())
 {
     app.UseHsts();

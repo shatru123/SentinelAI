@@ -99,17 +99,19 @@ The PR #8 implementation adds the following runtime pieces:
 
 ### Verification status (2026-11-05)
 
-The Phase 4.4 acceptance closure is implemented in [PR #9](https://github.com/shatru123/SentinelAI/pull/9). The latest full GitHub Actions run, [run #532](https://github.com/shatru123/SentinelAI/actions/runs/41968719314), passed on commit `117f49d3c87a93cd0d48ecf927cb5cc22fa24ec7`.
+The Phase 4.4 implementation and acceptance closure are in [PR #9](https://github.com/shatru123/SentinelAI/pull/9). The latest full GitHub Actions run, [run #555](https://github.com/shatru123/SentinelAI/actions/runs/41971079035), passed on commit `7a01c2e4a252be908b47146190f3e77c6683f9c3`.
 
 - Release build: **0 warnings, 0 errors**.
-- Automated tests: **332 passed, 0 failed, 0 skipped** — 284 unit (including Chromium browser acceptance), 36 integration, 10 security and 2 architecture tests.
-- Playwright Chromium install and executable verification passed. Both the finding-analysis and Schedules browser workflows passed.
-- PostgreSQL acceptance passed: migration upgrade from the previous schema, rollback, reapplication, persisted authorization-fingerprint round-trip and eight concurrent scheduler processors producing exactly one occurrence/job/outbox entry.
-- Schedule acceptance passed for bounded interval limits, supported passive and safe-active profiles, unsupported or scope-unapproved profiles, scope mutation/expiry, public authorization revocation/expiry, private worker loss/disablement/health/capability/CIDR changes, and creator deletion/role downgrade. Invalid authorization blocks the schedule and writes no job, assessment or outbox message.
-- Retry/idempotency, tenant isolation, notification privacy and acknowledgement behavior passed. Drift tests cover new findings, severity changes, coverage regressions and the successful-check requirement for “no longer observed”.
+- Automated tests: **340 passed, 0 failed, 0 skipped** — 289 unit, 39 integration, 10 security and 2 architecture tests.
+- Playwright Chromium installation and executable verification passed. Finding-analysis and Schedules browser acceptance workflows passed.
+- Real API lifecycle coverage exercises schedule creation/list/history, Viewer restrictions, pause/resume/disable, acknowledgement, notification read state, tenant isolation, and resume blocking after public authorization revocation.
+- Scheduled processor coverage verifies one-time dispatch and retries, first-run/no-baseline behavior, persistence of NewFinding/SeverityIncreased/NoLongerObserved/CoverageRegression events and in-app notifications, and failed/cancelled/expired outcomes without false drift.
+- PostgreSQL acceptance covers migration upgrade/rollback/reapply, authorization fingerprint round-trip, eight-processor dispatch concurrency, and eight-processor completed-run reconciliation concurrency with no duplicate drift events or notifications.
+- Authorization tests cover scope mutation/expiry, public authorization revocation/expiry, private worker missing/disabled/unhealthy/stale/capability/CIDR changes, creator deletion/role downgrade, supported/unsupported profiles and scope-profile allow-listing.
+- Retry/idempotency, tenant isolation, alert privacy and acknowledgement behavior passed.
 - Docker Compose configuration validation passed.
 
-This run supersedes the earlier PR #8 aggregate result (296 tests): Phase 4.4's previously open feature-specific acceptance criteria are now exercised by the dedicated tests in PR #9. The corrective migration rollback path has also been exercised against PostgreSQL.
+Phase 4.4's previously open dedicated acceptance criteria are now covered by PR #9 at the domain/service, API, processor and PostgreSQL layers. Phase 4.4's Chromium page test uses a deterministic fixture API; the corresponding real API workflows are tested separately through TestServer, and the processor/migration/concurrency paths are tested separately against PostgreSQL. This is layered acceptance coverage, not a claim that one browser test runs the entire deployed multi-service topology.
 
 ### Implementation choices and limitations
 

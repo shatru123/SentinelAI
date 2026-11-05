@@ -58,7 +58,7 @@ validate_overlay() {
     fi
 
     local secret_like_keys
-    secret_like_keys="$(grep -En '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered" \
+    secret_like_keys="$(grep -En '^[[:space:]]+[-A-Za-z0-9_.]*(Password|Secret|Token|PrivateKey):' "$rendered" \
       | grep -Ev '^[0-9]+:[[:space:]]*automountServiceAccountToken:' || true)"
     if [[ -n "$secret_like_keys" ]]; then
       echo "$overlay rendered a secret-like configuration key; move the value to the external secret provider." >&2

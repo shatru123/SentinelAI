@@ -917,6 +917,7 @@ public sealed class WebAssessmentAuthorizationTests
         public DbSet<AssessmentScheduleRun> AssessmentScheduleRuns => inner.AssessmentScheduleRuns;
         public DbSet<AssessmentDriftEvent> AssessmentDriftEvents => inner.AssessmentDriftEvents;
         public DbSet<WorkerRegistration> Workers => inner.Workers;
+        public DbSet<WorkerClientCertificate> WorkerClientCertificates => inner.WorkerClientCertificates;
         public DbSet<PublicTargetAuthorization> PublicTargetAuthorizations => inner.PublicTargetAuthorizations;
         public DbSet<OutboxMessage> OutboxMessages => inner.OutboxMessages;
         public DbSet<WebAssessment> WebAssessments => inner.WebAssessments;

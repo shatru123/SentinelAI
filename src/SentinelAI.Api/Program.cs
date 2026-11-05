@@ -40,6 +40,7 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Limits.MaxRequestBodySize = builder.Configuration.GetValue<long>("Security:MaxRequestBodyBytes", 10 * 1024 * 1024);
     options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:RequestHeadersTimeoutSeconds", 15));
     options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:KeepAliveTimeoutSeconds", 120));
+    options.ListenAnyIP(8080);
     if (workerListenerCertificate is not null)
     {
         options.ListenAnyIP(8443, listen =>
@@ -188,7 +189,8 @@ app.UseRequestTimeouts();
 if (!app.Environment.IsDevelopment())
 {
     app.UseHsts();
-    app.UseHttpsRedirection();
+    app.UseWhen(context => !context.Request.Path.StartsWithSegments("/health"),
+        branch => branch.UseHttpsRedirection());
 }
 app.Use(async (context, next) =>
 {

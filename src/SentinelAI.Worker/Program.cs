@@ -31,7 +31,7 @@ builder.Services.AddHttpClient<WorkerControlPlaneClient>((sp, client) =>
         var password = builder.Configuration["Worker:ClientCertificatePassword"];
         foreach (var path in clientCertificatePaths)
         {
-            var certificate = new X509Certificate2(path, password, X509KeyStorageFlags.EphemeralKeySet);
+            var certificate = X509CertificateLoader.LoadPkcs12FromFile(path, password, X509KeyStorageFlags.EphemeralKeySet);
             if (!certificate.HasPrivateKey)
                 throw new InvalidOperationException("Worker client certificate private key is not available.");
             handler.ClientCertificates.Add(certificate);

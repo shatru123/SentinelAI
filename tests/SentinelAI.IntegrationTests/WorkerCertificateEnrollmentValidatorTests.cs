@@ -31,7 +31,7 @@ public sealed class WorkerCertificateEnrollmentValidatorTests
         try
         {
             using var leaf = CreateSelfSignedWorker("worker-a");
-            var payload = Pem(leaf) + leaf.GetRSAPrivateKeyPemOrThrow();
+            var payload = Pem(leaf) + GetRSAPrivateKeyPemOrThrow(leaf);
             Assert.Throws<ArgumentException>(() =>
                 WorkerCertificateEnrollmentValidator.Validate(payload, [], "worker-a", rootPath));
         }
@@ -121,7 +121,7 @@ public sealed class WorkerCertificateEnrollmentValidatorTests
             using var leaf = CreateLeaf(authority, "worker-a", DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(30));
             using var intermediate = CreateSelfSignedWorker("intermediate");
             Assert.Throws<ArgumentException>(() =>
-                WorkerCertificateEnrollmentValidator.Validate(Pem(leaf), [Pem(intermediate) + intermediate.GetRSAPrivateKeyPemOrThrow()], "worker-a", rootPath));
+                WorkerCertificateEnrollmentValidator.Validate(Pem(leaf), [Pem(intermediate) + GetRSAPrivateKeyPemOrThrow(intermediate)], "worker-a", rootPath));
         }
         finally { File.Delete(rootPath); }
     }
@@ -175,7 +175,7 @@ public sealed class WorkerCertificateEnrollmentValidatorTests
     private static string Pem(X509Certificate2 certificate)
         => PemEncoding.WriteString("CERTIFICATE", certificate.RawData);
 
-    private static string GetRSAPrivateKeyPemOrThrow(this X509Certificate2 certificate)
+    private static string GetRSAPrivateKeyPemOrThrow(X509Certificate2 certificate)
     {
         using var privateKey = certificate.GetRSAPrivateKey()
             ?? throw new InvalidOperationException("Expected an RSA private key in the test certificate.");

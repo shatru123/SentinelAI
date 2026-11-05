@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Hosting;
 using SentinelAI.Web;
 
@@ -47,6 +49,49 @@ public sealed class WebProductionConfigurationValidatorTests
                 WebProductionConfigurationValidator.Validate(configuration, new TestEnvironment()));
 
             Assert.Null(exception);
+        }
+        finally
+        {
+            assets.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Shared_encrypted_key_ring_survives_web_replica_replacement_and_previous_certificate_rotation()
+    {
+        var assets = CreateDataProtectionAssets();
+        try
+        {
+            using var previousCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+                assets.CertificatePath, assets.Password, X509KeyStorageFlags.EphemeralKeySet);
+            using var currentCertificate = CreateEncryptionCertificate();
+            const string purpose = "SentinelAI.Web.AuthenticationCookie";
+            const string value = "tenant-scoped-authentication-ticket";
+
+            string protectedPayload;
+            using (var oldReplicaServices = new ServiceCollection())
+            {
+                oldReplicaServices.AddDataProtection()
+                    .SetApplicationName("SentinelAI.Web")
+                    .PersistKeysToFileSystem(new DirectoryInfo(assets.KeyRingDirectory))
+                    .ProtectKeysWithCertificate(previousCertificate);
+                using var oldReplicaProvider = oldReplicaServices.BuildServiceProvider();
+                protectedPayload = oldReplicaProvider.GetRequiredService<IDataProtectionProvider>()
+                    .CreateProtector(purpose).Protect(value);
+            }
+
+            using var replacementReplicaServices = new ServiceCollection();
+            replacementReplicaServices.AddDataProtection()
+                .SetApplicationName("SentinelAI.Web")
+                .PersistKeysToFileSystem(new DirectoryInfo(assets.KeyRingDirectory))
+                .ProtectKeysWithCertificate(currentCertificate)
+                .UnprotectKeysWithAnyCertificate(currentCertificate, previousCertificate);
+            using var replacementReplicaProvider = replacementReplicaServices.BuildServiceProvider();
+
+            var roundTrip = replacementReplicaProvider.GetRequiredService<IDataProtectionProvider>()
+                .CreateProtector(purpose).Unprotect(protectedPayload);
+
+            Assert.Equal(value, roundTrip);
         }
         finally
         {
@@ -109,6 +154,22 @@ public sealed class WebProductionConfigurationValidatorTests
             ["DataProtection:CertificatePath"] = certificatePath,
             ["DataProtection:CertificatePassword"] = password
         }).Build();
+
+    private static X509Certificate2 CreateEncryptionCertificate()
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=SentinelAI Current Data Protection",
+            key,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.KeyEncipherment | X509KeyUsageFlags.DataEncipherment, true));
+        return request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddDays(30));
+    }
 
     private static DataProtectionTestAssets CreateDataProtectionAssets(bool exportPrivateKey = true)
     {

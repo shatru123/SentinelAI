@@ -131,9 +131,16 @@ public sealed class WebProductionConfigurationValidatorTests
             DateTimeOffset.UtcNow.AddDays(30));
 
         var path = Path.Combine(root, "data-protection.pfx");
-        var certificateBytes = exportPrivateKey
-            ? certificate.Export(X509ContentType.Pfx, password)
-            : certificate.Export(X509ContentType.Cert);
+        byte[] certificateBytes;
+        if (exportPrivateKey)
+        {
+            certificateBytes = certificate.Export(X509ContentType.Pfx, password);
+        }
+        else
+        {
+            using var publicOnlyCertificate = new X509Certificate2(certificate.Export(X509ContentType.Cert));
+            certificateBytes = publicOnlyCertificate.Export(X509ContentType.Pfx, password);
+        }
         File.WriteAllBytes(path, certificateBytes);
         return new DataProtectionTestAssets(root, keyRing, path, password);
     }

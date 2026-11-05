@@ -14,6 +14,9 @@ docs
 **/secrets/**
 **/*.pfx
 **/*.p12
+**/*.pem
+**/*.crt
+**/*.cer
 **/*.key
 **/*private-key*
 **/*privatekey*

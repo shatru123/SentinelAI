@@ -99,19 +99,21 @@ The PR #8 implementation adds the following runtime pieces:
 
 ### Verification status (2026-11-05)
 
-The Phase 4.4 implementation and acceptance closure are in [PR #9](https://github.com/shatru123/SentinelAI/pull/9). The latest full GitHub Actions run, [run #555](https://github.com/shatru123/SentinelAI/actions/runs/41971079035), passed on commit `7a01c2e4a252be908b47146190f3e77c6683f9c3`.
+The Phase 4.4 implementation and acceptance closure are in [PR #9](https://github.com/shatru123/SentinelAI/pull/9). The latest full GitHub Actions run, [run #567](https://github.com/shatru123/SentinelAI/actions/runs/41972319303), passed on commit `34bb948313c6496e988931679495eeef8809d26b`.
 
 - Release build: **0 warnings, 0 errors**.
-- Automated tests: **340 passed, 0 failed, 0 skipped** — 289 unit, 39 integration, 10 security and 2 architecture tests.
+- Automated tests: **341 passed, 0 failed, 0 skipped** — 289 unit, 40 integration, 10 security and 2 architecture tests.
 - Playwright Chromium installation and executable verification passed. Finding-analysis and Schedules browser acceptance workflows passed.
-- Real API lifecycle coverage exercises schedule creation/list/history, Viewer restrictions, pause/resume/disable, acknowledgement, notification read state, tenant isolation, and resume blocking after public authorization revocation.
+- Real schedule API lifecycle coverage exercises creation/list/history, Viewer restrictions, pause/resume/disable, acknowledgement, notification read state, tenant isolation, and resume blocking after public authorization revocation.
 - Scheduled processor coverage verifies one-time dispatch and retries, first-run/no-baseline behavior, persistence of NewFinding/SeverityIncreased/NoLongerObserved/CoverageRegression events and in-app notifications, and failed/cancelled/expired outcomes without false drift.
 - PostgreSQL acceptance covers migration upgrade/rollback/reapply, authorization fingerprint round-trip, eight-processor dispatch concurrency, and eight-processor completed-run reconciliation concurrency with no duplicate drift events or notifications.
 - Authorization tests cover scope mutation/expiry, public authorization revocation/expiry, private worker missing/disabled/unhealthy/stale/capability/CIDR changes, creator deletion/role downgrade, supported/unsupported profiles and scope-profile allow-listing.
+- Real finding-analysis API coverage uses a deterministic provider and validates Operator submission, Reader history, cross-tenant denial, missing-evidence rejection, provenance persistence and unchanged finding severity.
+- Real advisory-report API coverage validates default export without AI generation, explicit opt-in generation, staged/published artifact retrieval and cleanup, and cross-tenant denial. Generator unit tests separately validate HTML encoding and advisory provenance.
 - Retry/idempotency, tenant isolation, alert privacy and acknowledgement behavior passed.
 - Docker Compose configuration validation passed.
 
-Phase 4.4's previously open dedicated acceptance criteria are now covered by PR #9 at the domain/service, API, processor and PostgreSQL layers. Phase 4.4's Chromium page test uses a deterministic fixture API; the corresponding real API workflows are tested separately through TestServer, and the processor/migration/concurrency paths are tested separately against PostgreSQL. This is layered acceptance coverage, not a claim that one browser test runs the entire deployed multi-service topology.
+Phase 4.4's previously open dedicated acceptance criteria are now covered by PR #9 at the domain/service, API, processor and PostgreSQL layers. Phase 4.4's Chromium page tests use deterministic fixture APIs; the corresponding real API workflows are tested separately through TestServer, and processor/migration/concurrency paths are tested separately against PostgreSQL. This is layered acceptance coverage, not a claim that one browser test runs the entire deployed multi-service topology.
 
 ### Implementation choices and limitations
 

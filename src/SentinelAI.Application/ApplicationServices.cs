@@ -28,6 +28,7 @@ public interface IAppDbContext : IAsyncDisposable, IDisposable
     DbSet<AssessmentScheduleRun> AssessmentScheduleRuns { get; }
     DbSet<AssessmentDriftEvent> AssessmentDriftEvents { get; }
     DbSet<WorkerRegistration> Workers { get; }
+    DbSet<WorkerClientCertificate> WorkerClientCertificates { get; }
     DbSet<PublicTargetAuthorization> PublicTargetAuthorizations { get; }
     DbSet<OutboxMessage> OutboxMessages { get; }
     DbSet<WebAssessment> WebAssessments { get; }

@@ -270,7 +270,9 @@ app.Use(async (context, next) =>
 });
 
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
-if (!builder.Environment.IsDevelopment() || builder.Configuration.GetValue("Web:EnableHttpsRedirection", false)) app.UseHttpsRedirection();
+if (!builder.Environment.IsDevelopment() || builder.Configuration.GetValue("Web:EnableHttpsRedirection", false))
+    app.UseWhen(context => !context.Request.Path.StartsWithSegments("/health"),
+        branch => branch.UseHttpsRedirection());
 
 app.UseAuthentication();
 app.UseAuthorization();

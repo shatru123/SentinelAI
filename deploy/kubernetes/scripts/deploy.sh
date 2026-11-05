@@ -105,6 +105,9 @@ kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/sentinelai-web-data-prot
 echo "Waiting for Worker, API and Web rollouts."
 kubectl rollout status statefulset/sentinelai-worker --namespace sentinelai --timeout=900s
 kubectl rollout status deployment/sentinelai-api --namespace sentinelai --timeout=900s
+# Reload the Web process after ExternalSecret synchronization so current/previous
+# Data Protection certificates are loaded even when the Deployment image is unchanged.
+kubectl rollout restart deployment/sentinelai-web --namespace sentinelai
 kubectl rollout status deployment/sentinelai-web --namespace sentinelai --timeout=900s
 
 echo "SentinelAI $environment rollout completed successfully in context '$actual_context'."

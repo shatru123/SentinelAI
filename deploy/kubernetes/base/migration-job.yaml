@@ -35,16 +35,6 @@ spec:
                 secretKeyRef:
                   name: sentinelai-api-database
                   key: connection
-            - name: RabbitMQ__Username
-              valueFrom:
-                secretKeyRef:
-                  name: sentinelai-api-broker
-                  key: username
-            - name: RabbitMQ__Password
-              valueFrom:
-                secretKeyRef:
-                  name: sentinelai-api-broker
-                  key: password
           resources:
             requests:
               cpu: 100m

@@ -97,19 +97,19 @@ The PR #8 implementation adds the following runtime pieces:
 - Events and in-app notifications are tenant scoped and linked by a database foreign key. Notification text contains only a safe event type and workspace pointer; no evidence, credential, query string, fragment or screenshot payload is sent. Acknowledgement marks both the drift event and its notification as read.
 - The Blazor Schedules workspace exposes create, run history, pause/resume/disable, drift review and acknowledgement. API Reader/Operator policies remain authoritative.
 
-### Verification status (2026-11-04)
+### Verification status (2026-11-05)
 
-The consolidated GitHub Actions workflow passed on the PR #8 head (`5fc5723006b2f1f7c7b0244b8eb476dd90a69cb3`): Release build (0 warnings, 0 errors), 296 tests (251 unit, 33 integration, 10 security, 2 architecture), Playwright Chromium installation and executable verification, and Docker Compose configuration validation. The workflow also provisioned PostgreSQL and RabbitMQ for the test run. The successful aggregate run is not, by itself, proof of every Phase 4.4 exit criterion.
+The Phase 4.4 acceptance closure is implemented in [PR #9](https://github.com/shatru123/SentinelAI/pull/9). The latest full GitHub Actions run, [run #532](https://github.com/shatru123/SentinelAI/actions/runs/41968719314), passed on commit `117f49d3c87a93cd0d48ecf927cb5cc22fa24ec7`.
 
-The following feature-specific acceptance coverage must be added and pass before Phase 4.4 is declared fully closed:
+- Release build: **0 warnings, 0 errors**.
+- Automated tests: **332 passed, 0 failed, 0 skipped** — 284 unit (including Chromium browser acceptance), 36 integration, 10 security and 2 architecture tests.
+- Playwright Chromium install and executable verification passed. Both the finding-analysis and Schedules browser workflows passed.
+- PostgreSQL acceptance passed: migration upgrade from the previous schema, rollback, reapplication, persisted authorization-fingerprint round-trip and eight concurrent scheduler processors producing exactly one occurrence/job/outbox entry.
+- Schedule acceptance passed for bounded interval limits, supported passive and safe-active profiles, unsupported or scope-unapproved profiles, scope mutation/expiry, public authorization revocation/expiry, private worker loss/disablement/health/capability/CIDR changes, and creator deletion/role downgrade. Invalid authorization blocks the schedule and writes no job, assessment or outbox message.
+- Retry/idempotency, tenant isolation, notification privacy and acknowledgement behavior passed. Drift tests cover new findings, severity changes, coverage regressions and the successful-check requirement for “no longer observed”.
+- Docker Compose configuration validation passed.
 
-- Two independent scheduler processors racing on the same due occurrence, proving one persisted run/job/outbox entry; retry after a failed dispatch or reconciliation must not lose or duplicate work.
-- Due-time authorization revalidation tests for scope mutation, expiry, public authorization revocation, private worker missing/disabled/unhealthy/capability or CIDR changes, and creator deletion or role downgrade. Each case must fail closed and block the schedule.
-- Tenant-isolation and privacy tests for drift notifications and event summaries, including absence of raw evidence, secrets, query strings, URL fragments and screenshot content; acknowledgement must update the linked notification read state.
-- Browser-driven workflow coverage for schedule creation, pause/resume/disable, blocked authorization, run history, drift display and acknowledgement.
-- PostgreSQL migration-upgrade coverage against the previous released schema, including foreign keys, unique constraints and rollback/recovery behavior.
-
-Until these cases are covered, keep Phase 4.4 implementation status distinct from Phase 4.4 acceptance closure.
+This run supersedes the earlier PR #8 aggregate result (296 tests): Phase 4.4's previously open feature-specific acceptance criteria are now exercised by the dedicated tests in PR #9. The corrective migration rollback path has also been exercised against PostgreSQL.
 
 ### Implementation choices and limitations
 

@@ -46,7 +46,7 @@ public static class WorkerCertificateConfigurationValidator
             }
             try
             {
-                using var certificate = new X509Certificate2(path, password, X509KeyStorageFlags.EphemeralKeySet);
+                using var certificate = X509CertificateLoader.LoadPkcs12FromFile(path, password, X509KeyStorageFlags.EphemeralKeySet);
                 if (!certificate.HasPrivateKey)
                     errors.Add($"Worker client certificate has no private key: {Path.GetFileName(path)}");
                 var now = DateTime.UtcNow;

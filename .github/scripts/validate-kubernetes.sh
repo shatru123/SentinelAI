@@ -24,9 +24,6 @@ validate_overlay() {
   echo "::group::Render and validate $overlay"
   kubectl kustomize "$source_dir" > "$rendered"
   test -s "$rendered"
-
-  # Validate built-in Kubernetes resources. External Secrets Operator owns its CRDs;
-  # their API group and kind are checked below and the live CRDs are a cluster gate.
   kubeconform -strict -summary -ignore-missing-schemas "$rendered"
 
   if [[ "$overlay" != "local" ]]; then
@@ -60,9 +57,6 @@ validate_overlay() {
       echo "NOTICE: $overlay still contains placeholder image digests; it is not deployable until immutable release digests are promoted."
     fi
 
-    # Production-like overlays must not place password, token, secret or private-key
-    # values in plain manifest data. Workload secretKeyRef and ExternalSecret references
-    # remain allowed because they reference provider-managed values.
     local secret_like_keys
     secret_like_keys="$(grep -En '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered" \
       | grep -Ev '^[0-9]+:[[:space:]]*automountServiceAccountToken:' || true)"
@@ -72,8 +66,6 @@ validate_overlay() {
       exit 1
     fi
 
-    # Web OIDC and API calls must use the operator-managed outbound proxy. Internal
-    # service names are bypassed, and the Web workload receives only the gateway route.
     if ! grep -Fq 'HTTPS_PROXY: http://sentinelai-egress-gateway.sentinelai-operations.svc.cluster.local:443' "$rendered" ||
        ! grep -Fq 'NO_PROXY:' "$rendered" ||
        ! grep -Fq 'name: web-egress' "$rendered" ||
@@ -102,3 +94,4 @@ kubeconform -strict -summary -ignore-missing-schemas "$K8S_DIR/base/migration-jo
 echo "::endgroup::"
 
 bash -n "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh"
+bash "$ROOT_DIR/.github/scripts/test-deploy-script-safety.sh"

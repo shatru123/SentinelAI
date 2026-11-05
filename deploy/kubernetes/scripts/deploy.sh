@@ -33,7 +33,7 @@ MIGRATION_JOB="$OVERLAY_DIR/migration-job"
 
 for directory in "$PREREQUISITES" "$MIGRATION_JOB" "$OVERLAY_DIR"; do
   rendered="$(kubectl kustomize "$directory")"
-  if grep -Eq 'example\.invalid|replace-me|placeholder|sha256:0{64}' <<< "$rendered"; then
+  if grep -Eq 'example\.invalid|replace-me|placeholder|sha256:0{64}|11111111-1111-1111-1111-111111111111|22222222-2222-2222-2222-222222222222|staging-worker-east-01|production-worker-east-01' <<< "$rendered"; then
     echo "Refusing deployment: '$directory' still contains environment or image placeholders." >&2
     exit 1
   fi

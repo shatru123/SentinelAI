@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - data-services.yaml
+patches:
+  - path: runtime-patch.yaml
+  - path: api-patch.yaml
+  - path: web-patch.yaml
+  - path: worker-patch.yaml
+  - path: local-resources-delete.yaml
+  - path: local-telemetry-patch.yaml
+secretGenerator:
+  - name: sentinelai-local-secrets
+    namespace: sentinelai
+    literals:
+      - POSTGRES_USER=sentinelai_local
+      - POSTGRES_PASSWORD=local-dev-only-change-before-sharing
+      - RABBITMQ_USER=sentinelai_local
+      - RABBITMQ_PASSWORD=local-dev-only-change-before-sharing
+      - WORKER_CONTROL_PLANE_TOKEN=local-worker-token-only-for-this-cluster
+generatorOptions:
+  disableNameSuffixHash: true
+images:
+  - name: ghcr.io/shatru123/sentinelai-api
+    newName: sentinelai-api
+    newTag: local
+  - name: ghcr.io/shatru123/sentinelai-web
+    newName: sentinelai-web
+    newTag: local
+  - name: ghcr.io/shatru123/sentinelai-worker
+    newName: sentinelai-worker
+    newTag: local

@@ -15,72 +15,86 @@ if ! command -v kubeconform >/dev/null 2>&1; then
   exit 1
 fi
 
-for overlay in local staging production; do
-  source_dir="$K8S_DIR/overlays/$overlay"
-  rendered="$TEMP_DIR/$overlay.yaml"
+validate_overlay() {
+  local overlay="$1"
+  local source_dir="$K8S_DIR/overlays/$overlay"
+  local label="${overlay//\//-}"
+  local rendered="$TEMP_DIR/$label.yaml"
 
-  echo "::group::Render and validate $overlay overlay"
+  echo "::group::Render and validate $overlay"
   kubectl kustomize "$source_dir" > "$rendered"
   test -s "$rendered"
 
-  # Validate all built-in Kubernetes resources strictly. External Secrets Operator
-  # resources are CRDs owned by the cluster add-on, so kubeconform skips only schemas
-  # it does not know; the script separately asserts their expected API group and kind.
+  # Validate built-in Kubernetes resources. External Secrets Operator owns its CRDs;
+  # their API group and kind are checked below and the live CRDs are a cluster gate.
   kubeconform -strict -summary -ignore-missing-schemas "$rendered"
 
   if [[ "$overlay" != "local" ]]; then
-    mapfile -t images < <(sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]]+).*/\1/p' "$rendered")
-    if [[ "${#images[@]}" -eq 0 ]]; then
-      echo "$overlay overlay contains no container images." >&2
-      exit 1
-    fi
-    for image in "${images[@]}"; do
-      case "$image" in
-        ghcr.io/shatru123/sentinelai-api*|ghcr.io/shatru123/sentinelai-web*|ghcr.io/shatru123/sentinelai-worker*)
-          if [[ ! "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
-            echo "$overlay first-party image must be pinned to a SHA-256 digest: $image" >&2
-            exit 1
-          fi
-          ;;
-        *)
-          # Third-party runtime images must use an explicit release tag or digest.
-          # Reject floating aliases such as latest and untagged repository references.
-          if [[ "$image" == *:latest || "$image" != *@sha256:* && "$image" != *:* ]]; then
-            echo "$overlay third-party image must use an explicit version tag or digest: $image" >&2
-            exit 1
-          fi
-          ;;
-      esac
-    done
-    if grep -Eq '@sha256:0{64}$' "$rendered"; then
-      echo "NOTICE: $overlay still contains placeholder image digests; it is not deployable until immutable release digests are promoted."
+    # Only runtime and migration-job overlays contain images. First-party release
+    # images must be digest pinned; third-party images must use an explicit version.
+    if [[ "$overlay" != */migration-prerequisites ]]; then
+      mapfile -t images < <(sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]]+).*/\1/p' "$rendered")
+      if [[ "${#images[@]}" -eq 0 ]]; then
+        echo "$overlay overlay contains no container images." >&2
+        exit 1
+      fi
+
+      for image in "${images[@]}"; do
+        case "$image" in
+          ghcr.io/shatru123/sentinelai-api*|ghcr.io/shatru123/sentinelai-web*|ghcr.io/shatru123/sentinelai-worker*)
+            if [[ ! "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
+              echo "$overlay first-party image must be pinned to a SHA-256 digest: $image" >&2
+              exit 1
+            fi
+            ;;
+          *)
+            if [[ "$image" != *@sha256:* ]]; then
+              local image_name="${image##*/}"
+              if [[ "$image_name" != *:* || "${image_name##*:}" == "latest" ]]; then
+                echo "$overlay third-party image must use an explicit version tag or digest: $image" >&2
+                exit 1
+              fi
+            fi
+            ;;
+        esac
+      done
+
+      if grep -Eq '@sha256:0{64}$' "$rendered"; then
+        echo "NOTICE: $overlay still contains placeholder image digests; it is not deployable until immutable release digests are promoted."
+      fi
     fi
 
-    # Production-like overlays must not put secret values in ConfigMaps.
-    # Secret references belong in ExternalSecret resources and Pod secretKeyRef entries.
+    # Production-like overlays must not place password, token, secret or private-key
+    # values in plain manifest data. Workload secretKeyRef and ExternalSecret references
+    # remain allowed because they reference provider-managed values.
     if grep -Eq '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered"; then
       echo "$overlay rendered a secret-like configuration key; move the value to the external secret provider." >&2
       grep -En '^[[:space:]]+[A-Za-z0-9_.-]*(Password|Secret|Token|PrivateKey):' "$rendered" >&2
       exit 1
     fi
 
-    if ! grep -q '^apiVersion: external-secrets.io/v1  fi
-
-  echo "Validated $overlay overlay."
-  echo "::endgroup::"
-done
- "$rendered" ||
-       ! grep -q '^kind: ExternalSecret  fi
-
-  echo "Validated $overlay overlay."
-  echo "::endgroup::"
-done
- "$rendered"; then
-      echo "$overlay must render ExternalSecret resources using external-secrets.io/v1." >&2
-      exit 1
+    if [[ "$overlay" != */migration-job ]]; then
+      if ! grep -q '^apiVersion: external-secrets.io/v1$' "$rendered" ||
+         ! grep -q '^kind: ExternalSecret$' "$rendered"; then
+        echo "$overlay must render ExternalSecret resources using external-secrets.io/v1." >&2
+        exit 1
+      fi
     fi
   fi
 
-  echo "Validated $overlay overlay."
+  echo "Validated $overlay."
   echo "::endgroup::"
+}
+
+for overlay in \
+  local \
+  staging \
+  production \
+  staging/migration-prerequisites \
+  staging/migration-job \
+  production/migration-prerequisites \
+  production/migration-job; do
+  validate_overlay "$overlay"
 done
+
+bash -n "$ROOT_DIR/deploy/kubernetes/scripts/deploy.sh"

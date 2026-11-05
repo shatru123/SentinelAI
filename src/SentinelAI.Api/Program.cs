@@ -1,9 +1,13 @@
 using System.Text.Json;
+using System.Net;
+using System.Threading.RateLimiting;
 using System.Security.Claims;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
@@ -18,6 +22,37 @@ using SentinelAI.Infrastructure;
 using SentinelAI.Security.Policy;
 
 var builder = WebApplication.CreateBuilder(args);
+ProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment);
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+    foreach (var proxy in builder.Configuration.GetSection("ReverseProxy:KnownProxies").Get<string[]>() ?? [])
+        if (IPAddress.TryParse(proxy, out var address)) options.KnownProxies.Add(address);
+});
+var allowedOrigins = builder.Configuration.GetSection("Security:AllowedOrigins").Get<string[]>() ?? [];
+builder.Services.AddCors(options => options.AddPolicy("browser", policy =>
+{
+    if (builder.Environment.IsDevelopment())
+        policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin();
+    else
+        policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
+}));
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("api", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = builder.Configuration.GetValue("RateLimiting:ApiPermitLimit", 120),
+            Window = TimeSpan.FromSeconds(builder.Configuration.GetValue("RateLimiting:ApiWindowSeconds", 60)),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
 builder.Services.AddProblemDetails();
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddOpenApi();
@@ -62,11 +97,28 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Worker", policy => policy.RequireAuthenticatedUser().RequireRole(nameof(UserRole.Worker)));
 
 var app = builder.Build();
-if (builder.Configuration.GetValue<bool>("Database:ApplyMigrations"))
+if (args.Any(argument => argument.Equals("--migrate", StringComparison.OrdinalIgnoreCase)) ||
+    builder.Configuration.GetValue<bool>("Database:ApplyMigrations"))
 {
     await using var migrationScope = app.Services.CreateAsyncScope();
     await migrationScope.ServiceProvider.GetRequiredService<SentinelAI.Infrastructure.AppDbContext>().Database.MigrateAsync();
+    if (args.Any(argument => argument.Equals("--migrate", StringComparison.OrdinalIgnoreCase)))
+        return;
 }
+app.UseForwardedHeaders();
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.TryAdd("X-Content-Type-Options", "nosniff");
+    context.Response.Headers.TryAdd("X-Frame-Options", "DENY");
+    context.Response.Headers.TryAdd("Referrer-Policy", "no-referrer");
+    context.Response.Headers.TryAdd("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    await next();
+});
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 {
     var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
@@ -90,6 +142,8 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     };
     await Results.Problem(statusCode: context.Response.StatusCode, title: "Request could not be completed", detail: detail).ExecuteAsync(context);
 }));
+app.UseCors("browser");
+app.UseRateLimiter();
 app.UseAuthentication();
 app.Use(async (context, next) =>
 {
@@ -122,9 +176,61 @@ app.Use(async (context, next) =>
 app.UseAuthorization();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "sentinelai-api", utc = DateTimeOffset.UtcNow })).AllowAnonymous();
+app.MapGet("/health/live", () => Results.Ok(new { status = "live", service = "sentinelai-api", utc = DateTimeOffset.UtcNow })).AllowAnonymous();
+app.MapGet("/health/ready", async (
+    AppDbContext db,
+    IScanJobQueue queue,
+    IServiceProvider services,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var databaseReady = false;
+    try { databaseReady = await db.Database.CanConnectAsync(cancellationToken); }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+    catch { databaseReady = false; }
+
+    var brokerReady = queue is InMemoryScanJobQueue && app.Environment.IsDevelopment();
+    if (queue is RabbitMqScanJobQueue && services.GetService<RabbitMqConnectionProvider>() is { } rabbit)
+    {
+        try { brokerReady = (await rabbit.GetConnectionAsync(cancellationToken)).IsOpen; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch { brokerReady = false; }
+    }
+
+    var artifactStore = services.GetService<IAssessmentArtifactStore>();
+    var storageReady = artifactStore is not null;
+    var workerCount = 0;
+    try
+    {
+        var staleAfter = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Worker:HeartbeatStaleSeconds", 45), 15, 3600));
+        workerCount = await db.Workers.AsNoTracking()
+            .CountAsync(worker => worker.Status == WorkerStatus.Healthy &&
+                worker.LastHeartbeatAt >= DateTimeOffset.UtcNow - staleAfter, cancellationToken);
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+    catch { workerCount = 0; }
+
+    var workerRequired = configuration.GetValue("Health:RequireHealthyWorker", !app.Environment.IsDevelopment());
+    var workerReady = !workerRequired || workerCount > 0;
+    var ready = databaseReady && brokerReady && storageReady && workerReady;
+    var body = new
+    {
+        status = ready ? "ready" : "not-ready",
+        checks = new
+        {
+            database = databaseReady ? "ready" : "unavailable",
+            broker = brokerReady ? "ready" : "unavailable",
+            artifactStorage = storageReady ? "configured" : "unavailable",
+            healthyWorkers = workerCount,
+            workerRequired
+        },
+        checkedAt = DateTimeOffset.UtcNow
+    };
+    return ready ? Results.Ok(body) : Results.Json(body, statusCode: StatusCodes.Status503ServiceUnavailable);
+}).AllowAnonymous();
 app.MapGet("/api/v1/auth/me", (HttpContext context) => Results.Ok(ToPrincipal(context).ToResponse())).RequireAuthorization();
 
-var api = app.MapGroup("/api/v1").RequireAuthorization();
+var api = app.MapGroup("/api/v1").RequireAuthorization().RequireRateLimiting("api");
 api.MapGet("/dashboard/summary", async (HttpContext context, IAppDbContext db, CancellationToken cancellationToken) =>
 {
     var tenantId = ToPrincipal(context).TenantId;

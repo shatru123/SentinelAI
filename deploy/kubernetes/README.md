@@ -11,6 +11,8 @@ The supported local runtime remains Docker Compose. This directory contains the 
 
 Staging and production remain templates. Their image digests, hostnames, OIDC issuer/client registration, trusted proxy addresses, bucket/KMS identifiers, worker IDs and tenant IDs must be replaced for the selected environment.
 
+The production network policy expects an operator-managed outbound proxy at `sentinelai-egress-gateway.sentinelai-operations.svc.cluster.local:443`, with an HTTP CONNECT-capable proxy endpoint and destination allow-list. API, Web and Worker use `HTTP_PROXY`/`HTTPS_PROXY`; `NO_PROXY` bypasses only loopback and cluster-local services. Web egress is limited to this gateway and the in-cluster telemetry collector. The gateway and its destination policy are cluster-owned dependencies and are not deployed by these manifests.
+
 ## Render and validate
 
 From the repository root:

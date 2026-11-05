@@ -89,3 +89,10 @@ kind: NetworkPolicy
 metadata:
   name: web-egress
   namespace: sentinelai
+---
+$patch: delete
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sentinelai-web-data-protection
+  namespace: sentinelai

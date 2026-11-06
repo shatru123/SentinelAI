@@ -29,9 +29,11 @@ public sealed class S3AssessmentArtifactStore(
 
     public async Task<byte[]?> GetAsync(Guid tenantId, string storageKey, CancellationToken cancellationToken)
     {
-        if (!IsTenantKey(tenantId, storageKey) || storageKey.Contains("/.staging/", StringComparison.OrdinalIgnoreCase))
+        var normalizedKey = storageKey?.Replace('\\', '/');
+        if (!IsTenantKey(tenantId, normalizedKey) ||
+            normalizedKey!.Contains("/.staging/", StringComparison.OrdinalIgnoreCase))
             return null;
-        return await ReadObjectAsync(storageKey, cancellationToken);
+        return await ReadObjectAsync(normalizedKey, cancellationToken);
     }
 
     public async Task<string> StageReportAsync(Guid tenantId, Guid assessmentId, byte[] content, CancellationToken cancellationToken)
@@ -44,34 +46,37 @@ public sealed class S3AssessmentArtifactStore(
 
     public async Task<string> PublishReportAsync(Guid tenantId, Guid assessmentId, string stagingKey, CancellationToken cancellationToken)
     {
-        ValidateOwnedReportKey(tenantId, assessmentId, stagingKey, requireStaging: true);
-        var fileName = Path.GetFileName(stagingKey);
+        var normalizedStagingKey = stagingKey.Replace('\\', '/');
+        ValidateOwnedReportKey(tenantId, assessmentId, normalizedStagingKey, requireStaging: true);
+        var fileName = Path.GetFileName(normalizedStagingKey);
         var publishedKey = $"{tenantId:D}/{assessmentId:D}/reports/{fileName}";
         var copyRequest = new CopyObjectRequest
         {
             SourceBucket = bucket,
-            SourceKey = stagingKey,
+            SourceKey = normalizedStagingKey,
             DestinationBucket = bucket,
             DestinationKey = publishedKey,
             ServerSideEncryptionMethod = EncryptionMethod,
             ServerSideEncryptionKeyManagementServiceKeyId = EncryptionKeyId
         };
         await client.CopyObjectAsync(copyRequest, cancellationToken);
-        await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = stagingKey }, cancellationToken);
+        await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = normalizedStagingKey }, cancellationToken);
         return publishedKey;
     }
 
     public async Task<byte[]?> GetPublishedReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken)
     {
-        try { ValidateOwnedReportKey(tenantId, assessmentId, storageKey, requireStaging: false); }
+        var normalizedKey = storageKey.Replace('\\', '/');
+        try { ValidateOwnedReportKey(tenantId, assessmentId, normalizedKey, requireStaging: false); }
         catch (InvalidOperationException) { return null; }
-        return await ReadObjectAsync(storageKey, cancellationToken);
+        return await ReadObjectAsync(normalizedKey, cancellationToken);
     }
 
     public async Task DiscardReportAsync(Guid tenantId, Guid assessmentId, string storageKey, CancellationToken cancellationToken)
     {
-        ValidateOwnedReportKey(tenantId, assessmentId, storageKey, requireStaging: false);
-        await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = storageKey }, cancellationToken);
+        var normalizedKey = storageKey.Replace('\\', '/');
+        ValidateOwnedReportKey(tenantId, assessmentId, normalizedKey, requireStaging: false);
+        await client.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = normalizedKey }, cancellationToken);
     }
 
     public async Task<int> CleanupStagedReportsAsync(DateTimeOffset olderThan, CancellationToken cancellationToken)

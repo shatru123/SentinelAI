@@ -23,6 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Require main-branch release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Image publication is allowed only from the protected main branch after review and merge." >&2
+            exit 1
+          fi
       - name: Validate release label
         shell: bash
         env:

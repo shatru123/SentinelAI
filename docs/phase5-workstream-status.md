@@ -2,7 +2,7 @@
 
 **Implementation branch:** `phase5/cloud-operational-hardening`  
 **Base:** merged Phase 4 main commit `29fc0cedc1852986422c296ebaba762a980cd31a`  
-**PR:** not opened yet; one consolidated PR will be opened after the end-to-end gates pass.  
+**PR:** Draft [#10 — cloud operational hardening foundation](https://github.com/shatru123/SentinelAI/pull/10); review-only, not approved for merge. Production gates remain open.  
 **Release status:** not production-ready. The GHCR target and main-only signed image-release workflow are configured but have not been dispatched. No cloud provider, account/region, external CA, secret manager, or on-call owner has been selected.
 
 This matrix deliberately mirrors every Phase 5 requirement. An item is not marked complete merely because code has been added; its test, deployment or operational evidence must also exist.

@@ -41,16 +41,41 @@ if grep -Eq 'example\.invalid|replace-me|placeholder|sha256:0{64}|11111111-1111-
   exit 1
 fi
 
-api_image="$(awk '
-  /^kind: Deployment$/ { in_deployment=1; is_api=0; next }
-  in_deployment && /^[[:space:]]*name: sentinelai-api$/ { is_api=1; next }
-  is_api && /^[[:space:]]*image:/ { sub(/^[[:space:]]*image:[[:space:]]*/, ""); print; exit }
-  /^---$/ { in_deployment=0; is_api=0 }
-' "$RUNTIME_MANIFEST")"
-if [[ -z "$api_image" || "$api_image" != *@sha256:* ]]; then
-  echo "Refusing deployment: the API runtime image is not pinned to an immutable digest." >&2
+extract_image() {
+  local component="$1"
+  awk -v name="sentinelai-$component" '
+    /^kind: (Deployment|StatefulSet)$/ { workload=1; matched=0; next }
+    workload && /^[[:space:]]*name:/ && $2 == name { matched=1; next }
+    matched && /^[[:space:]]*image:/ {
+      sub(/^[[:space:]]*image:[[:space:]]*/, "")
+      print
+      exit
+    }
+    /^---$/ { workload=0; matched=0 }
+  ' "$RUNTIME_MANIFEST"
+}
+
+if ! command -v cosign >/dev/null 2>&1; then
+  echo "cosign is required to verify signed API, Web and Worker images." >&2
   exit 1
 fi
+
+identity_regex='^https://github.com/shatru123/SentinelAI/.github/workflows/release-images.yml@refs/'
+for component in api web worker; do
+  image="$(extract_image "$component")"
+  if [[ ! "$image" =~ ^ghcr\.io/shatru123/sentinelai-$component@sha256:[0-9a-f]{64}$ ]]; then
+    echo "Refusing deployment: the $component image is not the expected immutable GHCR digest." >&2
+    exit 1
+  fi
+
+  echo "Verifying the GitHub OIDC signature for $component image."
+  if ! cosign verify --certificate-identity-regexp "$identity_regex" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" "$image" \
+      > "$TEMP_DIR/$component-signature.json"; then
+    echo "Refusing deployment: signature verification failed for $component image." >&2
+    exit 1
+  fi
+done
 
 kubectl get crd externalsecrets.external-secrets.io >/dev/null
 if ! kubectl get storageclass sentinelai-shared-rwx >/dev/null 2>&1; then

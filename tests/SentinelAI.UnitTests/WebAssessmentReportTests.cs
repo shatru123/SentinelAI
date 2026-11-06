@@ -23,7 +23,11 @@ public sealed class WebAssessmentReportTests
         var evidence = new Evidence(tenant.Id, finding.Id, "test", "evidence", "hash");
         evidence.ConfigureContent("<script>no</script>", "text/plain");
         var screenshot = new AssessmentScreenshot(tenant.Id, assessment.Id, finding.Id, assessment.TargetUrl, "landing", "image/png", "tenant/assessment/shot.png", "hash");
-        db.AddRange(tenant, scope, job, assessment, finding, evidence, screenshot);
+        var credentialBoundary = new WebAssessmentCheck(tenant.Id, assessment.Id, "credentials.no-submission",
+            "Credential submission boundary", "Authentication safety", WebCheckStatus.Informational, assessment.TargetUrl);
+        credentialBoundary.Complete(WebCheckStatus.Informational,
+            "No password, API key, bearer token, or session-cookie value was submitted or retained.");
+        db.AddRange(tenant, scope, job, assessment, finding, evidence, screenshot, credentialBoundary);
         await db.SaveChangesAsync();
         var store = new FakeStore { Bytes = [137, 80, 78, 71] };
         var report = await new HtmlReportGenerator(db, store).GenerateAsync(tenant.Id, assessment, scope, CancellationToken.None);
@@ -33,6 +37,11 @@ public sealed class WebAssessmentReportTests
         Assert.DoesNotContain("<script>alert(1)</script>", html);
         Assert.Contains("&lt;script&gt;alert(1)&lt;/script&gt;", html);
         Assert.Contains("&lt;unsafe&gt;", html);
+        Assert.Contains("Authentication and credential handling", html);
+        Assert.Contains("Credentials attempted:</strong> None", html);
+        Assert.Contains("Secrets retained:</strong> None", html);
+        Assert.Contains("Credential submission boundary", html);
+        Assert.Contains("No password, API key, bearer token, or session-cookie value was submitted or retained.", html);
     }
 
     [Fact]

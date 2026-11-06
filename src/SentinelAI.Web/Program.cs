@@ -1,4 +1,10 @@
 using System.Security.Claims;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.DataProtection;
+using System.Net;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
@@ -7,16 +13,83 @@ using SentinelAI.Web;
 using SentinelAI.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
+WebProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment);
+
+var dataProtection = builder.Services.AddDataProtection()
+    .SetApplicationName("SentinelAI.Web");
+if (builder.Environment.IsProduction())
+{
+    var certificatePassword = builder.Configuration["DataProtection:CertificatePassword"];
+    var currentDataProtectionCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+        builder.Configuration["DataProtection:CertificatePath"]!,
+        certificatePassword,
+        X509KeyStorageFlags.EphemeralKeySet);
+    var certificatesForDecryption = new List<X509Certificate2> { currentDataProtectionCertificate };
+    var previousCertificatePaths = builder.Configuration
+        .GetSection("DataProtection:PreviousCertificatePaths").Get<string[]>() ?? [];
+    foreach (var previousPath in previousCertificatePaths.Where(path => !string.IsNullOrWhiteSpace(path)))
+    {
+        certificatesForDecryption.Add(X509CertificateLoader.LoadPkcs12FromFile(
+            previousPath, certificatePassword, X509KeyStorageFlags.EphemeralKeySet));
+    }
+
+    dataProtection
+        .PersistKeysToFileSystem(new DirectoryInfo(builder.Configuration["DataProtection:KeyRingPath"]!))
+        .ProtectKeysWithCertificate(currentDataProtectionCertificate)
+        .UnprotectKeysWithAnyCertificate(certificatesForDecryption.ToArray());
+}
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = builder.Configuration.GetValue<long>("Security:WebMaxRequestBodyBytes", 2 * 1024 * 1024);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:RequestHeadersTimeoutSeconds", 15));
+    options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:KeepAliveTimeoutSeconds", 120));
+});
+builder.Services.AddRequestTimeouts(options =>
+{
+    options.DefaultPolicy = new Microsoft.AspNetCore.Http.Timeouts.RequestTimeoutPolicy
+    {
+        Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Security:WebRequestTimeoutSeconds", 60))
+    };
+});
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+    foreach (var proxy in builder.Configuration.GetSection("ReverseProxy:KnownProxies").Get<string[]>() ?? [])
+        if (IPAddress.TryParse(proxy, out var address)) options.KnownProxies.Add(address);
+});
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = builder.Configuration.GetValue("RateLimiting:WebPermitLimit", 300),
+                Window = TimeSpan.FromSeconds(builder.Configuration.GetValue("RateLimiting:WebWindowSeconds", 60)),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+});
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<SentinelApiClient>();
 builder.Services.AddHttpClient("SentinelApi", client => client.BaseAddress = new Uri(builder.Configuration["Api:BaseUrl"] ?? "http://localhost:5109"))
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddHttpClient("SentinelApiHealth", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Api:HealthBaseUrl"] ??
+        builder.Configuration["Api:BaseUrl"] ?? "http://localhost:5109");
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
     options.DefaultChallengeScheme = "oidc";
-}).AddCookie(options => { options.LoginPath = "/auth/login"; options.AccessDeniedPath = "/auth/denied"; options.SlidingExpiration = true; });
+}).AddCookie(options => { options.LoginPath = "/auth/login"; options.AccessDeniedPath = "/auth/denied"; options.SlidingExpiration = true; options.Cookie.HttpOnly = true; options.Cookie.SecurePolicy = builder.Environment.IsDevelopment() ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always; options.Cookie.SameSite = SameSiteMode.Lax; });
 var authority = builder.Configuration["Authentication:Authority"];
 if (!string.IsNullOrWhiteSpace(authority))
 {
@@ -54,6 +127,17 @@ builder.Services.AddRazorComponents()
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+app.UseForwardedHeaders();
+app.UseRequestTimeouts();
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.TryAdd("X-Content-Type-Options", "nosniff");
+    context.Response.Headers.TryAdd("X-Frame-Options", "DENY");
+    context.Response.Headers.TryAdd("Referrer-Policy", "strict-origin-when-cross-origin");
+    context.Response.Headers.TryAdd("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    await next();
+});
+app.UseRateLimiter();
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
@@ -212,7 +296,9 @@ app.Use(async (context, next) =>
 });
 
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
-if (builder.Configuration.GetValue("Web:EnableHttpsRedirection", !builder.Environment.IsDevelopment())) app.UseHttpsRedirection();
+if (!builder.Environment.IsDevelopment() || builder.Configuration.GetValue("Web:EnableHttpsRedirection", false))
+    app.UseWhen(context => !context.Request.Path.StartsWithSegments("/health"),
+        branch => branch.UseHttpsRedirection());
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -220,6 +306,24 @@ app.UseAuthorization();
 app.UseAntiforgery();
 
 app.MapStaticAssets();
+app.MapGet("/health/live", () => Results.Ok(new { status = "live", service = "sentinelai-web", utc = DateTimeOffset.UtcNow })).AllowAnonymous();
+app.MapGet("/health/ready", async (IHttpClientFactory clients, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        using var response = await clients.CreateClient("SentinelApiHealth").GetAsync("/health/ready", cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            return Results.Json(new { status = "not-ready", dependency = "api", apiStatusCode = (int)response.StatusCode },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        return Results.Ok(new { status = "ready", service = "sentinelai-web", api = "ready", utc = DateTimeOffset.UtcNow });
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+    catch
+    {
+        return Results.Json(new { status = "not-ready", dependency = "api" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+}).AllowAnonymous();
+
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

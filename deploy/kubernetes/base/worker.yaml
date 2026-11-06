@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sentinelai-worker
+  namespace: sentinelai
+spec:
+  serviceName: sentinelai-worker
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentinelai-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinelai-worker
+        app.kubernetes.io/part-of: sentinelai
+    spec:
+      serviceAccountName: sentinelai-worker
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        runAsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/shatru123/sentinelai-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: sentinelai-runtime
+          env:
+            - name: DOTNET_ENVIRONMENT
+              value: Production
+            - name: Worker__Identity
+              value: worker-east-01
+            - name: Worker__TenantId
+              value: "00000000-0000-0000-0000-000000000001"
+            - name: Worker__ClientCertificatePaths__0
+              value: /var/run/sentinelai-worker-client/current.pfx
+            - name: Worker__ClientCertificatePaths__1
+              value: /var/run/sentinelai-worker-client/previous.pfx
+            - name: Worker__ClientCertificatePassword
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-worker-client
+                  key: password
+            - name: ConnectionStrings__SentinelAIWorker
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-worker-database
+                  key: connection
+            - name: RabbitMQ__WorkerUsername
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-worker-broker
+                  key: username
+            - name: RabbitMQ__WorkerPassword
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-worker-broker
+                  key: password
+            - name: Worker__ControlPlaneToken
+              value: ""
+          volumeMounts:
+            - name: worker-client
+              mountPath: /var/run/sentinelai-worker-client
+              readOnly: true
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "test -r /var/run/sentinelai-worker-client/current.pfx"]
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test -r /var/run/sentinelai-worker-client/current.pfx"]
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: worker-client
+          secret:
+            secretName: sentinelai-worker-client
+            defaultMode: 0400

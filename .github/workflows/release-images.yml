@@ -1,0 +1,143 @@
+name: Publish signed SentinelAI images
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable release label to publish alongside the commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: sentinelai-image-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require main-branch release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Image publication is allowed only from the protected main branch after review and merge." >&2
+            exit 1
+          fi
+      - name: Validate release label
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || {
+            echo "Invalid image tag. Use 1-128 letters, digits, dots, underscores or hyphens." >&2
+            exit 1
+          }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@v3.8.2
+        with:
+          cosign-release: v2.4.1
+      - name: Build and publish API image
+        id: api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.api
+          push: true
+          tags: |
+            ghcr.io/shatru123/sentinelai-api:${{ inputs.image_tag }}
+            ghcr.io/shatru123/sentinelai-api:sha-${{ github.sha }}
+          sbom: true
+          provenance: mode=max
+      - name: Build and publish Web image
+        id: web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.web
+          push: true
+          tags: |
+            ghcr.io/shatru123/sentinelai-web:${{ inputs.image_tag }}
+            ghcr.io/shatru123/sentinelai-web:sha-${{ github.sha }}
+          sbom: true
+          provenance: mode=max
+      - name: Build and publish Worker image
+        id: worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.worker
+          push: true
+          tags: |
+            ghcr.io/shatru123/sentinelai-worker:${{ inputs.image_tag }}
+            ghcr.io/shatru123/sentinelai-worker:sha-${{ github.sha }}
+          sbom: true
+          provenance: mode=max
+      - name: Attach GitHub build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/shatru123/sentinelai-api
+          subject-digest: ${{ steps.api.outputs.digest }}
+          push-to-registry: true
+      - name: Attach Web build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/shatru123/sentinelai-web
+          subject-digest: ${{ steps.web.outputs.digest }}
+          push-to-registry: true
+      - name: Attach Worker build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/shatru123/sentinelai-worker
+          subject-digest: ${{ steps.worker.outputs.digest }}
+          push-to-registry: true
+      - name: Sign immutable image digests with GitHub OIDC
+        shell: bash
+        env:
+          API_DIGEST: ${{ steps.api.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "ghcr.io/shatru123/sentinelai-api@${API_DIGEST}"
+          cosign sign --yes "ghcr.io/shatru123/sentinelai-web@${WEB_DIGEST}"
+          cosign sign --yes "ghcr.io/shatru123/sentinelai-worker@${WORKER_DIGEST}"
+      - name: Publish immutable digest manifest
+        shell: bash
+        env:
+          API_DIGEST: ${{ steps.api.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/release
+          {
+            echo "source_commit=${GITHUB_SHA}"
+            echo "release_tag=${IMAGE_TAG}"
+            echo "api=ghcr.io/shatru123/sentinelai-api@${API_DIGEST}"
+            echo "web=ghcr.io/shatru123/sentinelai-web@${WEB_DIGEST}"
+            echo "worker=ghcr.io/shatru123/sentinelai-worker@${WORKER_DIGEST}"
+          } | tee artifacts/release/image-digests.txt
+          {
+            echo "Published immutable image digests:"
+            cat artifacts/release/image-digests.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-image-digests
+          path: artifacts/release/image-digests.txt
+          if-no-files-found: error

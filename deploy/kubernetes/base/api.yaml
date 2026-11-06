@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinelai-api
+  namespace: sentinelai
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentinelai-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinelai-api
+        app.kubernetes.io/part-of: sentinelai
+    spec:
+      serviceAccountName: sentinelai-api
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        runAsGroup: 1654
+        fsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ghcr.io/shatru123/sentinelai-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: worker-mtls
+              containerPort: 8443
+          envFrom:
+            - configMapRef:
+                name: sentinelai-runtime
+          env:
+            - name: ConnectionStrings__SentinelAI
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-api-database
+                  key: connection
+            - name: RabbitMQ__Username
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-api-broker
+                  key: username
+            - name: RabbitMQ__Password
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-api-broker
+                  key: password
+            - name: WorkerAuthentication__ServerCertificatePassword
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelai-api-mtls
+                  key: tls-password
+          volumeMounts:
+            - name: worker-ca
+              mountPath: /var/run/sentinelai-worker-ca
+              readOnly: true
+            - name: api-mtls
+              mountPath: /var/run/sentinelai-api-mtls
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 384Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: worker-ca
+          secret:
+            secretName: sentinelai-worker-ca
+            defaultMode: 0440
+        - name: api-mtls
+          secret:
+            secretName: sentinelai-api-mtls
+            defaultMode: 0440

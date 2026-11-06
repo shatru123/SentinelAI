@@ -73,7 +73,136 @@ jobs:
           RABBITMQ_TEST_PASSWORD: sentinelai
           SENTINELAI_POSTGRES_CONNECTION: Host=localhost;Port=5432;Database=sentinelai;Username=sentinelai;Password=sentinelai
           SENTINELAI_RUN_BROWSER_TESTS: "true"
+      - name: Create an isolated empty database for migration smoke testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          postgres_container="$(docker ps --filter 'ancestor=postgres:17-alpine' --format '{{.ID}}' | head -n 1)"
+          test -n "$postgres_container"
+          docker exec "$postgres_container" psql -U sentinelai -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE sentinelai_migration;"
+      - name: Smoke-test Production one-shot migration startup against an empty database
+        run: dotnet src/SentinelAI.Api/bin/Release/net10.0/SentinelAI.Api.dll --migrate
+        env:
+          ASPNETCORE_ENVIRONMENT: Production
+          Database__Provider: Postgres
+          Database__ApplyMigrations: "false"
+          ConnectionStrings__SentinelAI: Host=localhost;Port=5432;Database=sentinelai_migration;Username=sentinelai;Password=sentinelai
       - run: docker compose --env-file .env.example -f deploy/docker/docker-compose.yml config --quiet
+      - name: Set up kubectl and Kustomize
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.34.0"
+      - name: Install kubeconform
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="v0.8.0"
+          EXPECTED_SHA256="9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
+          ARCHIVE="$RUNNER_TEMP/kubeconform-linux-amd64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/yannh/kubeconform/releases/download/${VERSION}/kubeconform-linux-amd64.tar.gz" \
+            --output "$ARCHIVE"
+          echo "${EXPECTED_SHA256}  ${ARCHIVE}" | sha256sum --check -
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP" kubeconform
+          sudo install -m 0755 "$RUNNER_TEMP/kubeconform" /usr/local/bin/kubeconform
+          kubeconform -v
+      - name: Render and schema-validate Kubernetes overlays
+        run: bash .github/scripts/validate-kubernetes.sh
+      - name: Verify immutable image digest promotion
+        run: bash .github/scripts/test-image-promotion.sh
+      - name: Validate shell script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r script; do
+            bash -n "$script"
+          done < <(find .github/scripts deploy/certificates deploy/kubernetes/scripts -type f -name '*.sh' -print | sort)
+      - name: Verify deployment script fails closed
+        run: bash .github/scripts/test-deploy-script-safety.sh
+      - name: Verify worker certificate bootstrap and packaging
+        run: bash .github/scripts/test-worker-certificate-lifecycle.sh
+      - name: Install Trivy vulnerability scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="0.76.2"
+          EXPECTED_SHA256="bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
+          ARCHIVE="$RUNNER_TEMP/trivy-linux-amd64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/trivy_${VERSION}_Linux-64bit.tar.gz" \
+            --output "$ARCHIVE"
+          echo "${EXPECTED_SHA256}  ${ARCHIVE}" | sha256sum --check -
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP" trivy
+          sudo install -m 0755 "$RUNNER_TEMP/trivy" /usr/local/bin/trivy
+          trivy --version
+      - name: Install Syft SBOM generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="1.56.0"
+          EXPECTED_SHA256="1c2493cfcf52d3367d6cb25780d9190c111c2219c34c820574c43e8bae15c528"
+          ARCHIVE="$RUNNER_TEMP/syft-linux-amd64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/anchore/syft/releases/download/v${VERSION}/syft_${VERSION}_linux_amd64.tar.gz" \
+            --output "$ARCHIVE"
+          echo "${EXPECTED_SHA256}  ${ARCHIVE}" | sha256sum --check -
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP" syft
+          sudo install -m 0755 "$RUNNER_TEMP/syft" /usr/local/bin/syft
+          syft version
+      - name: Build API, Web and Worker container images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --file deploy/docker/Dockerfile.api --tag sentinelai-api:ci .
+          docker build --pull --file deploy/docker/Dockerfile.web --tag sentinelai-web:ci .
+          docker build --pull --file deploy/docker/Dockerfile.worker --tag sentinelai-worker:ci .
+      - name: Generate image SBOMs and run vulnerability scans
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p artifacts/security
+          scan_status=0
+          for component in api web worker; do
+            image="sentinelai-${component}:ci"
+            sbom="artifacts/security/${component}.cdx.json"
+            if ! syft "$image" --output "cyclonedx-json=$sbom" || [[ ! -s "$sbom" ]]; then
+              echo "Failed to generate a non-empty CycloneDX SBOM for $image." >&2
+              scan_status=1
+            fi
+            if ! trivy image --scanners vuln,secret --ignore-unfixed --severity CRITICAL,HIGH \
+              --format sarif --output "artifacts/security/${component}.sarif" --exit-code 1 "$image"; then
+              scan_status=1
+            fi
+          done
+          # Scan checked-in source, dependency manifests, and deployment definitions.
+          if ! trivy fs --scanners vuln,secret --ignore-unfixed --severity CRITICAL,HIGH \
+            --format sarif --output artifacts/security/source.sarif --exit-code 1 .; then
+            scan_status=1
+          fi
+          # Configuration findings are recorded for review. Cluster-specific ingress,
+          # secret-store and network policy rules require the selected provider/CNI gate.
+          if ! trivy config --severity CRITICAL,HIGH --format sarif \
+            --output artifacts/security/configuration.sarif --exit-code 0 deploy; then
+            echo "Failed to generate the report-only deployment configuration SARIF." >&2
+            scan_status=1
+          fi
+          # Enforce infrastructure findings for the production-capable K8s base and
+          # environment overlays. The local Development overlay remains report-only.
+          for manifest_dir in deploy/kubernetes/base deploy/kubernetes/overlays/staging deploy/kubernetes/overlays/production; do
+            report_name="$(echo "$manifest_dir" | tr '/' '-')"
+            if ! trivy config --severity CRITICAL,HIGH --format sarif \
+              --output "artifacts/security/${report_name}.sarif" --exit-code 1 "$manifest_dir"; then
+              scan_status=1
+            fi
+          done
+          exit "$scan_status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: artifacts/security/**
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:

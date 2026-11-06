@@ -348,6 +348,7 @@ public sealed class WorkerRegistration
     public void MarkJobCompleted(DateTimeOffset now) { LastJobAt = now; LastJobCompletedAt = now; }
     public void MarkJob() { MarkJobStarted(DateTimeOffset.UtcNow); Heartbeat(CurrentActiveJobs, MaximumCapacity, LastJobStartedAt, LastJobCompletedAt); }
     public void MarkUnhealthy() { Status = WorkerStatus.Unhealthy; }
+    public void Disable() { Status = WorkerStatus.Disabled; }
     public void ConfigurePrivateAssessmentAuthorization(IReadOnlyCollection<string> ranges, bool approved = true)
     {
         ApprovedPrivateNetworkRanges = ranges.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();

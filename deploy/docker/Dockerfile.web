@@ -5,6 +5,10 @@ RUN dotnet restore src/SentinelAI.Web/SentinelAI.Web.csproj
 RUN dotnet publish src/SentinelAI.Web/SentinelAI.Web.csproj -c Release -o /app/publish --no-restore
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
+USER root
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/publish .
 USER $APP_UID
 EXPOSE 8080

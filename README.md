@@ -19,9 +19,9 @@ SentinelAI is designed to discover and inventory explicitly authorized assets, e
 | OpenAI, Claude and Ollama providers (Phase 4.1) | Merged into `main` through PR #5; provider gateway and readiness checks implemented |
 | Evidence-grounded AI finding analysis (Phase 4.2) | Merged into `main` through PR #6; tenant-scoped persistence and evidence-reference validation implemented |
 | Finding AI analysis experience (Phase 4.3) | Merged into `main` through PR #7; advisory history is part of the finding dossier |
-| Scheduled reassessment and drift alerts (Phase 4.4) | PR #8 implementation merged; PR #9 closes migration, API/report lifecycle, in-process worker execution, reconciliation and PostgreSQL concurrency acceptance gaps. Full CI run #583 passed (343 tests, 0 failures/skips); Phase 5 is gated on merging the closure PR |
+| Scheduled reassessment and drift alerts (Phase 4.4) | Complete on `main`; PR #8 implementation and PR #9 acceptance closure merged. Main-branch CI run #590 passed (343 tests, 0 failures/skips). |
 | SOC dashboard and monitoring | Phase 3.1 MVP and runtime acceptance fixes merged |
-| Cloud/local deployment | Docker Compose development stack available; production deployment hardening remains |
+| Cloud/local deployment (Phase 5) | In progress on `phase5/cloud-operational-hardening`; production readiness is not yet approved. See [Phase 5 plan](docs/phase5-cloud-operational-hardening.md), [architecture/threat model](docs/phase5-architecture-and-threat-model.md), and [full acceptance matrix](docs/phase5-workstream-status.md). |
 
 ## Architecture at a glance
 

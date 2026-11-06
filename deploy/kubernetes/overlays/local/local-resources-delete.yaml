@@ -1,0 +1,98 @@
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sentinelai
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-ingress
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-data-plane-egress
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-mtls-egress
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector-egress
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sentinelai-api
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sentinelai-api
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sentinelai-web
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinelai-api-worker
+  namespace: sentinelai
+
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-egress
+  namespace: sentinelai
+---
+$patch: delete
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sentinelai-web-data-protection
+  namespace: sentinelai

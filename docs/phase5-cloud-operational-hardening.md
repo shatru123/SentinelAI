@@ -8,6 +8,8 @@ This is an execution plan, not a claim that production deployment is already com
 
 ## Decisions and constraints
 
+Track every requirement and its implementation/test evidence in [Phase 5 workstream status](phase5-workstream-status.md). Phase 5.0 architecture, data classification, trust zones, provisional service objectives and threat model are recorded in [Phase 5 architecture and threat model](phase5-architecture-and-threat-model.md). These documents are living acceptance evidence; the matrices are not a declaration of production readiness.
+
 - Keep the cloud provider and target region configurable until a deployment decision is recorded. Keep the application and deployment design portable; provider-specific identity, registry, managed database, secret manager and Kubernetes integrations must be isolated behind configuration and documented infrastructure modules.
 - The production control plane must not use Development header authentication, passwordless local identities, Admin self-approval defaults or development-only API behavior.
 - Operators authenticate with OIDC/JWT over TLS. Workers authenticate independently with tenant-bound, revocable credentials; the target design is mutual TLS with short-lived, rotatable client certificates.
@@ -157,3 +159,7 @@ The sequence may overlap where safe, but no later workstream waives an earlier s
 ## Explicit non-goals
 
 This phase does not authorize broader target discovery, increase assessment aggressiveness, introduce autonomous remediation, or let AI choose targets or execute tools. Cloud deployment changes where the existing authorization-controlled system runs; it does not relax what the system is allowed to do.
+
+### Additional external-worker deployment gate
+
+The current Worker uses mTLS for API registration/heartbeat but still accesses RabbitMQ and PostgreSQL directly. A customer-local deployment therefore needs private, tenant-scoped broker/database connectivity in addition to a TCP/TLS-passthrough mTLS endpoint; the database and broker must not be exposed publicly. This must be resolved with provider-specific private connectivity or a bounded control-plane gateway, then verified end to end from a customer network before 5.2 can be marked complete.

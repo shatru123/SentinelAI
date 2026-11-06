@@ -1,0 +1,208 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: sentinelai
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: sentinelai
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress
+  namespace: sentinelai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sentinelai-api
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-worker
+      ports:
+        - protocol: TCP
+          port: 8443
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-web
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-ingress
+  namespace: sentinelai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sentinelai-web
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-data-plane-egress
+  namespace: sentinelai
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["sentinelai-api", "sentinelai-worker", "sentinelai-migrate"]
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinelai-data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/role: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinelai-data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/role: rabbitmq
+      ports:
+        - protocol: TCP
+          port: 5672
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinelai-operations
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-egress-gateway
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinelai
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-mtls-egress
+  namespace: sentinelai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sentinelai-worker
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-api
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector-egress
+  namespace: sentinelai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sentinelai-otel-collector
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinelai-operations
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-upstream
+      ports:
+        - protocol: TCP
+          port: 4317
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-egress
+  namespace: sentinelai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sentinelai-web
+  policyTypes: ["Egress"]
+  egress:
+    # All external HTTPS calls (API ingress and OIDC discovery/token endpoints)
+    # must traverse the operator-managed outbound proxy. The proxy itself owns
+    # destination allow-listing and external routing.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sentinelai-operations
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-egress-gateway
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinelai-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+

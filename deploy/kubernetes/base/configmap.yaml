@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinelai-runtime
+  namespace: sentinelai
+data:
+  ASPNETCORE_ENVIRONMENT: Production
+  DOTNET_ENVIRONMENT: Production
+  Database__Provider: Postgres
+  Database__ApplyMigrations: "false"
+  Messaging__Mode: RabbitMq
+  Messaging__RunOutboxDispatcher: "true"
+  Authentication__Audience: sentinelai-api
+  Authentication__RequireHttpsMetadata: "true"
+  WorkerAuthentication__Mode: Mtls
+  WorkerAuthentication__TrustedRootCertificatePath: /var/run/sentinelai-worker-ca/ca.crt
+  WorkerAuthentication__ServerCertificatePath: /var/run/sentinelai-api-mtls/tls.pfx
+  Security__RequireHttps: "true"
+  Security__MaxRequestBodyBytes: "10485760"
+  Security__WebMaxRequestBodyBytes: "2097152"
+  Security__ApiRequestTimeoutSeconds: "60"
+  Security__WebRequestTimeoutSeconds: "60"
+  Security__RequestHeadersTimeoutSeconds: "15"
+  Security__KeepAliveTimeoutSeconds: "120"
+  Security__AllowedOrigins__0: https://sentinelai.example.invalid
+  ReverseProxy__KnownProxies__0: 10.0.0.10
+  AllowedHosts: api.sentinelai.example.invalid;sentinelai.example.invalid
+  RateLimiting__ApiPermitLimit: "120"
+  RateLimiting__ApiWindowSeconds: "60"
+  RateLimiting__WebPermitLimit: "300"
+  RateLimiting__WebWindowSeconds: "60"
+  Health__RequireHealthyWorker: "true"
+  Worker__HeartbeatStaleSeconds: "90"
+  Artifacts__Provider: S3
+  Artifacts__S3__Bucket: sentinelai-evidence-replace-me
+  Artifacts__S3__Region: ap-south-1
+  Artifacts__S3__ServerSideEncryption: aws:kms
+  Artifacts__S3__KmsKeyId: alias/sentinelai-evidence-replace-me
+  Artifacts__S3__ForcePathStyle: "false"
+  ExternalConfig__Provider: ExternalSecrets
+  HTTP_PROXY: http://sentinelai-egress-gateway.sentinelai-operations.svc.cluster.local:443
+  HTTPS_PROXY: http://sentinelai-egress-gateway.sentinelai-operations.svc.cluster.local:443
+  NO_PROXY: localhost,127.0.0.1,::1,.svc,.cluster.local,sentinelai-api,sentinelai-api-worker,sentinelai-postgres,sentinelai-rabbitmq,sentinelai-otel-collector
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://sentinelai-otel-collector:4317
+  Api__BaseUrl: https://api.sentinelai.example.invalid
+  Api__HealthBaseUrl: http://sentinelai-api:8080
+  Worker__ControlPlaneUrl: https://sentinelai-api-worker:8443
+  Worker__Concurrency: "2"
+  Worker__LeaseDurationSeconds: "60"
+  Worker__LeaseRenewalSeconds: "15"
+  Worker__MaxAttempts: "5"
+  Web__EnableHttpsRedirection: "true"
+  DataProtection__KeyRingPath: /var/lib/sentinelai-data-protection
+  DataProtection__CertificatePath: /var/run/sentinelai-web-data-protection/current.pfx
+  DataProtection__PreviousCertificatePaths__0: /var/run/sentinelai-web-data-protection/previous.pfx

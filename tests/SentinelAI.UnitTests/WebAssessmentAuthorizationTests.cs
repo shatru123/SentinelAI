@@ -16,6 +16,35 @@ namespace SentinelAI.UnitTests;
 public sealed class WebAssessmentAuthorizationTests
 {
     [Fact]
+    public async Task Password_form_transport_check_is_read_only_and_never_persists_the_password_value()
+    {
+        const string markerPassword = "sentinel-test-password-never-store";
+        const string html = "<html><body><form method='GET'><input type='password' name='password' value='" + markerPassword + "'></form></body></html>";
+        await using var fixture = await AssessmentFixture.CreateAsync(html);
+        var engine = fixture.CreateEngine(new ImmediateReportGenerator());
+
+        var result = await fixture.ExecuteAsync(engine);
+
+        Assert.NotNull(result.ReportStorageKey);
+        Assert.Equal(1, fixture.Server.RequestCount);
+
+        var check = await fixture.Db.WebAssessmentChecks.AsNoTracking()
+            .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
+                x.CheckId == "auth.password-form-transport");
+        Assert.Equal(WebCheckStatus.FindingDetected, check.Status);
+        Assert.Contains("Field values and names were not collected", check.Reason);
+
+        var finding = await fixture.Db.Findings.AsNoTracking()
+            .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
+                x.Title == "Password form transport requires review");
+        var evidence = await fixture.Db.Evidence.AsNoTracking().SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.FindingId == finding.Id);
+        Assert.Contains("method=GET", evidence.RedactedContent);
+        Assert.DoesNotContain(markerPassword, finding.Description);
+        Assert.DoesNotContain(markerPassword, evidence.RedactedContent);
+        Assert.DoesNotContain(markerPassword, evidence.Summary);
+    }
+
+    [Fact]
     public async Task Authorization_revoked_before_report_generation_never_starts_the_report()
     {
         await using var fixture = await AssessmentFixture.CreateAsync();
@@ -686,11 +715,11 @@ public sealed class WebAssessmentAuthorizationTests
         public WebAssessment Assessment { get; }
         public WorkerExecutionContext WorkerContext { get; private set; }
 
-        public static async Task<AssessmentFixture> CreateAsync()
+        public static async Task<AssessmentFixture> CreateAsync(string? responseBody = null)
         {
             var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
             var db = new AppDbContext(options);
-            var server = new LoopbackHttpServer();
+            var server = new LoopbackHttpServer(responseBody);
             var tenant = new Tenant("web authorization tenant");
             var user = new User(tenant.Id, "web-authorization-user", "Test", UserRole.SecurityAnalyst);
             var scope = new TargetScope(tenant.Id, "web authorization scope", user.Id, DateTimeOffset.UtcNow.AddMinutes(5));
@@ -981,33 +1010,50 @@ public sealed class WebAssessmentAuthorizationTests
         }
     }
 
+    private sealed class ImmediateReportGenerator : IHtmlReportGenerator
+    {
+        public Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken, bool includeAdvisoryAiSummaries = false)
+            => Task.FromResult($"{tenantId}/{assessment.Id}/.staging/report.html");
+    }
+
     private sealed class LoopbackHttpServer : IAsyncDisposable
     {
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource shutdown = new();
         private readonly Task loop;
-        public LoopbackHttpServer()
+        private readonly byte[] responseBytes;
+        private int requestCount;
+
+        public LoopbackHttpServer(string? responseBody = null)
         {
+            responseBytes = Encoding.UTF8.GetBytes(responseBody ?? "<html><body>ok</body></html>");
             listener.Start();
             Port = ((IPEndPoint)listener.LocalEndpoint).Port;
             loop = ServeAsync();
         }
+
         public int Port { get; }
+        public int RequestCount => Volatile.Read(ref requestCount);
+
         private async Task ServeAsync()
         {
             try
             {
-                using var client = await listener.AcceptTcpClientAsync(shutdown.Token);
-                using var stream = client.GetStream();
-                var buffer = new byte[4096];
-                _ = await stream.ReadAsync(buffer, shutdown.Token);
-                var body = Encoding.UTF8.GetBytes("<html><body>ok</body></html>");
-                var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
-                await stream.WriteAsync(header, shutdown.Token);
-                await stream.WriteAsync(body, shutdown.Token);
+                while (!shutdown.IsCancellationRequested)
+                {
+                    using var client = await listener.AcceptTcpClientAsync(shutdown.Token);
+                    using var stream = client.GetStream();
+                    var buffer = new byte[8192];
+                    _ = await stream.ReadAsync(buffer, shutdown.Token);
+                    Interlocked.Increment(ref requestCount);
+                    var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {responseBytes.Length}\r\nConnection: close\r\n\r\n");
+                    await stream.WriteAsync(header, shutdown.Token);
+                    await stream.WriteAsync(responseBytes, shutdown.Token);
+                }
             }
             catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
             catch (SocketException) when (shutdown.IsCancellationRequested) { }
+            catch (ObjectDisposedException) when (shutdown.IsCancellationRequested) { }
         }
         public async ValueTask DisposeAsync()
         {

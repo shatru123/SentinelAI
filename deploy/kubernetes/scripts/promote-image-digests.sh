@@ -76,8 +76,11 @@ if ! kubectl kustomize "$OVERLAY_DIR" > "$TEMP_DIR/rendered.yaml"; then
 fi
 
 for image in api web worker; do
-  digest_var="${image^^}_DIGEST"
-  expected="${!digest_var}"
+  case "$image" in
+    api) expected="$api_digest" ;;
+    web) expected="$web_digest" ;;
+    worker) expected="$worker_digest" ;;
+  esac
   if ! grep -Fq "image: ghcr.io/shatru123/sentinelai-${image}@sha256:${expected}" "$TEMP_DIR/rendered.yaml"; then
     cp "$BACKUP" "$KUSTOMIZATION"
     echo "Rendered $environment overlay did not contain the expected $image digest; original file restored." >&2

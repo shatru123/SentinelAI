@@ -16,6 +16,37 @@ namespace SentinelAI.UnitTests;
 public sealed class WebAssessmentAuthorizationTests
 {
     [Fact]
+    public async Task Safe_active_profile_uses_only_get_and_options_without_authentication_headers()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync(
+            profile: "web-assessment-safe-active",
+            targetPath: "/search?q=sentinel",
+            includeCredentialedCorsOnOptions: true);
+        var engine = fixture.CreateEngine(new ImmediateReportGenerator());
+
+        await fixture.ExecuteAsync(engine);
+
+        var requests = fixture.Server.Requests.ToArray();
+        Assert.Equal(3, requests.Length);
+        Assert.Contains(requests, request => request.StartsWith("GET /search?q=sentinel ", StringComparison.Ordinal));
+        Assert.Contains(requests, request => request.StartsWith("OPTIONS /search?q=sentinel ", StringComparison.Ordinal));
+        Assert.Contains(requests, request => request.StartsWith("GET /search?q=sentinel&sentinelai_probe=", StringComparison.Ordinal));
+        Assert.All(requests, request =>
+        {
+            Assert.DoesNotContain("Authorization:", request, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Cookie:", request, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("POST ", request, StringComparison.OrdinalIgnoreCase);
+        });
+
+        var checks = await fixture.Db.WebAssessmentChecks.AsNoTracking()
+            .Where(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id)
+            .ToListAsync();
+        Assert.Equal(WebCheckStatus.PotentialFinding, Assert.Single(checks, x => x.CheckId == "methods.options").Status);
+        Assert.Equal(WebCheckStatus.PotentialFinding, Assert.Single(checks, x => x.CheckId == "cors.preflight").Status);
+        Assert.Equal(WebCheckStatus.Passed, Assert.Single(checks, x => x.CheckId == "input.reflection-canary").Status);
+    }
+
+    [Fact]
     public async Task Password_form_transport_check_is_read_only_and_never_persists_the_password_value()
     {
         const string markerPassword = "sentinel-test-password-never-store";
@@ -715,23 +746,27 @@ public sealed class WebAssessmentAuthorizationTests
         public WebAssessment Assessment { get; }
         public WorkerExecutionContext WorkerContext { get; private set; }
 
-        public static async Task<AssessmentFixture> CreateAsync(string? responseBody = null)
+        public static async Task<AssessmentFixture> CreateAsync(
+            string? responseBody = null,
+            string profile = "web-assessment-passive",
+            string targetPath = "/",
+            bool includeCredentialedCorsOnOptions = false)
         {
             var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
             var db = new AppDbContext(options);
-            var server = new LoopbackHttpServer(responseBody);
+            var server = new LoopbackHttpServer(responseBody, includeCredentialedCorsOnOptions);
             var tenant = new Tenant("web authorization tenant");
             var user = new User(tenant.Id, "web-authorization-user", "Test", UserRole.SecurityAnalyst);
             var scope = new TargetScope(tenant.Id, "web authorization scope", user.Id, DateTimeOffset.UtcNow.AddMinutes(5));
-            var target = $"http://127.0.0.1:{server.Port}/";
-            scope.Configure([new TargetDefinition(TargetKind.Web, target)], ["http://127.0.0.1/initial-exclusion"], ["web-assessment-passive"], 100, 120, "controlled-test", false);
+            var target = $"http://127.0.0.1:{server.Port}{targetPath}";
+            scope.Configure([new TargetDefinition(TargetKind.Web, target)], ["http://127.0.0.1/initial-exclusion"], [profile], 100, 120, "controlled-test", false);
             scope.ConfigureVerifications([new PublicTargetVerification(target, "ticket", "verifier", "manual", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddHours(1))]);
             var worker = new WorkerRegistration(tenant.Id, "worker-a", "test", [WebAssessmentCapabilities.WebAssessment]);
             worker.Heartbeat(0, 1);
-            var job = new AgentJob(tenant.Id, scope.Id, user.Id, "web-assessment-passive");
+            var job = new AgentJob(tenant.Id, scope.Id, user.Id, profile);
             Assert.True(job.TryAcquireLease(worker.Identity, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
             var execution = new AgentExecution(job.Id, "AuthorizedWebAssessmentAgent");
-            var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, target, "web-assessment-passive", WebHostingMode.Public);
+            var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, target, profile, WebHostingMode.Public);
             db.AddRange(tenant, user, scope, worker, job, execution, assessment);
             await db.SaveChangesAsync();
             return new AssessmentFixture(options, db, server, tenant, user, scope, worker, job, execution, assessment);
@@ -1022,18 +1057,20 @@ public sealed class WebAssessmentAuthorizationTests
         private readonly CancellationTokenSource shutdown = new();
         private readonly Task loop;
         private readonly byte[] responseBytes;
-        private int requestCount;
+        private readonly bool includeCredentialedCorsOnOptions;
+        public ConcurrentQueue<string> Requests { get; } = new();
 
-        public LoopbackHttpServer(string? responseBody = null)
+        public LoopbackHttpServer(string? responseBody = null, bool includeCredentialedCorsOnOptions = false)
         {
             responseBytes = Encoding.UTF8.GetBytes(responseBody ?? "<html><body>ok</body></html>");
+            this.includeCredentialedCorsOnOptions = includeCredentialedCorsOnOptions;
             listener.Start();
             Port = ((IPEndPoint)listener.LocalEndpoint).Port;
             loop = ServeAsync();
         }
 
         public int Port { get; }
-        public int RequestCount => Volatile.Read(ref requestCount);
+        public int RequestCount => Requests.Count;
 
         private async Task ServeAsync()
         {
@@ -1043,10 +1080,25 @@ public sealed class WebAssessmentAuthorizationTests
                 {
                     using var client = await listener.AcceptTcpClientAsync(shutdown.Token);
                     using var stream = client.GetStream();
-                    var buffer = new byte[8192];
-                    _ = await stream.ReadAsync(buffer, shutdown.Token);
-                    Interlocked.Increment(ref requestCount);
-                    var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {responseBytes.Length}\r\nConnection: close\r\n\r\n");
+                    using var requestBuffer = new MemoryStream();
+                    var buffer = new byte[2048];
+                    var headerTerminator = new byte[] { 13, 10, 13, 10 };
+                    while (requestBuffer.Length < 16 * 1024)
+                    {
+                        var read = await stream.ReadAsync(buffer, shutdown.Token);
+                        if (read == 0) break;
+                        await requestBuffer.WriteAsync(buffer.AsMemory(0, read), shutdown.Token);
+                        var captured = requestBuffer.ToArray();
+                        if (captured.Length >= 4 && captured.AsSpan(captured.Length - 4).SequenceEqual(headerTerminator)) break;
+                    }
+
+                    var requestText = Encoding.ASCII.GetString(requestBuffer.ToArray());
+                    Requests.Enqueue(requestText);
+                    var isOptions = requestText.StartsWith("OPTIONS ", StringComparison.OrdinalIgnoreCase);
+                    var extraHeaders = isOptions && includeCredentialedCorsOnOptions
+                        ? "Allow: GET, POST, OPTIONS, TRACE\r\nAccess-Control-Allow-Origin: https://sentinelai.invalid\r\nAccess-Control-Allow-Credentials: true\r\n"
+                        : string.Empty;
+                    var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n{extraHeaders}Content-Length: {responseBytes.Length}\r\nConnection: close\r\n\r\n");
                     await stream.WriteAsync(header, shutdown.Token);
                     await stream.WriteAsync(responseBytes, shutdown.Token);
                 }

@@ -111,6 +111,13 @@ jobs:
         run: bash .github/scripts/validate-kubernetes.sh
       - name: Verify immutable image digest promotion
         run: bash .github/scripts/test-image-promotion.sh
+      - name: Validate shell script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r script; do
+            bash -n "$script"
+          done < <(find .github/scripts deploy/certificates deploy/kubernetes/scripts -type f -name '*.sh' -print | sort)
       - name: Verify deployment script fails closed
         run: bash .github/scripts/test-deploy-script-safety.sh
       - name: Verify worker certificate bootstrap and packaging

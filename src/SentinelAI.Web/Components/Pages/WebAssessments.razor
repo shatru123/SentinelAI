@@ -538,6 +538,9 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
             <button class="soc-btn @(detailTab == "endpoints" ? "soc-btn-primary" : "soc-btn-secondary")" style="font-size: 0.75rem;" @onclick='() => detailTab = "endpoints"'>
                 Discovered Endpoints (@detailEndpoints.Count)
             </button>
+            <button class="soc-btn @(detailTab == "preview" ? "soc-btn-primary" : "soc-btn-secondary")" style="font-size: 0.75rem;" @onclick='() => detailTab = "preview"'>
+                Site Preview
+            </button>
             <button class="soc-btn @(detailTab == "screenshots" ? "soc-btn-primary" : "soc-btn-secondary")" style="font-size: 0.75rem;" @onclick='() => detailTab = "screenshots"'>
                 Screenshots (@detailScreenshots.Count)
             </button>
@@ -621,6 +624,27 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
                     </tbody>
                 </table>
             </div>
+        }
+        else if (detailTab == "preview")
+        {
+            @if (!string.IsNullOrWhiteSpace(detailPreviewDataUri))
+            {
+                <figure style="margin: 0; background: var(--bg-panel-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3);">
+                    <img src="@detailPreviewDataUri" alt="Sanitized screenshot preview of the assessed website"
+                         style="display: block; width: 100%; height: auto; max-height: 620px; object-fit: contain; border-radius: var(--radius-sm);" />
+                    <figcaption class="text-muted" style="font-size: 0.75rem; margin-top: var(--space-2);">
+                        @detailPreviewDescription · Captured by the authorized, policy-controlled browser. Sensitive fields are redacted.
+                    </figcaption>
+                </figure>
+            }
+            else
+            {
+                <div class="soc-empty-state" style="padding: var(--space-5);">
+                    <div class="soc-empty-icon" style="font-size: 1.75rem;">▣</div>
+                    <h4>Site preview unavailable</h4>
+                    <p class="text-muted">@detailPreviewNotice</p>
+                </div>
+            }
         }
         else if (detailTab == "screenshots")
         {
@@ -711,6 +735,9 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
     private List<WebAssessmentEndpointResponse> detailEndpoints = [];
     private List<WebAssessmentCheckResponse> detailChecks = [];
     private List<ScreenshotResponse> detailScreenshots = [];
+    private string? detailPreviewDataUri;
+    private string? detailPreviewDescription;
+    private string detailPreviewNotice = "A visual preview is available after the assessment captures a policy-controlled screenshot.";
 
     protected override async Task OnInitializedAsync()
     {
@@ -992,6 +1019,9 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
         detailChecks = [];
         detailEndpoints = [];
         detailScreenshots = [];
+        detailPreviewDataUri = null;
+        detailPreviewDescription = null;
+        detailPreviewNotice = "A visual preview is available after the assessment captures a policy-controlled screenshot.";
 
         try
         {
@@ -999,6 +1029,36 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
             detailChecks = (await ApiClient.GetJsonAsync<List<WebAssessmentCheckResponse>>($"/api/v1/web-assessments/{item.Id}/checks")) ?? [];
             detailEndpoints = (await ApiClient.GetJsonAsync<List<WebAssessmentEndpointResponse>>($"/api/v1/web-assessments/{item.Id}/endpoints")) ?? [];
             detailScreenshots = (await ApiClient.GetJsonAsync<List<ScreenshotResponse>>($"/api/v1/web-assessments/{item.Id}/screenshots")) ?? [];
+
+            var preview = detailScreenshots.FirstOrDefault(x => x.ScreenshotType == "landing") ?? detailScreenshots.FirstOrDefault();
+            if (preview is null)
+            {
+                detailPreviewNotice = "No screenshot was captured. Review the Screenshots tab and check coverage results for the reason.";
+            }
+            else
+            {
+                try
+                {
+                    var bytes = await ApiClient.GetBytesAsync($"/api/v1/web-assessments/{item.Id}/screenshots/{preview.Id}");
+                    const int maximumPreviewBytes = 5 * 1024 * 1024;
+                    if (bytes.Length <= maximumPreviewBytes)
+                    {
+                        var contentType = preview.Format.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+                            ? preview.Format
+                            : "image/png";
+                        detailPreviewDataUri = $"data:{contentType};base64,{Convert.ToBase64String(bytes)}";
+                        detailPreviewDescription = $"{preview.ScreenshotType} screenshot · {preview.Url}";
+                    }
+                    else
+                    {
+                        detailPreviewNotice = "The stored screenshot exceeds the in-app preview size limit. Download the full HTML report to inspect it.";
+                    }
+                }
+                catch (SentinelApiException ex)
+                {
+                    detailPreviewNotice = $"The screenshot could not be loaded: {ex.UserMessage}";
+                }
+            }
         }
         catch (SentinelApiException ex)
         {

@@ -193,20 +193,28 @@ public sealed class S3AssessmentArtifactStore(
 
     private static bool IsTenantKey(Guid tenantId, string? storageKey)
     {
-        if (string.IsNullOrWhiteSpace(storageKey) ||
-            !storageKey.StartsWith($"{tenantId:D}/", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(storageKey))
             return false;
-        return !storageKey.Split('/').Any(segment => segment is "." or "..");
+
+        // Normalize both separator styles before checking the tenant prefix and
+        // traversal segments. S3 treats backslashes as characters, but validation
+        // must remain safe if keys reach a path-aware consumer or another adapter.
+        var normalized = storageKey.Replace('\\', '/');
+        if (!normalized.StartsWith($"{tenantId:D}/", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return !normalized.Split('/').Any(segment => segment is "." or "..");
     }
 
     private static void ValidateOwnedReportKey(Guid tenantId, Guid assessmentId, string storageKey, bool requireStaging)
     {
+        // Normalize before traversal checks; otherwise Windows-style separators
+        // can hide a ".." segment from a slash-only split.
+        var normalized = storageKey.Replace('\\', '/');
         var prefix = $"{tenantId:D}/{assessmentId:D}/";
-        if (!storageKey.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
-            storageKey.Split('/').Any(segment => segment is "." or ".."))
+        if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            normalized.Split('/').Any(segment => segment is "." or ".."))
             throw new InvalidOperationException("Assessment artifact ownership mismatch.");
 
-        var normalized = storageKey.Replace('\\', '/');
         var isStaging = normalized.Contains("/.staging/", StringComparison.OrdinalIgnoreCase);
         var isPublished = normalized.Contains("/reports/", StringComparison.OrdinalIgnoreCase);
         if ((!isStaging && !isPublished) || (requireStaging && !isStaging) ||

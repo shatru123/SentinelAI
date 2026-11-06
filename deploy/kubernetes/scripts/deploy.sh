@@ -19,16 +19,19 @@ command -v kubectl >/dev/null 2>&1 || {
   echo "kubectl is required." >&2
   exit 1
 }
-command -v cosign >/dev/null 2>&1 || {
-  echo "cosign is required to verify signed API, Web and Worker images." >&2
-  exit 1
-}
 
+# Check the target context before requiring any other deployment tooling. A
+# wrong-context invocation must fail immediately and must never reach rendering.
 actual_context="$(kubectl config current-context)"
 if [[ "$actual_context" != "$expected_context" ]]; then
   echo "Refusing deployment: current context '$actual_context' does not match expected context '$expected_context'." >&2
   exit 1
 fi
+
+command -v cosign >/dev/null 2>&1 || {
+  echo "cosign is required to verify signed API, Web and Worker images." >&2
+  exit 1
+}
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 K8S_DIR="$ROOT_DIR/deploy/kubernetes"

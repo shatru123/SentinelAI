@@ -16,6 +16,75 @@ namespace SentinelAI.UnitTests;
 public sealed class WebAssessmentAuthorizationTests
 {
     [Fact]
+    public async Task Safe_active_profile_uses_only_get_and_options_without_authentication_headers()
+    {
+        await using var fixture = await AssessmentFixture.CreateAsync(
+            profile: "web-assessment-safe-active",
+            targetPath: "/search?q=sentinel",
+            includeCredentialedCorsOnOptions: true);
+        var engine = fixture.CreateEngine(new ImmediateReportGenerator());
+
+        await fixture.ExecuteAsync(engine);
+
+        var requests = fixture.Server.Requests.ToArray();
+        Assert.Equal(3, requests.Length);
+        Assert.Contains(requests, request => request.StartsWith("GET /search?q=sentinel ", StringComparison.Ordinal));
+        Assert.Contains(requests, request => request.StartsWith("OPTIONS /search?q=sentinel ", StringComparison.Ordinal));
+        Assert.Contains(requests, request => request.StartsWith("GET /search?q=sentinel&sentinelai_probe=", StringComparison.Ordinal));
+        Assert.All(requests, request =>
+        {
+            Assert.False(request.Contains("Authorization:", StringComparison.OrdinalIgnoreCase));
+            Assert.False(request.Contains("Cookie:", StringComparison.OrdinalIgnoreCase));
+            Assert.False(request.Contains("POST ", StringComparison.OrdinalIgnoreCase));
+        });
+
+        var checks = await fixture.Db.WebAssessmentChecks.AsNoTracking()
+            .Where(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id)
+            .ToListAsync();
+        Assert.Equal(WebCheckStatus.PotentialFinding, Assert.Single(checks, x => x.CheckId == "methods.options").Status);
+        Assert.Equal(WebCheckStatus.PotentialFinding, Assert.Single(checks, x => x.CheckId == "cors.preflight").Status);
+        Assert.Equal(WebCheckStatus.Passed, Assert.Single(checks, x => x.CheckId == "input.reflection-canary").Status);
+    }
+
+    [Fact]
+    public async Task Password_form_transport_check_is_read_only_and_never_persists_the_password_value()
+    {
+        const string markerPassword = "sentinel-test-password-never-store";
+        const string html = "<html><body><form method='GET'><input type='password' name='password' value='" + markerPassword + "'></form><script src='https://cdn.example.test/app.js'></script><a target='_blank' href='https://docs.example.test/'>docs</a></body></html>";
+        await using var fixture = await AssessmentFixture.CreateAsync(html);
+        var engine = fixture.CreateEngine(new ImmediateReportGenerator());
+
+        var result = await fixture.ExecuteAsync(engine);
+
+        Assert.NotNull(result.ReportStorageKey);
+        Assert.Equal(1, fixture.Server.RequestCount);
+
+        var check = await fixture.Db.WebAssessmentChecks.AsNoTracking()
+            .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
+                x.CheckId == "auth.password-form-transport");
+        Assert.Equal(WebCheckStatus.FindingDetected, check.Status);
+        Assert.Contains("Field values and names were not collected", check.Reason ?? string.Empty);
+        var scriptIntegrityCheck = await fixture.Db.WebAssessmentChecks.AsNoTracking()
+            .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
+                x.CheckId == "scripts.external-integrity");
+        Assert.Equal(WebCheckStatus.PotentialFinding, scriptIntegrityCheck.Status);
+
+        var openerCheck = await fixture.Db.WebAssessmentChecks.AsNoTracking()
+            .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
+                x.CheckId == "links.blank-target-opener");
+        Assert.Equal(WebCheckStatus.PotentialFinding, openerCheck.Status);
+
+        var finding = await fixture.Db.Findings.AsNoTracking()
+            .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
+                x.Title == "Password form transport requires review");
+        var evidence = await fixture.Db.Evidence.AsNoTracking().SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.FindingId == finding.Id);
+        Assert.Contains("method=GET", evidence.RedactedContent ?? string.Empty);
+        Assert.DoesNotContain(markerPassword, finding.Description ?? string.Empty);
+        Assert.DoesNotContain(markerPassword, evidence.RedactedContent ?? string.Empty);
+        Assert.DoesNotContain(markerPassword, evidence.Summary);
+    }
+
+    [Fact]
     public async Task Authorization_revoked_before_report_generation_never_starts_the_report()
     {
         await using var fixture = await AssessmentFixture.CreateAsync();
@@ -686,23 +755,27 @@ public sealed class WebAssessmentAuthorizationTests
         public WebAssessment Assessment { get; }
         public WorkerExecutionContext WorkerContext { get; private set; }
 
-        public static async Task<AssessmentFixture> CreateAsync()
+        public static async Task<AssessmentFixture> CreateAsync(
+            string? responseBody = null,
+            string profile = "web-assessment-passive",
+            string targetPath = "/",
+            bool includeCredentialedCorsOnOptions = false)
         {
             var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
             var db = new AppDbContext(options);
-            var server = new LoopbackHttpServer();
+            var server = new LoopbackHttpServer(responseBody, includeCredentialedCorsOnOptions);
             var tenant = new Tenant("web authorization tenant");
             var user = new User(tenant.Id, "web-authorization-user", "Test", UserRole.SecurityAnalyst);
             var scope = new TargetScope(tenant.Id, "web authorization scope", user.Id, DateTimeOffset.UtcNow.AddMinutes(5));
-            var target = $"http://127.0.0.1:{server.Port}/";
-            scope.Configure([new TargetDefinition(TargetKind.Web, target)], ["http://127.0.0.1/initial-exclusion"], ["web-assessment-passive"], 100, 120, "controlled-test", false);
+            var target = $"http://127.0.0.1:{server.Port}{targetPath}";
+            scope.Configure([new TargetDefinition(TargetKind.Web, target)], ["http://127.0.0.1/initial-exclusion"], [profile], 100, 120, "controlled-test", false);
             scope.ConfigureVerifications([new PublicTargetVerification(target, "ticket", "verifier", "manual", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddHours(1))]);
             var worker = new WorkerRegistration(tenant.Id, "worker-a", "test", [WebAssessmentCapabilities.WebAssessment]);
             worker.Heartbeat(0, 1);
-            var job = new AgentJob(tenant.Id, scope.Id, user.Id, "web-assessment-passive");
+            var job = new AgentJob(tenant.Id, scope.Id, user.Id, profile);
             Assert.True(job.TryAcquireLease(worker.Identity, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
             var execution = new AgentExecution(job.Id, "AuthorizedWebAssessmentAgent");
-            var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, target, "web-assessment-passive", WebHostingMode.Public);
+            var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, target, profile, WebHostingMode.Public);
             db.AddRange(tenant, user, scope, worker, job, execution, assessment);
             await db.SaveChangesAsync();
             return new AssessmentFixture(options, db, server, tenant, user, scope, worker, job, execution, assessment);
@@ -981,33 +1054,67 @@ public sealed class WebAssessmentAuthorizationTests
         }
     }
 
+    private sealed class ImmediateReportGenerator : IHtmlReportGenerator
+    {
+        public Task<string> GenerateAsync(Guid tenantId, WebAssessment assessment, TargetScope scope, CancellationToken cancellationToken, bool includeAdvisoryAiSummaries = false)
+            => Task.FromResult($"{tenantId}/{assessment.Id}/.staging/report.html");
+    }
+
     private sealed class LoopbackHttpServer : IAsyncDisposable
     {
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource shutdown = new();
         private readonly Task loop;
-        public LoopbackHttpServer()
+        private readonly byte[] responseBytes;
+        private readonly bool includeCredentialedCorsOnOptions;
+        public ConcurrentQueue<string> Requests { get; } = new();
+
+        public LoopbackHttpServer(string? responseBody = null, bool includeCredentialedCorsOnOptions = false)
         {
+            responseBytes = Encoding.UTF8.GetBytes(responseBody ?? "<html><body>ok</body></html>");
+            this.includeCredentialedCorsOnOptions = includeCredentialedCorsOnOptions;
             listener.Start();
             Port = ((IPEndPoint)listener.LocalEndpoint).Port;
             loop = ServeAsync();
         }
+
         public int Port { get; }
+        public int RequestCount => Requests.Count;
+
         private async Task ServeAsync()
         {
             try
             {
-                using var client = await listener.AcceptTcpClientAsync(shutdown.Token);
-                using var stream = client.GetStream();
-                var buffer = new byte[4096];
-                _ = await stream.ReadAsync(buffer, shutdown.Token);
-                var body = Encoding.UTF8.GetBytes("<html><body>ok</body></html>");
-                var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
-                await stream.WriteAsync(header, shutdown.Token);
-                await stream.WriteAsync(body, shutdown.Token);
+                while (!shutdown.IsCancellationRequested)
+                {
+                    using var client = await listener.AcceptTcpClientAsync(shutdown.Token);
+                    using var stream = client.GetStream();
+                    using var requestBuffer = new MemoryStream();
+                    var buffer = new byte[2048];
+                    var headerTerminator = new byte[] { 13, 10, 13, 10 };
+                    while (requestBuffer.Length < 16 * 1024)
+                    {
+                        var read = await stream.ReadAsync(buffer, shutdown.Token);
+                        if (read == 0) break;
+                        await requestBuffer.WriteAsync(buffer.AsMemory(0, read), shutdown.Token);
+                        var captured = requestBuffer.ToArray();
+                        if (captured.Length >= 4 && captured.AsSpan(captured.Length - 4).SequenceEqual(headerTerminator)) break;
+                    }
+
+                    var requestText = Encoding.ASCII.GetString(requestBuffer.ToArray());
+                    Requests.Enqueue(requestText);
+                    var isOptions = requestText.StartsWith("OPTIONS ", StringComparison.OrdinalIgnoreCase);
+                    var extraHeaders = isOptions && includeCredentialedCorsOnOptions
+                        ? "Allow: GET, POST, OPTIONS, TRACE\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, TRACE\r\nAccess-Control-Allow-Origin: https://sentinelai.invalid\r\nAccess-Control-Allow-Credentials: true\r\n"
+                        : string.Empty;
+                    var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n{extraHeaders}Content-Length: {responseBytes.Length}\r\nConnection: close\r\n\r\n");
+                    await stream.WriteAsync(header, shutdown.Token);
+                    await stream.WriteAsync(responseBytes, shutdown.Token);
+                }
             }
             catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
             catch (SocketException) when (shutdown.IsCancellationRequested) { }
+            catch (ObjectDisposedException) when (shutdown.IsCancellationRequested) { }
         }
         public async ValueTask DisposeAsync()
         {

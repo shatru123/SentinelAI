@@ -23,12 +23,17 @@ fi
 echo "Unexpected kubectl call in safety test: $*" >&2
 exit 97
 STUB
-chmod +x "$BIN_DIR/kubectl"
+cat > "$BIN_DIR/cosign" <<'STUB'
+#!/usr/bin/env bash
+echo "Unexpected cosign call during preflight safety checks." >&2
+exit 98
+STUB
+chmod +x "$BIN_DIR/kubectl" "$BIN_DIR/cosign"
 
 export PATH="$BIN_DIR:$PATH"
 export KUBECTL_CALL_LOG="$TEMP_DIR/kubectl.log"
 
-# A context mismatch must stop before rendering or mutation.
+# A context mismatch must stop immediately after reading the current context.
 set +e
 FAKE_KUBECTL_CONTEXT="production-context" bash "$DEPLOY_SCRIPT" staging "different-context" >"$TEMP_DIR/context.out" 2>&1
 context_status=$?
@@ -38,8 +43,8 @@ if [[ "$context_status" -eq 0 ]] || ! grep -Fq "does not match expected context"
   cat "$TEMP_DIR/context.out" >&2
   exit 1
 fi
-if grep -Eq '^(apply|delete|patch|scale)( |$)' "$KUBECTL_CALL_LOG" 2>/dev/null; then
-  echo "Deployment attempted a mutation after a context mismatch." >&2
+if [[ "$(cat "$KUBECTL_CALL_LOG")" != "config current-context" ]]; then
+  echo "Deployment performed additional Kubernetes operations after a context mismatch." >&2
   cat "$KUBECTL_CALL_LOG" >&2
   exit 1
 fi

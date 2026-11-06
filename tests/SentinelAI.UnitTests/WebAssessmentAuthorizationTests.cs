@@ -50,7 +50,7 @@ public sealed class WebAssessmentAuthorizationTests
     public async Task Password_form_transport_check_is_read_only_and_never_persists_the_password_value()
     {
         const string markerPassword = "sentinel-test-password-never-store";
-        const string html = "<html><body><form method='GET'><input type='password' name='password' value='" + markerPassword + "'></form></body></html>";
+        const string html = "<html><body><form method='GET'><input type='password' name='password' value='" + markerPassword + "'></form><script src='https://cdn.example.test/app.js'></script><a target='_blank' href='https://docs.example.test/'>docs</a></body></html>";
         await using var fixture = await AssessmentFixture.CreateAsync(html);
         var engine = fixture.CreateEngine(new ImmediateReportGenerator());
 
@@ -64,6 +64,15 @@ public sealed class WebAssessmentAuthorizationTests
                 x.CheckId == "auth.password-form-transport");
         Assert.Equal(WebCheckStatus.FindingDetected, check.Status);
         Assert.Contains("Field values and names were not collected", check.Reason ?? string.Empty);
+        var scriptIntegrityCheck = await fixture.Db.WebAssessmentChecks.AsNoTracking()
+            .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
+                x.CheckId == "scripts.external-integrity");
+        Assert.Equal(WebCheckStatus.PotentialFinding, scriptIntegrityCheck.Status);
+
+        var openerCheck = await fixture.Db.WebAssessmentChecks.AsNoTracking()
+            .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
+                x.CheckId == "links.blank-target-opener");
+        Assert.Equal(WebCheckStatus.PotentialFinding, openerCheck.Status);
 
         var finding = await fixture.Db.Findings.AsNoTracking()
             .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&

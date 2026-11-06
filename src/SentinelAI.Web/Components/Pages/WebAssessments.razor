@@ -222,7 +222,7 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
                 <label style="display: flex; gap: var(--space-3); align-items: flex-start; cursor: pointer;">
                     <input type="checkbox" style="margin-top: 3px;" @bind="confirmedAssessmentPolicy" />
                     <span style="font-size: 0.875rem; color: var(--text-primary);">
-                        <strong>I certify assessment policy compliance:</strong> Checks will observe strict non-destructive constraints (no SQL drop/truncate, no credential brute force, no denial of service). Authorization and DNS pinning are verified on every single HTTP request.
+                        <strong>I certify assessment policy compliance:</strong> Checks remain non-destructive (no SQL drop/truncate, exploit payloads, credential guessing, password submission, or denial of service). Safe-active checks use bounded GET/OPTIONS requests and a harmless non-executable canary only. Passwords, API keys, bearer tokens, and session-cookie values are never submitted or stored. Authorization and DNS pinning are revalidated for every request.
                     </span>
                 </label>
             </div>

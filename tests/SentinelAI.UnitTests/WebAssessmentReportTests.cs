@@ -17,7 +17,7 @@ public sealed class WebAssessmentReportTests
         var scope = new TargetScope(tenant.Id, "scope", Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(1));
         scope.Configure([new TargetDefinition(TargetKind.Web, "https://example.test")], [], ["web-assessment-passive"], 10, 120, "approved", false);
         var job = new AgentJob(tenant.Id, scope.Id, Guid.NewGuid(), "web-assessment-passive");
-        var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, "https://example.test/<unsafe>", "web-assessment-passive", WebHostingMode.Public);
+        var assessment = new WebAssessment(tenant.Id, job.Id, scope.Id, "https://report-user:report-password@example.test/<unsafe>?access_token=never-report-this&view=login#secret-fragment", "web-assessment-passive", WebHostingMode.Public);
         var finding = new Finding(tenant.Id, null, "<script>alert(1)</script>", FindingSeverity.Low);
         finding.ConfigureAssessmentDetails(assessment.Id, "headers", "High", assessment.TargetUrl, "GET", null, "<unsafe>", "impact", "safe", "fix", "ref", WebCheckStatus.Confirmed);
         var evidence = new Evidence(tenant.Id, finding.Id, "test", "evidence", "hash");
@@ -37,6 +37,12 @@ public sealed class WebAssessmentReportTests
         Assert.DoesNotContain("<script>alert(1)</script>", html);
         Assert.Contains("&lt;script&gt;alert(1)&lt;/script&gt;", html);
         Assert.Contains("&lt;unsafe&gt;", html);
+        Assert.Contains("[REDACTED]", html);
+        Assert.Contains("view=login", html);
+        Assert.DoesNotContain("never-report-this", html);
+        Assert.DoesNotContain("report-user", html);
+        Assert.DoesNotContain("report-password", html);
+        Assert.DoesNotContain("secret-fragment", html);
         Assert.Contains("Authentication and credential handling", html);
         Assert.Contains("Credentials attempted:</strong> None", html);
         Assert.Contains("Secrets retained:</strong> None", html);

@@ -55,6 +55,8 @@ The promotion script changes only the selected overlay's Kustomize image digests
 
 The release workflow is manual and has not been dispatched as part of ordinary CI. Until it is run successfully and the resulting digests are committed to an environment overlay, the all-zero digest placeholders deliberately prevent deployment. No GHCR images or production infrastructure are created by the CI test job.
 
+GHCR access is an operator-owned prerequisite: if any of the three packages are private, provision a namespace-scoped Kubernetes image-pull Secret (or an approved node-level registry credential provider) before rollout and attach it to the API, Web, Worker and migration service accounts. The manifests deliberately contain no registry username, PAT or pull secret. Alternatively, set the package visibility to public under the repository's approved release policy. The operator running Cosign verification also needs read access to the GHCR packages.
+
 ## Production blockers
 
 Static rendering is not an install/upgrade test. It does not prove that a selected CNI enforces NetworkPolicies, that the ingress controller handles client affinity and mTLS correctly, or that an external secret provider can rotate mounted credentials. Complete a disposable-cluster install/upgrade/uninstall, secret rotation, mTLS handshake/enrollment/revocation, load/chaos tests, independent penetration test, backup restore and measured RPO/RTO before public production exposure. Do not expose the worker directly to the public network.

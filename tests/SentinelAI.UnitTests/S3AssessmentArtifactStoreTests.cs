@@ -23,9 +23,9 @@ public sealed class S3AssessmentArtifactStoreTests
         var kmsKey = "arn:aws:kms:ap-south-1:123456789012:key/test-key";
         var store = CreateStore(client.Object, "aws:kms", kmsKey);
 
-        var key = await store.PutAsync(tenant, assessment, "reports/summary.html", [1, 2, 3], CancellationToken.None);
+        var key = await store.PutAsync(tenant, assessment, "evidence/summary.html", [1, 2, 3], CancellationToken.None);
 
-        Assert.Equal($"{tenant:D}/{assessment:D}/reports/summary.html", key);
+        Assert.Equal($"{tenant:D}/{assessment:D}/evidence/summary.html", key);
         Assert.NotNull(captured);
         Assert.Equal("sentinelai-artifacts", captured.BucketName);
         Assert.Equal(key, captured.Key);
@@ -103,11 +103,21 @@ public sealed class S3AssessmentArtifactStoreTests
         var recentStaging = $"{tenant:D}/{assessment:D}/.staging/recent.html";
         var oldPublished = $"{tenant:D}/{assessment:D}/reports/old.html";
         var deleted = new List<DeleteObjectRequest>();
-        var firstPage = new ListObjectsV2Response { IsTruncated = true, NextContinuationToken = "page-2" };
-        firstPage.S3Objects.Add(new S3Object { Key = oldStaging, LastModified = DateTime.UtcNow.AddDays(-2) });
-        var secondPage = new ListObjectsV2Response { IsTruncated = false };
-        secondPage.S3Objects.Add(new S3Object { Key = recentStaging, LastModified = DateTime.UtcNow });
-        secondPage.S3Objects.Add(new S3Object { Key = oldPublished, LastModified = DateTime.UtcNow.AddDays(-2) });
+        var firstPage = new ListObjectsV2Response
+        {
+            IsTruncated = true,
+            NextContinuationToken = "page-2",
+            S3Objects = [new S3Object { Key = oldStaging, LastModified = DateTime.UtcNow.AddDays(-2) }]
+        };
+        var secondPage = new ListObjectsV2Response
+        {
+            IsTruncated = false,
+            S3Objects =
+            [
+                new S3Object { Key = recentStaging, LastModified = DateTime.UtcNow },
+                new S3Object { Key = oldPublished, LastModified = DateTime.UtcNow.AddDays(-2) }
+            ]
+        };
 
         client.SetupSequence(x => x.ListObjectsV2Async(It.IsAny<ListObjectsV2Request>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(firstPage)
@@ -139,11 +149,17 @@ public sealed class S3AssessmentArtifactStoreTests
         var recent = $"{tenant:D}/{assessment:D}/reports/recent.html";
         var unrelated = $"{tenant:D}/{assessment:D}/screenshots/image.png";
         var deleted = new List<DeleteObjectRequest>();
-        var page = new ListObjectsV2Response { IsTruncated = false };
-        page.S3Objects.Add(new S3Object { Key = referenced, LastModified = DateTime.UtcNow.AddDays(-3) });
-        page.S3Objects.Add(new S3Object { Key = orphan, LastModified = DateTime.UtcNow.AddDays(-3) });
-        page.S3Objects.Add(new S3Object { Key = recent, LastModified = DateTime.UtcNow });
-        page.S3Objects.Add(new S3Object { Key = unrelated, LastModified = DateTime.UtcNow.AddDays(-3) });
+        var page = new ListObjectsV2Response
+        {
+            IsTruncated = false,
+            S3Objects =
+            [
+                new S3Object { Key = referenced, LastModified = DateTime.UtcNow.AddDays(-3) },
+                new S3Object { Key = orphan, LastModified = DateTime.UtcNow.AddDays(-3) },
+                new S3Object { Key = recent, LastModified = DateTime.UtcNow },
+                new S3Object { Key = unrelated, LastModified = DateTime.UtcNow.AddDays(-3) }
+            ]
+        };
 
         client.Setup(x => x.ListObjectsV2Async(It.IsAny<ListObjectsV2Request>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(page);

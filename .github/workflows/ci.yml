@@ -109,6 +109,8 @@ jobs:
           kubeconform -v
       - name: Render and schema-validate Kubernetes overlays
         run: bash .github/scripts/validate-kubernetes.sh
+      - name: Verify immutable image digest promotion
+        run: bash .github/scripts/test-image-promotion.sh
       - name: Verify deployment script fails closed
         run: bash .github/scripts/test-deploy-script-safety.sh
       - name: Verify worker certificate bootstrap and packaging

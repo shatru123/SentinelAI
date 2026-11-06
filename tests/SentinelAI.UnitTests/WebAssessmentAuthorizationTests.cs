@@ -1105,7 +1105,7 @@ public sealed class WebAssessmentAuthorizationTests
                     Requests.Enqueue(requestText);
                     var isOptions = requestText.StartsWith("OPTIONS ", StringComparison.OrdinalIgnoreCase);
                     var extraHeaders = isOptions && includeCredentialedCorsOnOptions
-                        ? "Allow: GET, POST, OPTIONS, TRACE\r\nAccess-Control-Allow-Origin: https://sentinelai.invalid\r\nAccess-Control-Allow-Credentials: true\r\n"
+                        ? "Allow: GET, POST, OPTIONS, TRACE\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS, TRACE\r\nAccess-Control-Allow-Origin: https://sentinelai.invalid\r\nAccess-Control-Allow-Credentials: true\r\n"
                         : string.Empty;
                     var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n{extraHeaders}Content-Length: {responseBytes.Length}\r\nConnection: close\r\n\r\n");
                     await stream.WriteAsync(header, shutdown.Token);

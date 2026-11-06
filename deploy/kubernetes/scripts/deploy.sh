@@ -77,6 +77,14 @@ for component in api web worker; do
   fi
 done
 
+# The one-shot migration Job must use the same immutable API image digest
+# selected and signature-verified for the runtime rollout.
+api_image="$(extract_image api)"
+if [[ -z "$api_image" ]]; then
+  echo "Refusing deployment: the signed API image could not be extracted from the runtime overlay." >&2
+  exit 1
+fi
+
 kubectl get crd externalsecrets.external-secrets.io >/dev/null
 if ! kubectl get storageclass sentinelai-shared-rwx >/dev/null 2>&1; then
   echo "Refusing deployment: the operator must provision the sentinelai-shared-rwx ReadWriteMany StorageClass first." >&2

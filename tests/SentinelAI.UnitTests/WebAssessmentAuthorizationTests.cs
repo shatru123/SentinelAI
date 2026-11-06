@@ -33,9 +33,9 @@ public sealed class WebAssessmentAuthorizationTests
         Assert.Contains(requests, request => request.StartsWith("GET /search?q=sentinel&sentinelai_probe=", StringComparison.Ordinal));
         Assert.All(requests, request =>
         {
-            Assert.DoesNotContain("Authorization:", request, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("Cookie:", request, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("POST ", request, StringComparison.OrdinalIgnoreCase);
+            Assert.False(request.Contains("Authorization:", StringComparison.OrdinalIgnoreCase));
+            Assert.False(request.Contains("Cookie:", StringComparison.OrdinalIgnoreCase));
+            Assert.False(request.Contains("POST ", StringComparison.OrdinalIgnoreCase));
         });
 
         var checks = await fixture.Db.WebAssessmentChecks.AsNoTracking()
@@ -63,15 +63,15 @@ public sealed class WebAssessmentAuthorizationTests
             .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
                 x.CheckId == "auth.password-form-transport");
         Assert.Equal(WebCheckStatus.FindingDetected, check.Status);
-        Assert.Contains("Field values and names were not collected", check.Reason);
+        Assert.Contains("Field values and names were not collected", check.Reason ?? string.Empty);
 
         var finding = await fixture.Db.Findings.AsNoTracking()
             .SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.AssessmentId == fixture.Assessment.Id &&
                 x.Title == "Password form transport requires review");
         var evidence = await fixture.Db.Evidence.AsNoTracking().SingleAsync(x => x.TenantId == fixture.Tenant.Id && x.FindingId == finding.Id);
-        Assert.Contains("method=GET", evidence.RedactedContent);
-        Assert.DoesNotContain(markerPassword, finding.Description);
-        Assert.DoesNotContain(markerPassword, evidence.RedactedContent);
+        Assert.Contains("method=GET", evidence.RedactedContent ?? string.Empty);
+        Assert.DoesNotContain(markerPassword, finding.Description ?? string.Empty);
+        Assert.DoesNotContain(markerPassword, evidence.RedactedContent ?? string.Empty);
         Assert.DoesNotContain(markerPassword, evidence.Summary);
     }
 

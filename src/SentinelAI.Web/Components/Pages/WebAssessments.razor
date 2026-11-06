@@ -1041,17 +1041,22 @@ else if (!string.IsNullOrWhiteSpace(Configuration["Dashboard:ApproverUserId"]))
                 {
                     var bytes = await ApiClient.GetBytesAsync($"/api/v1/web-assessments/{item.Id}/screenshots/{preview.Id}");
                     const int maximumPreviewBytes = 5 * 1024 * 1024;
-                    if (bytes.Length <= maximumPreviewBytes)
+                    if (!string.Equals(preview.Format, "image/png", StringComparison.OrdinalIgnoreCase))
                     {
-                        var contentType = preview.Format.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
-                            ? preview.Format
-                            : "image/png";
-                        detailPreviewDataUri = $"data:{contentType};base64,{Convert.ToBase64String(bytes)}";
+                        detailPreviewNotice = "The stored preview format is not a supported raster screenshot. Download the full HTML report to inspect it.";
+                    }
+                    else if (bytes.Length <= maximumPreviewBytes &&
+                             bytes.Length >= 8 &&
+                             bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+                    {
+                        detailPreviewDataUri = $"data:image/png;base64,{Convert.ToBase64String(bytes)}";
                         detailPreviewDescription = $"{preview.ScreenshotType} screenshot · {preview.Url}";
                     }
                     else
                     {
-                        detailPreviewNotice = "The stored screenshot exceeds the in-app preview size limit. Download the full HTML report to inspect it.";
+                        detailPreviewNotice = bytes.Length > maximumPreviewBytes
+                            ? "The stored screenshot exceeds the in-app preview size limit. Download the full HTML report to inspect it."
+                            : "The screenshot was not a valid PNG image and cannot be previewed.";
                     }
                 }
                 catch (SentinelApiException ex)

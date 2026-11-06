@@ -40,6 +40,21 @@ The script refuses a mismatched context or unresolved placeholders. It applies t
 
 The migration process uses the API image with `--migrate`, requires only the migration database connection and does not load the API HTTP listener certificate, OIDC configuration, broker credentials or worker mTLS listener. Production API replicas keep `Database__ApplyMigrations=false`.
 
+## Signed image release and digest promotion
+
+The manual workflow `.github/workflows/release-images.yml` builds API, Web and Worker images from the selected source commit, pushes them to GHCR, attaches BuildKit SBOM/provenance metadata and GitHub build-provenance attestations, then signs the immutable image digests with Cosign keyless signing through GitHub OIDC.
+
+After a release workflow succeeds, promote the three exact SHA-256 digests into one environment overlay:
+
+```bash
+bash deploy/kubernetes/scripts/promote-image-digests.sh staging <api-sha256> <web-sha256> <worker-sha256>
+# Review and commit the staging overlay change before deploying.
+```
+
+The promotion script changes only the selected overlay's Kustomize image digests and verifies the rendered API/Web/Worker image references. It does not deploy workloads. The staging and production deployment script requires `cosign` on the operator machine and verifies each image signature against the SentinelAI GitHub OIDC release workflow before it applies any cluster resource. It also uses the verified API digest for the one-shot migration Job.
+
+The release workflow is manual and has not been dispatched as part of ordinary CI. Until it is run successfully and the resulting digests are committed to an environment overlay, the all-zero digest placeholders deliberately prevent deployment. No GHCR images or production infrastructure are created by the CI test job.
+
 ## Production blockers
 
 Static rendering is not an install/upgrade test. It does not prove that a selected CNI enforces NetworkPolicies, that the ingress controller handles client affinity and mTLS correctly, or that an external secret provider can rotate mounted credentials. Complete a disposable-cluster install/upgrade/uninstall, secret rotation, mTLS handshake/enrollment/revocation, load/chaos tests, independent penetration test, backup restore and measured RPO/RTO before public production exposure. Do not expose the worker directly to the public network.

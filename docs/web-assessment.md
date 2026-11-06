@@ -77,3 +77,27 @@ Playwright operation ownership guarantees that Chromium launch, context creation
 Structured operational diagnostics log assessment startup, WebSocket interception and closure, browser session lifecycle, authorization checks, report staging, and publication without capturing credentials, authorization tokens, session cookies, query strings, or sensitive page selectors. Centralized URL sanitization strips user credentials, query strings, fragments, and sensitive paths, preserving safe origin metadata for operational correlation.
 
 Testing requirements: Genuine browser security tests execute against an ephemeral HTTPS/WSS fixture server with `SENTINELAI_RUN_BROWSER_TESTS=true`. The test suite verifies handler invocation, close task completion, browser-observed closure with status code 1008, and zero server-side WebSocket requests. Database context isolation guarantees that test mutations and authorization monitoring operate on independent DbContext instances without concurrency conflicts.
+
+
+## Additional authorized coverage and site preview
+
+The extended bounded profiles add explicit coverage records for the following non-destructive checks:
+
+- Response security headers, sensitive cookie attributes, and CORS response policy.
+- Password-form transport metadata: whether a password form uses GET, submits over HTTP, or targets a different origin. Form inputs and values are not collected, and forms are never submitted.
+- HTTPS mixed-content references, cross-origin script references without Subresource Integrity metadata, and `target="_blank"` links without opener isolation.
+- Safe-active HTTP method exposure through OPTIONS only. TRACE and CONNECT are observed only when advertised; neither method is invoked.
+- A credential-free CORS preflight using a synthetic test origin. No Authorization or Cookie values are sent.
+- A harmless, unique, non-executable query canary on an already in-scope URL. No script, SQL, command, or exploit payload is used.
+
+Each check is recorded with its check ID, category, status, affected endpoint, and an explanation in the coverage matrix and HTML report. Unsupported or skipped checks remain explicitly identified rather than being reported as passed.
+
+### Credential handling
+
+Credential attacks are not part of this product workflow. SentinelAI does not brute-force, spray, stuff, replay, or submit credentials. It does not try default passwords, test leaked-password lists, or retain passwords, API keys, bearer-token values, or session-cookie values. Authentication-related checks are read-only metadata checks. Reports state that no credentials were attempted and explain the checks that were performed.
+
+### Site preview
+
+The assessment detail drawer includes a Site Preview tab backed by the landing-page screenshot produced by the existing scope-validated Playwright browser session. The screenshot redaction selectors run before capture. The UI fetches the tenant-scoped screenshot through the authenticated screenshot endpoint and displays a bounded-size image preview. It does not embed the target page in a live iframe or create a second browser session that bypasses the assessment policy.
+
+This adds visible browser evidence, not unrestricted interactive browsing. Preview availability depends on successful screenshot capture; failures remain visible in the screenshot/check coverage.

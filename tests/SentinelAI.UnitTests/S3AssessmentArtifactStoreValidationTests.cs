@@ -17,6 +17,7 @@ public sealed class S3AssessmentArtifactStoreValidationTests
         Assert.Null(await store.GetAsync(tenant, $"{tenant:D}/{assessment:D}/../other/report.html", CancellationToken.None));
         Assert.Null(await store.GetAsync(tenant, $"{tenant:D}/{assessment:D}/folder\\..\\report.html", CancellationToken.None));
         Assert.Null(await store.GetAsync(tenant, $"{tenant:D}/{assessment:D}/.staging/report.html", CancellationToken.None));
+        Assert.Null(await store.GetAsync(tenant, $"{tenant:D}\\{assessment:D}\\.staging\\report.html", CancellationToken.None));
     }
 
     [Fact]
